@@ -450,8 +450,12 @@ const App = {
     const m = document.getElementById('modal');
     m.innerHTML = html;
     bd.classList.remove('hidden');
-    const close = () => bd.classList.add('hidden');
-    bd.onclick = (e) => { if (e.target === bd) close(); };
+    // 바깥 클릭으로는 닫지 않는다 — 입력 중 드래그가 배경 클릭으로 판정돼
+    // 작성 내용이 날아가는 실수가 잦았음. 닫기는 버튼 또는 Esc 로만.
+    bd.onclick = null;
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    const close = () => { bd.classList.add('hidden'); document.removeEventListener('keydown', esc); };
+    document.addEventListener('keydown', esc);
     onOpen(m, close);
   },
 
