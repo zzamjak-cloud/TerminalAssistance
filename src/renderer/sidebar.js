@@ -1,4 +1,4 @@
-// 사이드바: 프로젝트 목록(폴딩·드래그 정렬) + 프로젝트별 세션 목록 + 상태 시각화
+// 사이드바: 프로젝트 목록(폴딩·포인터 드래그 정렬) + 프로젝트별 세션 목록 + 상태 시각화
 function statusDot(status) {
   const d = document.createElement('span');
   d.className = 'status-dot ' + status;
@@ -16,12 +16,18 @@ const Collapsed = {
   }
 };
 
-let dragProjectId = null; // 드래그 중인 프로젝트 id
-
-function clearDropMarks(list) {
-  for (const el of list.querySelectorAll('.drop-above, .drop-below')) {
-    el.classList.remove('drop-above', 'drop-below');
-  }
+// 프로젝트 정렬 드래그는 컨테이너에 1회만 배선 (렌더마다 중복 등록 방지)
+let sidebarSortReady = false;
+function initSidebarSort() {
+  if (sidebarSortReady) return;
+  sidebarSortReady = true;
+  makeSortable({
+    container: document.getElementById('project-list'),
+    itemSelector: '.project[data-id]',
+    axis: 'y',
+    ignore: 'button, .chevron, .session-row',
+    onDrop: (srcId, dstId, before) => App.moveProject(srcId, dstId, before)
+  });
 }
 
 function renderSidebar() {
@@ -59,55 +65,24 @@ function renderSidebar() {
 
     const box = document.createElement('div');
     box.className = 'project';
-    box.draggable = true;
-
-    // ── 드래그 정렬 ──
-    box.addEventListener('dragstart', (e) => {
-      dragProjectId = p.id;
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', p.id);
-      requestAnimationFrame(() => box.classList.add('dragging'));
-    });
-    box.addEventListener('dragend', () => {
-      dragProjectId = null;
-      box.classList.remove('dragging');
-      clearDropMarks(list);
-    });
-    box.addEventListener('dragover', (e) => {
-      if (!dragProjectId || dragProjectId === p.id) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      const before = e.offsetY < box.offsetHeight / 2;
-      box.classList.toggle('drop-above', before);
-      box.classList.toggle('drop-below', !before);
-    });
-    box.addEventListener('dragleave', () => box.classList.remove('drop-above', 'drop-below'));
-    box.addEventListener('drop', (e) => {
-      if (!dragProjectId || dragProjectId === p.id) return;
-      e.preventDefault();
-      const before = box.classList.contains('drop-above');
-      clearDropMarks(list);
-      App.moveProject(dragProjectId, p.id, before);
-    });
+    box.dataset.id = p.id;
 
     const row = document.createElement('div');
     row.className = 'project-row';
 
-    // 폴딩 토글 (세션이 없으면 자리만 유지)
+    // 폴딩 토글: 접힘 ▸(희미) / 펼침 ▾(선명)
     const chev = document.createElement('span');
-    chev.className = 'chevron' + (folded ? '' : ' open') + (mySessions.length ? '' : ' empty');
-    chev.textContent = '▸';
+    chev.className = 'chevron ' + (folded ? 'folded' : 'open');
+    chev.textContent = folded ? '▸' : '▾';
     chev.title = folded ? '펼치기' : '접기';
     chev.onclick = (e) => { e.stopPropagation(); Collapsed.toggle(p.id); renderSidebar(); };
     row.appendChild(chev);
 
-    const dot = document.createElement('span');
-    dot.className = 'project-dot';
-    dot.style.background = p.color;
-    row.appendChild(dot);
+    // 컬러 아이콘 대신 프로젝트 이름에 색상 적용
     const name = document.createElement('span');
     name.className = 'project-name';
     name.textContent = p.name;
+    name.style.color = p.color;
     row.appendChild(name);
 
     // 접힌 상태에서도 세션 상태가 보이도록 미니 점 요약
@@ -162,4 +137,6 @@ function renderSidebar() {
     for (const s of orphans) box.appendChild(sessionRow(s));
     list.appendChild(box);
   }
+
+  initSidebarSort();
 }

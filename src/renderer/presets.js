@@ -1,9 +1,8 @@
 // 명령 프리셋 바: 전역(파랑, 맨앞 고정) + 현재 프로젝트 프리셋을 칩으로 표시.
 // 클릭 = 실행 확인(빨강 "{이름} 실행")→재클릭 시 실행, Shift+클릭 = 입력만, 우클릭 = 수정.
-// 드래그앤드롭으로 같은 그룹 내 순서 변경 가능.
+// 포인터 드래그로 같은 그룹 내 순서 변경 (Tauri 에선 HTML5 DnD 불가 → dnd.js 사용).
 let armedPresetId = null; // 실행 확인 대기 중인 프리셋
 let armedTimer = null;
-let dragPresetId = null;
 
 function disarmPreset() {
   armedPresetId = null;
@@ -11,10 +10,18 @@ function disarmPreset() {
   renderPresets();
 }
 
-function clearPresetDropMarks(bar) {
-  for (const el of bar.querySelectorAll('.drop-before, .drop-after')) {
-    el.classList.remove('drop-before', 'drop-after');
-  }
+let presetSortReady = false;
+function initPresetSort() {
+  if (presetSortReady) return;
+  presetSortReady = true;
+  makeSortable({
+    container: document.getElementById('preset-bar'),
+    itemSelector: '.preset-chip[data-id]',
+    axis: 'x',
+    // 전역(global)↔프로젝트 그룹 간 이동 금지
+    canDrop: (srcEl, dstEl) => srcEl.classList.contains('global') === dstEl.classList.contains('global'),
+    onDrop: (srcId, dstId, before) => App.movePreset(srcId, dstId, before)
+  });
 }
 
 function renderPresets() {
@@ -31,6 +38,7 @@ function renderPresets() {
     const el = document.createElement('button');
     const armed = armedPresetId === p.id;
     el.className = 'preset-chip' + (isGlobal ? ' global' : '') + (armed ? ' armed' : '');
+    el.dataset.id = p.id;
     el.title = p.command + '\n(클릭=실행 확인 → 한 번 더 클릭=실행, Shift+클릭=입력만, 우클릭=수정)';
     if (armed) {
       el.textContent = p.label + ' 실행';
@@ -64,41 +72,11 @@ function renderPresets() {
       clearTimeout(armedTimer);
       App.showPresetModal(p);
     };
-
-    // ── 드래그 정렬 (전역↔프로젝트 그룹 간 이동은 금지) ──
-    el.draggable = true;
-    el.addEventListener('dragstart', (e) => {
-      dragPresetId = p.id;
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', p.id);
-      requestAnimationFrame(() => el.classList.add('dragging'));
-    });
-    el.addEventListener('dragend', () => {
-      dragPresetId = null;
-      el.classList.remove('dragging');
-      clearPresetDropMarks(bar);
-    });
-    el.addEventListener('dragover', (e) => {
-      const src = presets.find((x) => x.id === dragPresetId);
-      if (!src || src.id === p.id) return;
-      if (!src.projectId !== !p.projectId) return; // 그룹이 다르면 드롭 불가
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      const before = e.offsetX < el.offsetWidth / 2;
-      el.classList.toggle('drop-before', before);
-      el.classList.toggle('drop-after', !before);
-    });
-    el.addEventListener('dragleave', () => el.classList.remove('drop-before', 'drop-after'));
-    el.addEventListener('drop', (e) => {
-      if (!dragPresetId) return;
-      e.preventDefault();
-      const before = el.classList.contains('drop-before');
-      clearPresetDropMarks(bar);
-      App.movePreset(dragPresetId, p.id, before);
-    });
     return el;
   };
 
   for (const p of globals) bar.appendChild(makeChip(p, true));  // 전역은 항상 맨앞
   for (const p of projs) bar.appendChild(makeChip(p, false));
+
+  initPresetSort();
 }

@@ -49,7 +49,7 @@ button:hover { border-color: var(--accent); }
   border-bottom: 1px solid var(--border);
 }
 .brand { font-weight: 700; font-size: 13px; letter-spacing: .3px; }
-#btn-settings { padding: 2px 8px; }
+#btn-settings { padding: 3px 10px; font-size: 16px; line-height: 1.2; }
 #project-list { flex: 1; overflow-y: auto; padding: 6px; }
 .project {
   border-radius: 8px;
@@ -138,11 +138,6 @@ button:hover { border-color: var(--accent); }
   color: #ff6b64;
   font-weight: 700;
 }
-/* 프리셋 드래그 정렬 */
-.preset-chip.dragging { opacity: .35; }
-.preset-chip.drop-before { box-shadow: -3px 0 0 0 var(--accent); }
-.preset-chip.drop-after { box-shadow: 3px 0 0 0 var(--accent); }
-
 /* ── 프리셋 관리 팝업 ── */
 .pm-title {
   display: flex; justify-content: space-between; align-items: center;
@@ -258,25 +253,37 @@ button:hover { border-color: var(--accent); }
 /* ── 사이드바 폴딩 ── */
 .chevron {
   width: 14px; flex: none;
-  color: var(--fg-dim);
   cursor: pointer;
   font-size: 10px;
   text-align: center;
-  transition: transform .12s ease;
   user-select: none;
+  transition: opacity .12s ease;
 }
-.chevron.open { transform: rotate(90deg); }
-.chevron.empty { visibility: hidden; }
+.chevron.folded { opacity: .35; color: var(--fg-dim); }   /* 접힘 ▸ : 희미하게 */
+.chevron.open { opacity: 1; color: var(--fg); }           /* 펼침 ▾ : 선명하게 */
 .mini-dots { display: flex; gap: 3px; align-items: center; }
 .mini-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-dim); }
 .mini-dot.running { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
 .mini-dot.done { background: var(--done); }
 .mini-dot.exited { background: var(--exited); }
 
-/* ── 프로젝트 드래그 정렬 ── */
-.project.dragging { opacity: .35; }
-.project.drop-above { box-shadow: 0 -2px 0 0 var(--accent); }
-.project.drop-below { box-shadow: 0 2px 0 0 var(--accent); }
+/* ── 포인터 드래그 정렬 (프로젝트·프리셋 공용) ── */
+.project.dragging, .preset-chip.dragging { opacity: .35; }
+body.sorting { cursor: grabbing; user-select: none; }
+body.sorting * { cursor: grabbing !important; }
+/* 드롭 위치 표시: 파란 점선 */
+.drop-indicator {
+  position: fixed;
+  height: 0;
+  border-top: 2px dashed var(--accent);
+  pointer-events: none;
+  z-index: 300;
+}
+.drop-indicator.vert {
+  width: 0;
+  border-top: none;
+  border-left: 2px dashed var(--accent);
+}
 
 /* ── 우측 프롬프트 히스토리 패널 ── */
 #prompt-panel {
