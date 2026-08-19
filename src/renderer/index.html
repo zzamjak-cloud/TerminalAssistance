@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Terminal Assistance</title>
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="layout">
+    <aside id="sidebar">
+      <div id="sidebar-head">
+        <span class="brand">Terminal Assistance</span>
+        <button id="btn-settings" title="설정">⚙</button>
+      </div>
+      <div id="project-list"></div>
+      <div id="sidebar-foot">
+        <button id="btn-add-project">+ 프로젝트 등록</button>
+        <button id="btn-home-session" title="홈 디렉토리 터미널">+ 터미널</button>
+      </div>
+    </aside>
+    <main id="main">
+      <div id="topbar">
+        <div id="active-info">세션 없음</div>
+        <div id="topbar-actions">
+          <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
+        </div>
+      </div>
+      <div id="preset-bar"></div>
+      <div id="term-area">
+        <div id="empty-state">
+          <h2>프로젝트를 등록하고 터미널을 시작하세요</h2>
+          <p>좌측 하단 <b>+ 프로젝트 등록</b> → 프로젝트 클릭 한 번으로 해당 경로의 터미널이 열립니다.<br>
+          이미지는 <b>Cmd/Ctrl+V</b> 붙여넣기 또는 <b>드래그앤드롭</b>으로 첨부됩니다.<br>
+          <b>Cmd/Ctrl+1~9</b> 세션 전환 · <b>Cmd/Ctrl+T</b> 새 세션</p>
+        </div>
+      </div>
+      <div id="image-strip"></div>
+    </main>
+  </div>
+
+  <div id="modal-backdrop" class="hidden">
+    <div id="modal"></div>
+  </div>
+
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="vendor/addon-web-links.js"></script>
+  <script src="api.js"></script>
+  <script src="terminal-view.js"></script>
+  <script src="sidebar.js"></script>
+  <script src="presets.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

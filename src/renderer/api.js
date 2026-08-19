@@ -1,0 +1,53 @@
+// Tauri IPC 어댑터 — 렌더러의 나머지 코드는 window.ta 만 사용한다.
+// (백엔드 구현이 바뀌어도 이 파일만 교체하면 되도록 격리)
+(function () {
+  const { invoke, convertFileSrc } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+
+  window.ta = {
+    getState: () => invoke('get_state'),
+
+    addProject: (p) => invoke('add_project', { name: p.name, path: p.path, color: p.color || null }),
+    updateProject: (id, patch) => invoke('update_project', { id, name: patch.name ?? null, path: patch.path ?? null, color: patch.color ?? null }),
+    removeProject: (id) => invoke('remove_project', { id }),
+    pickFolder: () => invoke('pick_folder'),
+
+    addPreset: (p) => invoke('add_preset', { label: p.label, command: p.command, projectId: p.projectId || null }),
+    updatePreset: (id, patch) => invoke('update_preset', {
+      id,
+      label: patch.label ?? null,
+      command: patch.command ?? null,
+      projectId: patch.projectId ?? null,
+      clearProject: patch.clearProject ?? null
+    }),
+    removePreset: (id) => invoke('remove_preset', { id }),
+
+    updateSettings: (patch) => invoke('update_settings', {
+      fontSize: patch.fontSize ?? null,
+      shell: patch.shell ?? null,
+      notifyOnDone: patch.notifyOnDone ?? null
+    }),
+
+    createSession: (projectId) => invoke('create_session', { projectId: projectId || null }),
+    write: (id, data) => invoke('write_session', { id, data }),
+    resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
+    closeSession: (id) => invoke('close_session', { id }),
+    ackSession: (id) => invoke('ack_session', { id }),
+
+    checkUpdate: () => invoke('check_update'),
+    installUpdate: () => invoke('install_update'),
+    openUrl: (url) => invoke('open_url', { url }),
+
+    clipboardImage: () => invoke('clipboard_image'),
+    clipboardText: () => invoke('clipboard_text'),
+    openPath: (p) => invoke('open_path', { path: p }),
+    notify: (title, body) => invoke('notify', { title, body }),
+    fileSrc: (p) => convertFileSrc(p),
+
+    onData: (cb) => listen('ta:data', (e) => cb(e.payload)),
+    onStatus: (cb) => listen('ta:status', (e) => cb(e.payload)),
+    onExit: (cb) => listen('ta:exit', (e) => cb(e.payload)),
+    // Tauri 는 파일 드롭을 웹뷰 대신 네이티브 이벤트로 준다 (실제 경로 포함)
+    onFileDrop: (cb) => listen('tauri://drag-drop', (e) => cb(e.payload))
+  };
+})();
