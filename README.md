@@ -61,6 +61,20 @@ git tag v0.2.0 && git push origin v0.2.0
 
 필요 시크릿: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (업데이트 서명 키).
 
+서명 키는 GitHub 시크릿에만 있으면 되고, 로컬에는 필요 없다.
+`.env` 파일은 동작하지 않는다 — Tauri v2 는 서명 키를 프로세스 환경변수에서만 읽는다.
+개인키를 잃으면 기존 사용자에게 자동 업데이트를 내려보낼 수 없으니 저장소 밖에 백업해 둔다.
+
+로컬에서 서명 포함 릴리즈 빌드를 확인해야 할 때 (Windows):
+
+```powershell
+# 키를 ~\.tauri\terminalassistance.key 에 두고
+.\scripts\build-signed.ps1
+```
+
+서명 없이 `npm run build` 를 돌리면 msi/nsis 설치본까지는 만들어지고
+업데이터 서명 단계에서만 실패한다 — 개발/동작 확인 목적이면 그대로 써도 된다.
+
 ## 아키텍처
 
 ```

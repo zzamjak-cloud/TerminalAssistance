@@ -5,3 +5,8 @@ dist/
 .DS_Store
 .omc/
 *.log
+
+# 로컬 환경변수/서명 키 (절대 커밋 금지)
+.env
+.env.*
+*.key
