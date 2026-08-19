@@ -1,6 +1,6 @@
 [package]
 name = "terminal-assistance"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI 시대의 멀티 프로젝트 터미널 워크스페이스"
 authors = ["zzamjak-cloud"]
 license = "MIT"

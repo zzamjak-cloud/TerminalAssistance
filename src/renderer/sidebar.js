@@ -73,7 +73,7 @@ function renderSidebar() {
     // 폴딩 토글: 접힘 ▸(희미) / 펼침 ▾(선명)
     const chev = document.createElement('span');
     chev.className = 'chevron ' + (folded ? 'folded' : 'open');
-    chev.textContent = folded ? '▸' : '▾';
+    chev.textContent = '❯'; // 접힘 ❯(희미) / 펼침은 CSS 로 90도 회전(선명)
     chev.title = folded ? '펼치기' : '접기';
     chev.onclick = (e) => { e.stopPropagation(); Collapsed.toggle(p.id); renderSidebar(); };
     row.appendChild(chev);

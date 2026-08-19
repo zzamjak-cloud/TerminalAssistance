@@ -66,9 +66,9 @@ button:hover { border-color: var(--accent); }
 .project-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 .project-name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-path { font-size: 10px; color: var(--fg-dim); padding: 0 6px 2px 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-actions { display: none; gap: 4px; }
+.project-actions { display: none; gap: 0; }
 .project-row:hover .project-actions { display: flex; }
-.project-actions button { padding: 0 6px; font-size: 15px; line-height: 1; border: none; background: none; color: var(--fg-dim); }
+.project-actions button { padding: 0 3px; font-size: 15px; line-height: 1; border: none; background: none; color: var(--fg-dim); }
 .project-actions button:hover { color: var(--fg); }
 
 .session-row {
@@ -252,15 +252,18 @@ button:hover { border-color: var(--accent); }
 
 /* ── 사이드바 폴딩 ── */
 .chevron {
-  width: 14px; flex: none;
+  width: 16px; height: 16px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
   cursor: pointer;
-  font-size: 10px;
-  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg);
   user-select: none;
-  transition: opacity .12s ease;
+  transform-origin: center;
+  transition: transform .15s ease, opacity .15s ease;
 }
-.chevron.folded { opacity: .35; color: var(--fg-dim); }   /* 접힘 ▸ : 희미하게 */
-.chevron.open { opacity: 1; color: var(--fg); }           /* 펼침 ▾ : 선명하게 */
+.chevron.folded { opacity: .35; }                    /* 접힘 ❯ : 희미하게 */
+.chevron.open { opacity: 1; transform: rotate(90deg); } /* 펼침 : 90도 회전 + 선명 */
 .mini-dots { display: flex; gap: 3px; align-items: center; }
 .mini-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-dim); }
 .mini-dot.running { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
