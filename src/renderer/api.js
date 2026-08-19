@@ -10,6 +10,7 @@
     addProject: (p) => invoke('add_project', { name: p.name, path: p.path, color: p.color || null }),
     updateProject: (id, patch) => invoke('update_project', { id, name: patch.name ?? null, path: patch.path ?? null, color: patch.color ?? null }),
     removeProject: (id) => invoke('remove_project', { id }),
+    reorderProjects: (ids) => invoke('reorder_projects', { ids }),
     pickFolder: () => invoke('pick_folder'),
 
     addPreset: (p) => invoke('add_preset', { label: p.label, command: p.command, projectId: p.projectId || null }),
@@ -21,6 +22,7 @@
       clearProject: patch.clearProject ?? null
     }),
     removePreset: (id) => invoke('remove_preset', { id }),
+    reorderPresets: (ids) => invoke('reorder_presets', { ids }),
 
     updateSettings: (patch) => invoke('update_settings', {
       fontSize: patch.fontSize ?? null,

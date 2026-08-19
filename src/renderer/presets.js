@@ -1,5 +1,22 @@
-// 명령 프리셋 바: 전역 + 현재 프로젝트 프리셋을 칩으로 표시.
-// 클릭 = 즉시 실행, Shift+클릭 = 입력만(엔터 없이), 우클릭 = 수정/삭제
+// 명령 프리셋 바: 전역(파랑, 맨앞 고정) + 현재 프로젝트 프리셋을 칩으로 표시.
+// 클릭 = 실행 확인(빨강 "{이름} 실행")→재클릭 시 실행, Shift+클릭 = 입력만, 우클릭 = 수정.
+// 드래그앤드롭으로 같은 그룹 내 순서 변경 가능.
+let armedPresetId = null; // 실행 확인 대기 중인 프리셋
+let armedTimer = null;
+let dragPresetId = null;
+
+function disarmPreset() {
+  armedPresetId = null;
+  clearTimeout(armedTimer);
+  renderPresets();
+}
+
+function clearPresetDropMarks(bar) {
+  for (const el of bar.querySelectorAll('.drop-before, .drop-after')) {
+    el.classList.remove('drop-before', 'drop-after');
+  }
+}
+
 function renderPresets() {
   const bar = document.getElementById('preset-bar');
   bar.textContent = '';
@@ -7,18 +24,81 @@ function renderPresets() {
   const active = sessions.find((s) => s.id === activeId);
   const projectId = active ? active.projectId : null;
 
-  const visible = presets.filter((p) => !p.projectId || p.projectId === projectId);
-  for (const p of visible) {
-    const chip = document.createElement('button');
-    chip.className = 'preset-chip';
-    chip.title = p.command + '\n(클릭=실행, Shift+클릭=입력만, 우클릭=수정)';
-    const scope = document.createElement('span');
-    scope.className = 'scope';
-    scope.textContent = p.projectId ? '▸' : '◆';
-    chip.appendChild(scope);
-    chip.appendChild(document.createTextNode(p.label));
-    chip.onclick = (e) => App.runPreset(p, !e.shiftKey);
-    chip.oncontextmenu = (e) => { e.preventDefault(); App.showPresetModal(p); };
-    bar.appendChild(chip);
-  }
+  const globals = presets.filter((p) => !p.projectId);
+  const projs = presets.filter((p) => p.projectId && p.projectId === projectId);
+
+  const makeChip = (p, isGlobal) => {
+    const el = document.createElement('button');
+    const armed = armedPresetId === p.id;
+    el.className = 'preset-chip' + (isGlobal ? ' global' : '') + (armed ? ' armed' : '');
+    el.title = p.command + '\n(클릭=실행 확인 → 한 번 더 클릭=실행, Shift+클릭=입력만, 우클릭=수정)';
+    if (armed) {
+      el.textContent = p.label + ' 실행';
+    } else {
+      const scope = document.createElement('span');
+      scope.className = 'scope';
+      scope.textContent = isGlobal ? '◆' : '▸';
+      el.appendChild(scope);
+      el.appendChild(document.createTextNode(p.label));
+    }
+
+    el.onclick = (e) => {
+      if (e.shiftKey) { armedPresetId = null; clearTimeout(armedTimer); App.runPreset(p, false); renderPresets(); return; }
+      if (armedPresetId === p.id) {
+        // 2차 클릭 = 실제 실행
+        armedPresetId = null;
+        clearTimeout(armedTimer);
+        App.runPreset(p, true);
+        renderPresets();
+      } else {
+        // 1차 클릭 = 실행 확인 상태 (3초 내 재클릭, 지나면 자동 해제)
+        armedPresetId = p.id;
+        clearTimeout(armedTimer);
+        armedTimer = setTimeout(disarmPreset, 3000);
+        renderPresets();
+      }
+    };
+    el.oncontextmenu = (e) => {
+      e.preventDefault();
+      armedPresetId = null;
+      clearTimeout(armedTimer);
+      App.showPresetModal(p);
+    };
+
+    // ── 드래그 정렬 (전역↔프로젝트 그룹 간 이동은 금지) ──
+    el.draggable = true;
+    el.addEventListener('dragstart', (e) => {
+      dragPresetId = p.id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', p.id);
+      requestAnimationFrame(() => el.classList.add('dragging'));
+    });
+    el.addEventListener('dragend', () => {
+      dragPresetId = null;
+      el.classList.remove('dragging');
+      clearPresetDropMarks(bar);
+    });
+    el.addEventListener('dragover', (e) => {
+      const src = presets.find((x) => x.id === dragPresetId);
+      if (!src || src.id === p.id) return;
+      if (!src.projectId !== !p.projectId) return; // 그룹이 다르면 드롭 불가
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const before = e.offsetX < el.offsetWidth / 2;
+      el.classList.toggle('drop-before', before);
+      el.classList.toggle('drop-after', !before);
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('drop-before', 'drop-after'));
+    el.addEventListener('drop', (e) => {
+      if (!dragPresetId) return;
+      e.preventDefault();
+      const before = el.classList.contains('drop-before');
+      clearPresetDropMarks(bar);
+      App.movePreset(dragPresetId, p.id, before);
+    });
+    return el;
+  };
+
+  for (const p of globals) bar.appendChild(makeChip(p, true));  // 전역은 항상 맨앞
+  for (const p of projs) bar.appendChild(makeChip(p, false));
 }

@@ -128,6 +128,42 @@ button:hover { border-color: var(--accent); }
 }
 .preset-chip:hover { border-color: var(--accent); background: #2a3550; }
 .preset-chip .scope { color: var(--fg-dim); font-size: 10px; margin-right: 4px; }
+/* 전역 프리셋: 파랑 배경, 목록 맨앞 고정 */
+.preset-chip.global { background: #1c3a63; border-color: #2e6cd6; }
+.preset-chip.global:hover { background: #24497c; }
+/* 실행 확인 상태: 빨강 "{이름} 실행" — 한 번 더 클릭해야 실행 */
+.preset-chip.armed {
+  background: #4a1517;
+  border-color: var(--exited);
+  color: #ff6b64;
+  font-weight: 700;
+}
+/* 프리셋 드래그 정렬 */
+.preset-chip.dragging { opacity: .35; }
+.preset-chip.drop-before { box-shadow: -3px 0 0 0 var(--accent); }
+.preset-chip.drop-after { box-shadow: 3px 0 0 0 var(--accent); }
+
+/* ── 프리셋 관리 팝업 ── */
+.pm-title {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; font-weight: 700; color: var(--fg);
+  margin: 14px 0 6px;
+}
+.pm-title button { padding: 2px 8px; font-size: 11px; }
+.pm-list { max-height: 180px; overflow-y: auto; }
+.pm-row {
+  display: flex; gap: 8px; align-items: center;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.pm-row b { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-row span { flex: 1; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-row button { padding: 1px 7px; font-size: 11px; flex: none; }
+.pm-row .pm-del { border-color: var(--exited); color: var(--exited); }
+.pm-empty { color: var(--fg-dim); font-size: 11px; padding: 6px 2px; }
 
 #term-area { flex: 1; position: relative; min-height: 0; padding: 4px 0 0 8px; }
 .term-holder { position: absolute; inset: 4px 0 0 8px; display: none; }
@@ -191,3 +227,131 @@ button:hover { border-color: var(--accent); }
 #modal .danger { border-color: var(--exited); color: var(--exited); margin-right: auto; }
 #modal .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--fg); }
 #modal .check input { width: auto; }
+
+/* ── 패널 너비 조절 + 슬라이딩 폴딩 ── */
+#sidebar, #prompt-panel {
+  transition: width .2s ease;
+  overflow: hidden;
+  min-width: 0;
+  flex: none;
+}
+.no-anim { transition: none !important; }
+#sidebar.collapsed { width: 40px !important; cursor: pointer; }
+#sidebar.collapsed .brand,
+#sidebar.collapsed #btn-settings,
+#sidebar.collapsed #project-list,
+#sidebar.collapsed #sidebar-foot { display: none; }
+#sidebar.collapsed #sidebar-head { justify-content: center; padding: 12px 4px; }
+#sidebar.collapsed #btn-fold-left { transform: rotate(180deg); }
+#prompt-panel.hidden { display: flex; width: 0 !important; border-left: none; }
+#prompt-head > span { display: flex; gap: 4px; align-items: center; }
+#prompt-head > span:first-child, #prompt-panel span, #prompt-panel button { white-space: nowrap; }
+.fold-btn { padding: 2px 7px; font-size: 12px; }
+.resize-handle {
+  width: 4px; flex: none;
+  cursor: col-resize;
+  background: transparent;
+  transition: background .15s;
+}
+.resize-handle:hover, .resize-handle.active { background: var(--accent); }
+
+/* ── 사이드바 폴딩 ── */
+.chevron {
+  width: 14px; flex: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 10px;
+  text-align: center;
+  transition: transform .12s ease;
+  user-select: none;
+}
+.chevron.open { transform: rotate(90deg); }
+.chevron.empty { visibility: hidden; }
+.mini-dots { display: flex; gap: 3px; align-items: center; }
+.mini-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-dim); }
+.mini-dot.running { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
+.mini-dot.done { background: var(--done); }
+.mini-dot.exited { background: var(--exited); }
+
+/* ── 프로젝트 드래그 정렬 ── */
+.project.dragging { opacity: .35; }
+.project.drop-above { box-shadow: 0 -2px 0 0 var(--accent); }
+.project.drop-below { box-shadow: 0 2px 0 0 var(--accent); }
+
+/* ── 우측 프롬프트 히스토리 패널 ── */
+#prompt-panel {
+  width: 240px; min-width: 240px;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+#prompt-panel.hidden { display: none; }
+#prompt-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700; font-size: 12px;
+}
+#prompt-head button { padding: 2px 8px; font-size: 11px; }
+#prompt-list { flex: 1; overflow-y: auto; padding: 6px; }
+.prompt-empty { color: var(--fg-dim); font-size: 11px; line-height: 1.6; padding: 10px 6px; }
+.prompt-item {
+  display: flex; gap: 7px; align-items: flex-start;
+  padding: 6px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 2px;
+}
+.prompt-item:hover { background: var(--bg-hover); }
+.prompt-item .pn {
+  flex: none;
+  min-width: 18px; text-align: center;
+  background: var(--bg-hover);
+  border-radius: 8px;
+  font-size: 10px; color: var(--fg-dim);
+  padding: 1px 4px; margin-top: 1px;
+}
+.prompt-item .pt {
+  font-size: 11.5px; line-height: 1.45;
+  word-break: break-all;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.prompt-item.gone { opacity: .4; }
+.prompt-item.gone .pt { text-decoration: line-through; }
+
+/* 터미널 버퍼 내 프롬프트 구분선 (xterm 데코레이션) */
+.prompt-divider {
+  border-top: 1px dashed rgba(88, 166, 255, .45);
+  width: 100% !important;
+  background: transparent !important;
+  pointer-events: none;
+}
+
+/* ── 색상 프리셋 칩 (프로젝트 등록/수정) ── */
+.color-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0; }
+.color-chip {
+  width: 26px; height: 26px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform .08s ease;
+}
+.color-chip:hover { transform: scale(1.15); }
+.color-chip.selected {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.color-chip.custom {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  background: conic-gradient(#f85149, #e3b341, #3fb950, #39c5cf, #58a6ff, #a371f7, #f85149);
+  color: #fff; font-size: 15px; font-weight: 700;
+}
+/* 커스텀 색이 아직 없을 때만 + 표시 */
+.color-chip.custom:not(.has-color)::after { content: '+'; text-shadow: 0 0 3px rgba(0,0,0,.7); }
+.color-chip.custom input[type=color] {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  opacity: 0; cursor: pointer; padding: 0; border: none;
+}

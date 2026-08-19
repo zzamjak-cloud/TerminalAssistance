@@ -28,10 +28,13 @@ const TerminalView = {
 
     term.onData((d) => {
       ta.write(session.id, d);
+      App.trackInput(session.id, d); // 프롬프트 히스토리용 입력 추적
       App.ackIfDone(session.id); // 입력 = 사용자가 결과를 확인함
     });
 
     term.attachCustomKeyEventHandler((ev) => {
+      // IME 조합(한글 등) 중에는 어떤 키도 가로채지 않는다 — 조합 파괴 방지
+      if (ev.isComposing || ev.keyCode === 229) return true;
       if (ev.type !== 'keydown') return true;
       const mod = ev.metaKey || ev.ctrlKey;
       // Cmd/Ctrl+V: 클립보드에 이미지가 있으면 경로 첨부로 대체, 아니면 텍스트 붙여넣기
@@ -54,6 +57,28 @@ const TerminalView = {
 
     this.views.set(session.id, { term, fit, holder });
     return term;
+  },
+
+  // 프롬프트 제출 지점에 마커 등록 + 구분선 데코레이션 (히스토리 점프의 앵커)
+  addPromptMarker(id) {
+    const v = this.views.get(id);
+    if (!v) return null;
+    const marker = v.term.registerMarker(0);
+    if (marker) {
+      try {
+        const deco = v.term.registerDecoration({ marker, width: v.term.cols });
+        if (deco) deco.onRender((el) => el.classList.add('prompt-divider'));
+      } catch (_) { /* 데코레이션 미지원이어도 마커 점프는 동작 */ }
+    }
+    return marker;
+  },
+
+  // 히스토리 클릭 → 해당 프롬프트 위치로 스크롤. 스크롤백에서 밀려났으면 false
+  scrollToMarker(id, marker) {
+    const v = this.views.get(id);
+    if (!v || !marker || marker.isDisposed || marker.line < 0) return false;
+    v.term.scrollToLine(marker.line);
+    return true;
   },
 
   activate(id) {

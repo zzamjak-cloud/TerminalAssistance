@@ -12,6 +12,7 @@
       <div id="sidebar-head">
         <span class="brand">Terminal Assistance</span>
         <button id="btn-settings" title="설정">⚙</button>
+        <button id="btn-fold-left" class="fold-btn" title="사이드바 접기/펼치기">⟨</button>
       </div>
       <div id="project-list"></div>
       <div id="sidebar-foot">
@@ -19,11 +20,13 @@
         <button id="btn-home-session" title="홈 디렉토리 터미널">+ 터미널</button>
       </div>
     </aside>
+    <div class="resize-handle" id="resize-left" title="드래그로 너비 조절"></div>
     <main id="main">
       <div id="topbar">
         <div id="active-info">세션 없음</div>
         <div id="topbar-actions">
           <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
+          <button id="btn-toggle-prompts" title="프롬프트 히스토리 패널 토글">☰ 프롬프트</button>
         </div>
       </div>
       <div id="preset-bar"></div>
@@ -37,6 +40,17 @@
       </div>
       <div id="image-strip"></div>
     </main>
+    <div class="resize-handle" id="resize-right" title="드래그로 너비 조절"></div>
+    <aside id="prompt-panel" class="hidden">
+      <div id="prompt-head">
+        <span>프롬프트 히스토리</span>
+        <span>
+          <button id="btn-clear-prompts" title="현재 세션 목록 비우기">비우기</button>
+          <button id="btn-fold-right" class="fold-btn" title="패널 접기">⟩</button>
+        </span>
+      </div>
+      <div id="prompt-list"></div>
+    </aside>
   </div>
 
   <div id="modal-backdrop" class="hidden">

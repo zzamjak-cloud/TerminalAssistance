@@ -51,6 +51,22 @@ fn update_project(store: StoreState, id: String, name: Option<String>, path: Opt
     s.save();
 }
 
+// 사이드바 드래그앤드롭 정렬 결과를 그대로 저장 (ids 순서 = 표시 순서)
+#[tauri::command]
+fn reorder_projects(store: StoreState, ids: Vec<String>) {
+    let mut s = store.lock().unwrap();
+    let mut rest: Vec<store::Project> = s.data.projects.drain(..).collect();
+    let mut ordered = Vec::with_capacity(rest.len());
+    for id in &ids {
+        if let Some(pos) = rest.iter().position(|p| &p.id == id) {
+            ordered.push(rest.remove(pos));
+        }
+    }
+    ordered.extend(rest); // ids 에 없던 항목은 뒤에 보존
+    s.data.projects = ordered;
+    s.save();
+}
+
 #[tauri::command]
 fn remove_project(store: StoreState, id: String) {
     let mut s = store.lock().unwrap();
@@ -84,6 +100,22 @@ fn update_preset(store: StoreState, id: String, label: Option<String>, command: 
         if clear_project == Some(true) { p.project_id = None; }
         else if project_id.is_some() { p.project_id = project_id; }
     }
+    s.save();
+}
+
+// 프리셋 드래그앤드롭 정렬 (ids 순서 = 표시 순서)
+#[tauri::command]
+fn reorder_presets(store: StoreState, ids: Vec<String>) {
+    let mut s = store.lock().unwrap();
+    let mut rest: Vec<store::Preset> = s.data.presets.drain(..).collect();
+    let mut ordered = Vec::with_capacity(rest.len());
+    for id in &ids {
+        if let Some(pos) = rest.iter().position(|p| &p.id == id) {
+            ordered.push(rest.remove(pos));
+        }
+    }
+    ordered.extend(rest);
+    s.data.presets = ordered;
     s.save();
 }
 
@@ -250,10 +282,12 @@ fn main() {
             get_state,
             add_project,
             update_project,
+            reorder_projects,
             remove_project,
             pick_folder,
             add_preset,
             update_preset,
+            reorder_presets,
             remove_preset,
             update_settings,
             create_session,

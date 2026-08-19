@@ -148,6 +148,11 @@ impl PtyManager {
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // GUI 앱은 LANG 을 상속받지 못해 셸이 C 로케일로 동작 → 한글 등 멀티바이트 입력이 깨짐
+        if std::env::var("LANG").is_err() {
+            cmd.env("LANG", "ko_KR.UTF-8");
+            cmd.env("LC_ALL", "ko_KR.UTF-8");
+        }
 
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);
