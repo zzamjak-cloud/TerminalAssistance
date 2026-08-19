@@ -1,9 +1,11 @@
 // Terminal Assistance — Tauri 진입점 + IPC 커맨드 정의
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod plan;
 mod pty;
 mod store;
 
+use plan::PlanWatcher;
 use pty::PtyManager;
 use serde_json::json;
 use std::fs;
@@ -25,9 +27,55 @@ fn get_state(store: StoreState, ptys: State<PtyManager>) -> serde_json::Value {
         "projects": s.data.projects,
         "presets": s.data.presets,
         "settings": s.data.settings,
+        "drafts": s.data.drafts,
         "sessions": ptys.list(),
         "platform": std::env::consts::OS
     })
+}
+
+// ── 시스템 메모리 현황 (헤더 표시용) ──
+type MemState = Mutex<sysinfo::System>;
+
+#[tauri::command]
+fn get_memory(mem: State<MemState>) -> serde_json::Value {
+    let mut s = mem.lock().unwrap();
+    s.refresh_memory();
+    let total = s.total_memory();
+    let used = s.used_memory();
+    let pct = if total > 0 { (used as f64 / total as f64 * 100.0).round() as u32 } else { 0 };
+    json!({
+        "pct": pct,
+        "usedGb": (used as f64 / 1073741824.0 * 10.0).round() / 10.0,
+        "totalGb": (total as f64 / 1073741824.0 * 10.0).round() / 10.0
+    })
+}
+
+// ── 진행 계획 (자동 연동 + 수동) ──
+#[tauri::command]
+fn get_auto_plan(watcher: State<PlanWatcher>, id: String) -> serde_json::Value {
+    watcher.auto_plan(&id)
+}
+
+#[tauri::command]
+fn get_manual_plan(watcher: State<PlanWatcher>, id: String) -> Vec<plan::ManualItem> {
+    watcher.manual_plan(&id)
+}
+
+#[tauri::command]
+fn set_manual_plan(watcher: State<PlanWatcher>, id: String, items: Vec<plan::ManualItem>) {
+    watcher.set_manual_plan(&id, items);
+}
+
+// ── '다음 프롬프트' 초안 (프로젝트별 영속화, 키: projectId 또는 "") ──
+#[tauri::command]
+fn set_drafts(store: StoreState, key: String, drafts: Vec<store::Draft>) {
+    let mut s = store.lock().unwrap();
+    if drafts.is_empty() {
+        s.data.drafts.remove(&key);
+    } else {
+        s.data.drafts.insert(key, drafts);
+    }
+    s.save();
 }
 
 // ── 프로젝트 ──
@@ -163,13 +211,26 @@ fn resize_session(ptys: State<PtyManager>, id: String, cols: u16, rows: u16) {
 }
 
 #[tauri::command]
-fn close_session(ptys: State<PtyManager>, id: String) {
+fn close_session(ptys: State<PtyManager>, watcher: State<PlanWatcher>, id: String) {
     ptys.close(&id);
+    watcher.remove_session(&id);
 }
 
 #[tauri::command]
 fn ack_session(app: AppHandle, ptys: State<PtyManager>, id: String) {
     ptys.ack(&app, &id);
+}
+
+// 웹뷰 리로드/크래시 복구: 백엔드가 보관한 세션 스크롤백 스냅샷 반환
+#[tauri::command]
+fn get_scrollback(ptys: State<PtyManager>, id: String) -> serde_json::Value {
+    ptys.scrollback(&id)
+}
+
+// 프론트의 출력 소비 확인(flow control) — xterm 기록 완료 바이트 수
+#[tauri::command]
+fn ack_data(ptys: State<PtyManager>, id: String, bytes: u64) {
+    ptys.ack_data(&id, bytes);
 }
 
 // ── 이미지 첨부 ──
@@ -263,6 +324,39 @@ fn notify(app: AppHandle, store: StoreState, title: String, body: String) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
+// WebView2 렌더러 프로세스가 죽으면(메모리 부족 등) 자동 리로드해 화면을 복구한다.
+// 리로드 후 프론트 boot() 가 get_scrollback 으로 세션 내용을 복원하므로 데이터 손실이 없다.
+// (PTY 와 자식 프로세스는 Rust 쪽에 있어 렌더러 크래시의 영향을 받지 않는다)
+#[cfg(windows)]
+fn install_crash_recovery(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2, ICoreWebView2ProcessFailedEventArgs, COREWEBVIEW2_PROCESS_FAILED_KIND,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+    };
+    use webview2_com::ProcessFailedEventHandler;
+
+    let _ = window.with_webview(|webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        let handler = ProcessFailedEventHandler::create(Box::new(
+            move |sender: Option<ICoreWebView2>, args: Option<ICoreWebView2ProcessFailedEventArgs>| {
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                if let Some(a) = &args {
+                    let _ = a.ProcessFailedKind(&mut kind);
+                }
+                // 렌더러 프로세스 사망일 때만 리로드 (Unresponsive 등은 스스로 회복 가능)
+                if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
+                    if let Some(wv) = &sender {
+                        let _ = wv.Reload();
+                    }
+                }
+                Ok(())
+            },
+        ));
+        let mut token = 0i64;
+        let _ = core.add_ProcessFailed(&handler, &mut token);
+    });
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -272,10 +366,17 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PtyManager::new())
         .manage(PendingUpdate::default())
+        .manage(PlanWatcher::new())
+        .manage(MemState::new(sysinfo::System::new()))
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             app.manage(Mutex::new(Store::load(config_dir)));
             app.state::<PtyManager>().start_status_thread(app.handle().clone());
+            PlanWatcher::start(app.handle().clone());
+            #[cfg(windows)]
+            if let Some(win) = app.get_webview_window("main") {
+                install_crash_recovery(&win);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -295,6 +396,13 @@ fn main() {
             resize_session,
             close_session,
             ack_session,
+            get_scrollback,
+            ack_data,
+            get_memory,
+            get_auto_plan,
+            get_manual_plan,
+            set_manual_plan,
+            set_drafts,
             clipboard_image,
             clipboard_text,
             open_path,

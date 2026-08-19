@@ -7,18 +7,30 @@ const App = {
     sessions: [],   // { id, projectId, title, status, cwd }
     activeId: null,
     images: {},     // sessionId → [{ path, src }] 최근 첨부 이미지
-    prompts: {}     // sessionId → [{ n, text, ts, marker }] 제출한 프롬프트 히스토리
+    prompts: {},    // sessionId → [{ n, text, ts, marker }] 제출한 프롬프트 히스토리
+    drafts: {},     // projectId(또는 '') → [{ id, text }] 다음 프롬프트 초안 (영속화)
+    manualPlans: {} // sessionId → [{ id, text, done }] 수동 진행 계획 (백엔드 보관)
   },
   _inputBufs: {},   // sessionId → 입력 중인 라인 버퍼 (프롬프트 추적용)
+  _autoPlanCache: '', // 자동 연동 계획의 마지막 렌더 내용 (불필요한 재렌더 방지)
+  _draftSaveTimer: null,
 
   async boot() {
     TerminalView.init();
     const st = await ta.getState();
     Object.assign(App.state, {
-      projects: st.projects, presets: st.presets, settings: st.settings, sessions: st.sessions
+      projects: st.projects, presets: st.presets, settings: st.settings, sessions: st.sessions,
+      drafts: st.drafts || {}
     });
 
-    ta.onData(({ sessionId, data }) => TerminalView.write(sessionId, data));
+    // 웹뷰 리로드/크래시 복구: 백엔드에 살아있는 세션의 터미널 뷰를 먼저 frozen 으로 만들어
+    // 리스너 등록 후 도착하는 라이브 출력을 큐에 담아 두고, 스크롤백 주입 뒤 이어붙인다.
+    const restoring = st.sessions.slice();
+    for (const s of restoring) {
+      TerminalView.create(s, App.state.settings.fontSize, { frozen: true });
+    }
+
+    ta.onData((p) => TerminalView.feed(p));
     ta.onStatus(({ sessionId, status, busyMs }) => {
       const s = App.state.sessions.find((x) => x.id === sessionId);
       if (!s) return;
@@ -40,6 +52,14 @@ const App = {
     document.getElementById('btn-add-preset').onclick = () => App.showPresetManager();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
+    document.getElementById('btn-toggle-work').onclick = () => App.toggleWorkPanel();
+    document.getElementById('btn-draft-add').onclick = () => App.addDraft();
+    document.getElementById('plan-add-input').onkeydown = (ev) => {
+      if (ev.key === 'Enter' && !ev.isComposing) App.addManualItem(ev.target);
+    };
+    // 시스템 메모리 + 자동 연동 계획 폴링 (2초)
+    setInterval(() => App.pollStatus(), 2000);
+    App.pollStatus();
     document.getElementById('btn-clear-prompts').onclick = () => {
       delete App.state.prompts[App.state.activeId];
       App.renderPromptList();
@@ -55,6 +75,22 @@ const App = {
       if (mod && ev.key >= '1' && ev.key <= '9') { ev.preventDefault(); App.activateByIndex(Number(ev.key) - 1); }
       if (mod && ev.key.toLowerCase() === 't') { ev.preventDefault(); App.newSessionInActiveProject(); }
     });
+
+    // 세션 내용 복원: 스크롤백 스냅샷 주입 → 큐잉된 라이브 출력 이어붙임
+    for (const s of restoring) {
+      try {
+        const snap = await ta.getScrollback(s.id);
+        TerminalView.restore(s.id, snap);
+      } catch (_) {
+        TerminalView.restore(s.id, null); // 스냅샷 실패해도 라이브 출력은 살린다
+      }
+    }
+    if (restoring.length) {
+      // 리로드 전 활성 세션 우선, 없으면 마지막 세션
+      const saved = localStorage.getItem('ta-active-session');
+      const target = restoring.find((s) => s.id === saved) || restoring[restoring.length - 1];
+      App.activateSession(target.id);
+    }
 
     App.renderAll();
 
@@ -97,7 +133,209 @@ const App = {
     App.renderTopbar();
     App.renderImageStrip();
     App.renderPromptList();
+    App.renderWorkPanel();
     document.getElementById('empty-state').style.display = App.state.sessions.length ? 'none' : 'flex';
+  },
+
+  // ── 시스템 메모리 + 자동 연동 계획 폴링 ──
+  async pollStatus() {
+    try {
+      const m = await ta.getMemory();
+      const el = document.getElementById('mem-indicator');
+      let cls = 'ok';                       // < 60% : 원활 (녹색)
+      if (m.pct >= 85) cls = 'crit';        // ≥ 85% : 위험 (빨강, 점멸)
+      else if (m.pct >= 75) cls = 'warn';   // ≥ 75% : 버거움 (주황)
+      else if (m.pct >= 60) cls = 'mid';    // ≥ 60% : 주의 (노랑)
+      el.className = cls;
+      el.textContent = `메모리 ${m.pct}% 사용중`;
+      el.title = `시스템 메모리 ${m.usedGb} / ${m.totalGb} GB`;
+    } catch (_) { /* 조회 실패는 무시 */ }
+
+    // 작업 패널이 열려 있을 때만 자동 연동 계획 갱신
+    const wp = document.getElementById('work-panel');
+    if (!wp.classList.contains('hidden') && App.state.activeId) {
+      try {
+        const auto = await ta.getAutoPlan(App.state.activeId);
+        const key = App.state.activeId + '|' + JSON.stringify(auto);
+        if (key !== App._autoPlanCache) {
+          App._autoPlanCache = key;
+          App.renderPlanList(auto);
+        }
+      } catch (_) {}
+    }
+  },
+
+  // ── 우측 작업 패널 (진행 계획 + 다음 프롬프트) ──
+  toggleWorkPanel() {
+    const wp = document.getElementById('work-panel');
+    const hidden = wp.classList.toggle('hidden');
+    document.getElementById('resize-work').style.display = hidden ? 'none' : '';
+    localStorage.setItem('ta-work-panel', hidden ? '0' : '1');
+    TerminalView.fitActive();
+    if (!hidden) { App._autoPlanCache = ''; App.renderWorkPanel(); }
+  },
+
+  renderWorkPanel() {
+    const wp = document.getElementById('work-panel');
+    if (wp.classList.contains('hidden')) return;
+    App.renderPlanList(null); // 자동 연동분은 폴링이 채움 (캐시 무효화)
+    App._autoPlanCache = '';
+    App.renderDraftList();
+  },
+
+  // 진행 계획 렌더: 자동 연동(Claude Code) 섹션 + 수동 섹션
+  renderPlanList(auto) {
+    const el = document.getElementById('plan-list');
+    el.textContent = '';
+    const manual = App.state.manualPlans[App.state.activeId] || [];
+    const srcEl = document.getElementById('plan-src');
+    srcEl.textContent = auto && auto.length ? 'Claude Code 연동됨' : '';
+
+    if (auto && auto.length) {
+      const sec = document.createElement('div');
+      sec.className = 'plan-sec';
+      sec.textContent = '자동 (Claude Code)';
+      el.appendChild(sec);
+      for (const it of auto) {
+        const row = document.createElement('div');
+        row.className = 'plan-item auto' + (it.done ? ' done' : '') + (it.active ? ' active' : '');
+        const box = document.createElement('span');
+        box.className = 'pi-box';
+        box.textContent = it.done ? '✓' : (it.active ? '▶' : '○');
+        const t = document.createElement('span');
+        t.className = 'pi-text';
+        t.textContent = it.text;
+        row.append(box, t);
+        el.appendChild(row);
+      }
+    }
+
+    if (manual.length) {
+      const sec = document.createElement('div');
+      sec.className = 'plan-sec';
+      sec.textContent = '수동 항목';
+      el.appendChild(sec);
+      for (const it of manual) {
+        const row = document.createElement('div');
+        row.className = 'plan-item manual' + (it.done ? ' done' : '');
+        const box = document.createElement('span');
+        box.className = 'pi-box';
+        box.textContent = it.done ? '✓' : '○';
+        const t = document.createElement('span');
+        t.className = 'pi-text';
+        t.textContent = it.text;
+        const del = document.createElement('button');
+        del.className = 'pi-del';
+        del.textContent = '✕';
+        del.onclick = (ev) => {
+          ev.stopPropagation();
+          App.saveManualPlan(manual.filter((x) => x.id !== it.id));
+        };
+        row.onclick = () => {
+          it.done = !it.done;
+          App.saveManualPlan(manual);
+        };
+        row.append(box, t, del);
+        el.appendChild(row);
+      }
+    }
+
+    if ((!auto || !auto.length) && !manual.length) {
+      const e = document.createElement('div');
+      e.className = 'plan-empty';
+      e.textContent = 'Claude Code 가 작업 계획을 만들면 자동으로 표시됩니다. 다른 AI 는 아래 입력란으로 항목을 직접 추가하세요.';
+      el.appendChild(e);
+    }
+  },
+
+  addManualItem(input) {
+    const text = input.value.trim();
+    if (!text || !App.state.activeId) return;
+    const list = App.state.manualPlans[App.state.activeId] || [];
+    list.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text, done: false });
+    input.value = '';
+    App.saveManualPlan(list);
+  },
+
+  saveManualPlan(list) {
+    const id = App.state.activeId;
+    if (!id) return;
+    App.state.manualPlans[id] = list;
+    ta.setManualPlan(id, list); // 백엔드 보관 → 웹뷰 리로드에도 유지
+    App._autoPlanCache = '';    // 다음 폴링에서 자동분과 함께 재렌더
+    App.renderPlanList(null);
+  },
+
+  // ── 다음 프롬프트 초안 ──
+  draftKey() {
+    const s = App.state.sessions.find((x) => x.id === App.state.activeId);
+    return s && s.projectId ? s.projectId : '';
+  },
+
+  renderDraftList() {
+    const el = document.getElementById('draft-list');
+    el.textContent = '';
+    const list = App.state.drafts[App.draftKey()] || [];
+    if (!list.length) {
+      const e = document.createElement('div');
+      e.className = 'draft-empty';
+      e.textContent = '다음에 보낼 프롬프트를 미리 작성해 두세요. [입력] 을 누르면 터미널 입력 라인으로 전달됩니다. (멀티라인 지원)';
+      el.appendChild(e);
+      return;
+    }
+    for (const d of list) {
+      const card = document.createElement('div');
+      card.className = 'draft-card';
+      const tx = document.createElement('textarea');
+      tx.value = d.text;
+      tx.placeholder = '프롬프트 작성…';
+      tx.oninput = () => { d.text = tx.value; App.saveDraftsDebounced(); };
+      const actions = document.createElement('div');
+      actions.className = 'draft-actions';
+      const send = document.createElement('button');
+      send.className = 'draft-send';
+      send.textContent = '입력';
+      send.title = '터미널 입력 라인으로 전달 (실행은 터미널에서 Enter)';
+      send.onclick = () => App.sendDraft(d);
+      const del = document.createElement('button');
+      del.className = 'draft-del';
+      del.textContent = '✕';
+      del.onclick = () => {
+        const k = App.draftKey();
+        App.state.drafts[k] = (App.state.drafts[k] || []).filter((x) => x.id !== d.id);
+        ta.setDrafts(k, App.state.drafts[k]);
+        App.renderDraftList();
+      };
+      actions.append(send, del);
+      card.append(tx, actions);
+      el.appendChild(card);
+    }
+  },
+
+  addDraft() {
+    const k = App.draftKey();
+    const list = App.state.drafts[k] || (App.state.drafts[k] = []);
+    list.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: '' });
+    App.renderDraftList();
+    App.saveDraftsDebounced();
+    const areas = document.querySelectorAll('#draft-list textarea');
+    if (areas.length) areas[areas.length - 1].focus();
+  },
+
+  saveDraftsDebounced() {
+    clearTimeout(App._draftSaveTimer);
+    App._draftSaveTimer = setTimeout(() => {
+      const k = App.draftKey();
+      ta.setDrafts(k, App.state.drafts[k] || []);
+    }, 600);
+  },
+
+  // 초안을 터미널 입력 라인으로 전달 (bracketed paste 로 멀티라인 안전 전달)
+  sendDraft(d) {
+    const id = App.state.activeId;
+    if (!id || !d.text.trim()) return;
+    TerminalView.paste(id, d.text);
+    TerminalView.activate(id);
   },
 
   // ── 프롬프트 히스토리 ──
@@ -230,6 +468,38 @@ const App = {
     };
     wireResize('resize-left', sb, 'ta-left-w', 180, 420, true);
     wireResize('resize-right', pp, 'ta-right-w', 200, 460, false);
+
+    // ── 작업 패널 (진행 계획 + 다음 프롬프트) 복원 + 리사이즈 ──
+    const wp = document.getElementById('work-panel');
+    const ww = Number(localStorage.getItem('ta-work-w'));
+    if (ww >= 240) wp.style.width = ww + 'px';
+    if (localStorage.getItem('ta-work-panel') === '1') wp.classList.remove('hidden');
+    document.getElementById('resize-work').style.display = wp.classList.contains('hidden') ? 'none' : '';
+    wireResize('resize-work', wp, 'ta-work-w', 240, 560, false);
+
+    // 계획/초안 사이 가로 분할선: 드래그로 상단(계획) 높이 조절
+    const planPanel = document.getElementById('plan-panel');
+    const ph = Number(localStorage.getItem('ta-plan-h'));
+    if (ph >= 90) planPanel.style.height = ph + 'px';
+    document.getElementById('work-divider').onmousedown = (e) => {
+      e.preventDefault();
+      const handle = e.target;
+      const startY = e.clientY, startH = planPanel.offsetHeight;
+      handle.classList.add('active');
+      const move = (ev) => {
+        const max = wp.offsetHeight - 130; // 하단 최소 공간 확보
+        const h = Math.max(90, Math.min(max, startH + (ev.clientY - startY)));
+        planPanel.style.height = h + 'px';
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        handle.classList.remove('active');
+        localStorage.setItem('ta-plan-h', planPanel.offsetHeight);
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    };
   },
 
   // ── 프리셋 드래그 정렬 ──
@@ -363,8 +633,16 @@ const App = {
 
   activateSession(id) {
     App.state.activeId = id;
+    localStorage.setItem('ta-active-session', id); // 웹뷰 리로드 복구 시 활성 세션 유지용
     TerminalView.activate(id);
     App.ackIfDone(id);
+    App._autoPlanCache = ''; // 세션 전환 → 계획 패널 재렌더 유도
+    if (!(id in App.state.manualPlans)) {
+      // 백엔드 보관분 로드 (웹뷰 리로드 후에도 수동 항목 유지)
+      ta.getManualPlan(id)
+        .then((items) => { App.state.manualPlans[id] = items || []; App.renderWorkPanel(); })
+        .catch(() => {});
+    }
     App.renderAll();
   },
 
@@ -383,6 +661,7 @@ const App = {
     App.state.sessions = App.state.sessions.filter((s) => s.id !== id);
     delete App.state.images[id];
     delete App.state.prompts[id];
+    delete App.state.manualPlans[id];
     delete App._inputBufs[id];
     TerminalView.dispose(id);
     if (App.state.activeId === id) {
@@ -424,6 +703,7 @@ const App = {
     TerminalView.paste(id, quoted + ' ');
     if (!App.state.images[id]) App.state.images[id] = [];
     App.state.images[id].unshift({ path, src: ta.fileSrc(path) });
+    if (App.state.images[id].length > 12) App.state.images[id].length = 12; // 표시 상한만큼만 보관
     App.renderImageStrip();
   },
 

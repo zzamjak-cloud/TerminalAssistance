@@ -25,18 +25,37 @@
       <div id="topbar">
         <div id="active-info">세션 없음</div>
         <div id="topbar-actions">
+          <div id="mem-indicator" title="시스템 메모리 사용률"></div>
           <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
+          <button id="btn-toggle-work" title="진행 계획·다음 프롬프트 패널 토글">◧ 작업</button>
           <button id="btn-toggle-prompts" title="프롬프트 히스토리 패널 토글">☰ 프롬프트</button>
         </div>
       </div>
       <div id="preset-bar"></div>
-      <div id="term-area">
-        <div id="empty-state">
-          <h2>프로젝트를 등록하고 터미널을 시작하세요</h2>
-          <p>좌측 하단 <b>+ 프로젝트 등록</b> → 프로젝트 클릭 한 번으로 해당 경로의 터미널이 열립니다.<br>
-          이미지는 <b>Cmd/Ctrl+V</b> 붙여넣기 또는 <b>드래그앤드롭</b>으로 첨부됩니다.<br>
-          <b>Cmd/Ctrl+1~9</b> 세션 전환 · <b>Cmd/Ctrl+T</b> 새 세션</p>
+      <div id="term-row">
+        <div id="term-area">
+          <div id="empty-state">
+            <h2>프로젝트를 등록하고 터미널을 시작하세요</h2>
+            <p>좌측 하단 <b>+ 프로젝트 등록</b> → 프로젝트 클릭 한 번으로 해당 경로의 터미널이 열립니다.<br>
+            이미지는 <b>Cmd/Ctrl+V</b> 붙여넣기 또는 <b>드래그앤드롭</b>으로 첨부됩니다.<br>
+            <b>Cmd/Ctrl+1~9</b> 세션 전환 · <b>Cmd/Ctrl+T</b> 새 세션</p>
+          </div>
         </div>
+        <div class="resize-handle" id="resize-work" title="드래그로 너비 조절"></div>
+        <aside id="work-panel" class="hidden">
+          <section id="plan-panel">
+            <div class="wp-head"><span>진행 계획</span><span class="wp-sub" id="plan-src"></span></div>
+            <div id="plan-list"></div>
+            <div id="plan-add-row">
+              <input type="text" id="plan-add-input" placeholder="수동 항목 추가 후 Enter">
+            </div>
+          </section>
+          <div id="work-divider" title="드래그로 높이 조절"></div>
+          <section id="draft-panel">
+            <div class="wp-head"><span>다음 프롬프트</span><button id="btn-draft-add">+ 초안</button></div>
+            <div id="draft-list"></div>
+          </section>
+        </aside>
       </div>
       <div id="image-strip"></div>
     </main>
@@ -60,6 +79,7 @@
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
   <script src="vendor/addon-web-links.js"></script>
+  <script src="vendor/addon-webgl.js"></script>
   <script src="api.js"></script>
   <script src="dnd.js"></script>
   <script src="terminal-view.js"></script>

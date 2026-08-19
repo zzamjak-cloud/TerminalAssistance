@@ -35,6 +35,19 @@
     resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
     closeSession: (id) => invoke('close_session', { id }),
     ackSession: (id) => invoke('ack_session', { id }),
+    // 웹뷰 리로드/크래시 복구용 스크롤백 스냅샷 { data, off }
+    getScrollback: (id) => invoke('get_scrollback', { id }),
+    // 출력 소비 확인 (flow control) — xterm 기록 완료 바이트 수
+    ackData: (id, bytes) => invoke('ack_data', { id, bytes }),
+
+    // 시스템 메모리 현황 { pct, usedGb, totalGb }
+    getMemory: () => invoke('get_memory'),
+    // 진행 계획: Claude Code todo 자동 연동분(null 가능) / 수동 항목
+    getAutoPlan: (id) => invoke('get_auto_plan', { id }),
+    getManualPlan: (id) => invoke('get_manual_plan', { id }),
+    setManualPlan: (id, items) => invoke('set_manual_plan', { id, items }),
+    // '다음 프롬프트' 초안 (프로젝트별, 키: projectId 또는 "")
+    setDrafts: (key, drafts) => invoke('set_drafts', { key, drafts }),
 
     checkUpdate: () => invoke('check_update'),
     installUpdate: () => invoke('install_update'),

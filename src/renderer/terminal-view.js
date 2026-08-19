@@ -1,7 +1,9 @@
 // xterm 인스턴스 관리. 세션별 holder 를 display 토글로 전환 —
 // 비활성 세션도 xterm 버퍼가 유지되므로 전환 시 리플로우/재렌더 비용이 없다.
+// WebGL 렌더러는 활성 세션에만 부착한다 — 브라우저의 WebGL 컨텍스트 수 제한(~16) 때문에
+// 세션이 많아도 컨텍스트를 1개만 쓰고, 비활성 세션은 어차피 화면에 없으므로 손해가 없다.
 const TerminalView = {
-  views: new Map(), // sessionId → { term, fit, holder }
+  views: new Map(), // sessionId → { term, fit, holder, webgl, frozen, queue }
   area: null,
 
   init() {
@@ -9,7 +11,8 @@ const TerminalView = {
     window.addEventListener('resize', () => this.fitActive());
   },
 
-  create(session, fontSize) {
+  // opts.frozen: 복구(스크롤백 주입) 완료 전까지 라이브 출력을 큐에 보관
+  create(session, fontSize, opts) {
     const holder = document.createElement('div');
     holder.className = 'term-holder';
     this.area.appendChild(holder);
@@ -55,8 +58,61 @@ const TerminalView = {
       return true;
     });
 
-    this.views.set(session.id, { term, fit, holder });
+    this.views.set(session.id, {
+      term, fit, holder,
+      webgl: null,
+      frozen: !!(opts && opts.frozen),
+      queue: [] // frozen 동안 도착한 ta:data 페이로드
+    });
     return term;
+  },
+
+  // ── 출력 수신 (flow control 포함) ──
+  // 백엔드 ta:data 페이로드를 처리한다. frozen(복구 중)이면 큐에 보관.
+  // xterm 이 청크를 소비 완료하면 ack 를 보내 백엔드 emit 을 재개시킨다.
+  feed(p) {
+    const v = this.views.get(p.sessionId);
+    if (!v) return;
+    if (v.frozen) { v.queue.push(p); return; }
+    v.term.write(p.data, () => ta.ackData(p.sessionId, p.bytes));
+  },
+
+  // 복구: 백엔드 스크롤백 스냅샷 주입 후, 스냅샷 이후(off 기준) 도착분만 이어붙인다
+  restore(id, snap) {
+    const v = this.views.get(id);
+    if (!v) return;
+    if (snap && snap.data) v.term.write(snap.data);
+    for (const p of v.queue) {
+      if (!snap || p.off >= snap.off) {
+        v.term.write(p.data, () => ta.ackData(id, p.bytes));
+      }
+      // off < snap.off 인 이벤트는 스냅샷에 이미 포함된 중복 → 버림 (ack 도 하지 않음)
+    }
+    v.queue = [];
+    v.frozen = false;
+  },
+
+  // WebGL 렌더러 부착/해제 — 실패(WebGL 미지원·컨텍스트 소실) 시 DOM 렌더러로 자동 폴백
+  _attachWebgl(v) {
+    if (v.webgl || typeof WebglAddon === 'undefined') return;
+    try {
+      const gl = new WebglAddon.WebglAddon();
+      gl.onContextLoss(() => {
+        try { gl.dispose(); } catch (_) {}
+        v.webgl = null;
+      });
+      v.term.loadAddon(gl);
+      v.webgl = gl;
+    } catch (_) {
+      v.webgl = null;
+    }
+  },
+
+  _detachWebgl(v) {
+    if (v.webgl) {
+      try { v.webgl.dispose(); } catch (_) {}
+      v.webgl = null;
+    }
   },
 
   // 프롬프트 제출 지점에 마커 등록 + 구분선 데코레이션 (히스토리 점프의 앵커)
@@ -82,12 +138,16 @@ const TerminalView = {
   },
 
   activate(id) {
-    for (const [sid, v] of this.views) v.holder.classList.toggle('active', sid === id);
+    for (const [sid, v] of this.views) {
+      v.holder.classList.toggle('active', sid === id);
+      if (sid !== id) this._detachWebgl(v); // WebGL 컨텍스트는 활성 세션 1개만 유지
+    }
     const v = this.views.get(id);
     if (v) {
-      // display 전환 직후엔 크기가 0 → 다음 프레임에 fit
+      // display 전환 직후엔 크기가 0 → 다음 프레임에 fit (WebGL 부착도 가시 상태에서)
       requestAnimationFrame(() => {
         try { v.fit.fit(); } catch (_) {}
+        this._attachWebgl(v);
         ta.resize(id, v.term.cols, v.term.rows);
         v.term.focus();
       });
@@ -103,9 +163,9 @@ const TerminalView = {
     }
   },
 
-  write(id, data) {
+  write(id, data, onDone) {
     const v = this.views.get(id);
-    if (v) v.term.write(data);
+    if (v) v.term.write(data, onDone);
   },
 
   // xterm 의 paste 경로 사용 (bracketed paste 처리 포함) → onData → pty
@@ -122,6 +182,7 @@ const TerminalView = {
   dispose(id) {
     const v = this.views.get(id);
     if (v) {
+      this._detachWebgl(v);
       v.term.dispose();
       v.holder.remove();
       this.views.delete(id);

@@ -1,6 +1,6 @@
 [package]
 name = "terminal-assistance"
-version = "0.2.1"
+version = "0.3.0"
 description = "AI 시대의 멀티 프로젝트 터미널 워크스페이스"
 authors = ["zzamjak-cloud"]
 license = "MIT"
@@ -20,6 +20,12 @@ portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 시스템 메모리 현황 표시용 (메모리 조회만 사용)
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+
+# WebView2 렌더러 크래시 자동 복구용 (wry 가 쓰는 버전과 일치해야 COM 타입이 호환됨)
+[target."cfg(windows)".dependencies]
+webview2-com = "0.38"
 
 [profile.release]
 # 배포 바이너리 최소화

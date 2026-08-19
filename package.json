@@ -1,6 +1,6 @@
 {
   "name": "terminal-assistance",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "AI 시대의 멀티 프로젝트 터미널 워크스페이스 — 프로젝트 전환·명령 프리셋·세션 상태 시각화·이미지 첨부",
   "scripts": {
@@ -13,6 +13,7 @@
     "@tauri-apps/cli": "^2.0.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^5.5.0"
   }
 }

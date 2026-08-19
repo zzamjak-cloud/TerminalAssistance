@@ -53,6 +53,13 @@ impl Default for Settings {
     }
 }
 
+/// '다음 프롬프트' 초안 — 프로젝트별로 영속화 (키: projectId, 홈 세션은 "")
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Draft {
+    pub id: String,
+    pub text: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct StoreData {
     #[serde(default)]
@@ -61,6 +68,8 @@ pub struct StoreData {
     pub presets: Vec<Preset>,
     #[serde(default)]
     pub settings: Settings,
+    #[serde(default)]
+    pub drafts: std::collections::HashMap<String, Vec<Draft>>,
 }
 
 pub struct Store {
@@ -71,10 +80,17 @@ pub struct Store {
 impl Store {
     pub fn load(config_dir: PathBuf) -> Self {
         let file = config_dir.join("ta-config.json");
-        let data = fs::read_to_string(&file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let data = match fs::read_to_string(&file) {
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(d) => d,
+                Err(_) => {
+                    // 손상된 설정을 조용히 버리지 않는다 — 백업해 두면 수동 복구 가능
+                    let _ = fs::copy(&file, file.with_extension("json.corrupt"));
+                    StoreData::default()
+                }
+            },
+            Err(_) => StoreData::default(),
+        };
         Store { file, data }
     }
 
@@ -82,8 +98,12 @@ impl Store {
         if let Some(dir) = self.file.parent() {
             let _ = fs::create_dir_all(dir);
         }
+        // 원자적 저장: 임시 파일에 완성한 뒤 rename — 저장 도중 크래시로 인한 설정 파일 손상 방지
         if let Ok(json) = serde_json::to_string_pretty(&self.data) {
-            let _ = fs::write(&self.file, json);
+            let tmp = self.file.with_extension("json.tmp");
+            if fs::write(&tmp, json).is_ok() {
+                let _ = fs::rename(&tmp, &self.file);
+            }
         }
     }
 }
