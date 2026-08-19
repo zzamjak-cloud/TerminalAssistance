@@ -68,7 +68,7 @@ button:hover { border-color: var(--accent); }
 .project-path { font-size: 10px; color: var(--fg-dim); padding: 0 6px 2px 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-actions { display: none; gap: 4px; }
 .project-row:hover .project-actions { display: flex; }
-.project-actions button { padding: 0 6px; font-size: 11px; border: none; background: none; color: var(--fg-dim); }
+.project-actions button { padding: 0 6px; font-size: 15px; line-height: 1; border: none; background: none; color: var(--fg-dim); }
 .project-actions button:hover { color: var(--fg); }
 
 .session-row {
