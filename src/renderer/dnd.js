@@ -10,6 +10,7 @@ function makeSortable(opts) {
     const src = e.target.closest(opts.itemSelector);
     if (!src || !c.contains(src)) return;
     if (opts.ignore && e.target.closest(opts.ignore)) return; // 버튼 등 컨트롤 위에선 드래그 금지
+    e.preventDefault(); // 드래그 중 텍스트 선택(회색 박스) 방지 — click 이벤트에는 영향 없음
 
     const startX = e.clientX, startY = e.clientY;
     let dragging = false, indicator = null, target = null, before = false;

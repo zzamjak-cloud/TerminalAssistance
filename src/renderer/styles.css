@@ -42,6 +42,8 @@ button:hover { border-color: var(--accent); }
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  -webkit-user-select: none;
+  user-select: none;
 }
 #sidebar-head {
   display: flex; justify-content: space-between; align-items: center;
@@ -90,11 +92,18 @@ button:hover { border-color: var(--accent); }
 .status-dot.done { background: var(--done); box-shadow: 0 0 6px var(--done); }
 .status-dot.exited { background: var(--exited); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-.done-badge {
-  background: var(--done); color: #08131f;
-  font-size: 9px; font-weight: 700;
-  border-radius: 8px; padding: 1px 6px;
+/* 세션 상태 한글 태그 */
+.status-tag {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 8px;
+  color: var(--fg-dim);
+  background: rgba(139, 145, 163, .12);
 }
+.status-tag.running { color: var(--running); background: rgba(63, 185, 80, .15); }
+.status-tag.done { color: var(--done); background: rgba(88, 166, 255, .18); font-weight: 700; }
+.status-tag.exited { color: var(--exited); background: rgba(248, 81, 73, .15); }
 
 #sidebar-foot { padding: 10px; display: flex; gap: 6px; border-top: 1px solid var(--border); }
 #btn-add-project { flex: 1; }

@@ -6,6 +6,14 @@ function statusDot(status) {
   return d;
 }
 
+// 세션 상태를 한글 태그로 표시 (원형 점보다 직관적)
+function statusTag(status) {
+  const t = document.createElement('span');
+  t.className = 'status-tag ' + status;
+  t.textContent = { idle: '대기중', running: '진행중', done: '완료', exited: '종료됨' }[status] || status;
+  return t;
+}
+
 // 폴딩 상태는 렌더러 로컬 설정 (localStorage)
 const Collapsed = {
   set: new Set(JSON.parse(localStorage.getItem('ta-collapsed') || '[]')),
@@ -38,17 +46,11 @@ function renderSidebar() {
   const sessionRow = (s) => {
     const row = document.createElement('div');
     row.className = 'session-row' + (s.id === activeId ? ' active' : '');
-    row.appendChild(statusDot(s.status));
     const t = document.createElement('span');
     t.className = 'session-title';
     t.textContent = s.title;
     row.appendChild(t);
-    if (s.status === 'done') {
-      const b = document.createElement('span');
-      b.className = 'done-badge';
-      b.textContent = '완료';
-      row.appendChild(b);
-    }
+    row.appendChild(statusTag(s.status));
     const x = document.createElement('button');
     x.className = 'session-close';
     x.textContent = '✕';
@@ -110,8 +112,8 @@ function renderSidebar() {
     actions.appendChild(addBtn);
     actions.appendChild(editBtn);
     row.appendChild(actions);
-    // 클릭 = 이 프로젝트의 세션으로 전환(없으면 생성). 경로는 호버 툴팁으로만 표시
-    row.onclick = () => App.openProject(p.id);
+    // 클릭 = 폴딩 접기/펼치기 (세션 추가는 ＋ 버튼으로만). 경로는 호버 툴팁으로만 표시
+    row.onclick = () => { Collapsed.toggle(p.id); renderSidebar(); };
     row.title = p.path;
     box.appendChild(row);
 

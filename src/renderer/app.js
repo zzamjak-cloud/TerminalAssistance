@@ -320,7 +320,7 @@ const App = {
     const s = App.state.sessions.find((x) => x.id === App.state.activeId);
     if (!s) { el.textContent = '세션 없음'; return; }
     el.textContent = '';
-    el.appendChild(statusDot(s.status));
+    el.appendChild(statusTag(s.status));
     const t = document.createElement('span');
     t.textContent = s.title;
     el.appendChild(t);
@@ -371,12 +371,6 @@ const App = {
   activateByIndex(i) {
     const s = App.state.sessions[i];
     if (s) App.activateSession(s.id);
-  },
-
-  openProject(projectId) {
-    const existing = App.state.sessions.find((s) => s.projectId === projectId && s.status !== 'exited');
-    if (existing) App.activateSession(existing.id);
-    else App.createSession(projectId);
   },
 
   newSessionInActiveProject() {
