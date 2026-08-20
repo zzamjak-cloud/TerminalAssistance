@@ -31,6 +31,8 @@
     }),
 
     createSession: (projectId) => invoke('create_session', { projectId: projectId || null }),
+    // 프롬프트 히스토리 동기화 — 앱 종료 시 세션 스냅샷에 포함돼 재시작 후 복원됨
+    setSessionPrompts: (id, prompts) => invoke('set_session_prompts', { id, prompts }),
     write: (id, data) => invoke('write_session', { id, data }),
     resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
     closeSession: (id) => invoke('close_session', { id }),

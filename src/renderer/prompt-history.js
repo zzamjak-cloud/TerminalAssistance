@@ -4,6 +4,23 @@ const PROMPT_HISTORY_MAX = 300; // 세션당 보관 상한
 const PROMPT_PREVIEW_LEN = 90;  // 목록 표시용 절단 길이
 
 Object.assign(App, {
+  _promptSyncTimers: {}, // sessionId → 디바운스 타이머 (백엔드 동기화용)
+
+  // 프롬프트 히스토리를 백엔드에 동기화 — 앱 종료 시 세션 스냅샷에 포함돼
+  // 재시작 후에도 히스토리가 유지된다. 커밋은 즉시(0), 삭제는 디바운스(연타 대비).
+  // 즉시 보내지 않으면 명령 직후 앱을 닫았을 때 마지막 프롬프트가 유실된다.
+  syncPrompts(id, delayMs = 500) {
+    if (!id) return;
+    clearTimeout(App._promptSyncTimers[id]);
+    App._promptSyncTimers[id] = setTimeout(() => {
+      delete App._promptSyncTimers[id];
+      const list = (App.state.prompts[id] || []).map((it) => ({
+        n: it.n, text: it.text, ts: it.ts.getTime(), line: it.line
+      }));
+      ta.setSessionPrompts(id, list).catch(() => {}); // 동기화 실패는 치명적이지 않음
+    }, delayMs);
+  },
+
   trackInput(id, data) {
     let buf = App._inputBufs[id] || '';
     // 브래킷 붙여넣기 래퍼는 제거하고 내용은 유지
@@ -30,12 +47,16 @@ Object.assign(App, {
     if (text.length < 2) return; // 단타 엔터/한 글자 명령은 노이즈로 간주
     const marker = TerminalView.addPromptMarker(id);
     const list = App.state.prompts[id] || (App.state.prompts[id] = []);
+    // n: 마지막 항목 +1 (단조 증가) — length+1 은 삭제·트리밍 후 재사용돼
+    // deletePrompt/ArmedConfirm 키가 엉뚱한 항목과 충돌한다
+    const n = (list.length ? list[list.length - 1].n : 0) + 1;
     // line: 커밋 시점의 절대 버퍼 라인 — 마커가 폐기됐을 때 텍스트 검색 폴백의 기준점
-    list.push({ n: list.length + 1, text, ts: new Date(), marker, line: marker ? marker.line : -1 });
+    list.push({ n, text, ts: new Date(), marker, line: marker ? marker.line : -1 });
     if (list.length > PROMPT_HISTORY_MAX) {
       const old = list.shift();
       if (old.marker) { try { old.marker.dispose(); } catch (_) {} }
     }
+    App.syncPrompts(id, 0); // 커밋은 즉시 동기화 — 직후 앱 종료 시 유실 방지
     if (id === App.state.activeId) App.renderPromptList();
   },
 
@@ -45,6 +66,7 @@ Object.assign(App, {
     if (idx >= 0) {
       const [old] = list.splice(idx, 1);
       if (old.marker) { try { old.marker.dispose(); } catch (_) {} }
+      App.syncPrompts(sid);
     }
     if (sid === App.state.activeId) App.renderPromptList(true);
   },

@@ -23,6 +23,23 @@ const App = {
       projects: st.projects, presets: st.presets, settings: st.settings, sessions: st.sessions,
       drafts: st.drafts || {}, platform: st.platform || ''
     });
+    // 사이드바 제목 우측 버전 표기
+    document.getElementById('app-version').textContent = st.version ? 'v' + st.version : '';
+
+    // 앱 재시작 복원: 백엔드가 보관한 프롬프트 히스토리 시드.
+    // 스냅샷은 외부 파일이므로 원소 단위로 검증 — 손상 항목 하나가 렌더 전체를 죽이지 않게.
+    // xterm 마커는 소실되고 이전 버퍼 기준 line 도 무의미 → 텍스트 검색 폴백으로만 점프.
+    for (const [sid, list] of Object.entries(st.prompts || {})) {
+      if (!Array.isArray(list)) continue;
+      const items = list
+        .filter((it) => it && typeof it.text === 'string' && Number.isFinite(it.n))
+        .map((it) => ({
+          n: it.n, text: it.text,
+          ts: Number.isFinite(it.ts) ? new Date(it.ts) : new Date(0),
+          marker: null, line: -1
+        }));
+      if (items.length) App.state.prompts[sid] = items;
+    }
 
     // 웹뷰 리로드/크래시 복구: 백엔드에 살아있는 세션의 터미널 뷰를 먼저 frozen 으로 만들어
     // 리스너 등록 후 도착하는 라이브 출력을 큐에 담아 두고, 스크롤백 주입 뒤 이어붙인다.
@@ -58,7 +75,9 @@ const App = {
     setInterval(() => App.pollStatus(), 2000);
     App.pollStatus();
     document.getElementById('btn-clear-prompts').onclick = () => {
+      if (!App.state.activeId) return;
       delete App.state.prompts[App.state.activeId];
+      App.syncPrompts(App.state.activeId, 0); // 비운 상태를 백엔드 스냅샷에 즉시 반영
       App.renderPromptList();
     };
     if (localStorage.getItem('ta-prompt-panel') === '1') {
@@ -217,6 +236,8 @@ const App = {
     delete App.state.images[id];
     delete App.state.prompts[id];
     delete App._inputBufs[id];
+    clearTimeout(App._promptSyncTimers[id]); // 닫힌 세션으로의 늦은 동기화 IPC 방지
+    delete App._promptSyncTimers[id];
     TerminalView.dispose(id);
     if (App.state.activeId === id) {
       const next = App.state.sessions[App.state.sessions.length - 1];

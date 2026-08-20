@@ -11,14 +11,21 @@
 //      OS 파이프 버퍼가 차게 만들고, 결국 자식 프로세스의 write 가 블록된다
 // 또한 emit 한 텍스트를 세션별 링버퍼(scrollback)에 보관해,
 // 웹뷰가 크래시/리로드돼도 get_scrollback 으로 화면을 복원할 수 있다.
+//
+// 앱 재시작 복원: 앱 종료 시 세션별 스냅샷(메타+프롬프트 히스토리+스크롤백)을
+// 앱 데이터 디렉토리 sessions/ 에 저장하고, 다음 실행에서 같은 id 로 새 셸을 만들어
+// 이전 스크롤백을 시드한다. 살아있던 셸 프로세스 자체는 되살릴 수 없으므로
+// "같은 위치에서 새 셸 + 이전 화면 기록"이 복원의 범위다.
+// 오래된 스냅샷(7일)은 해당 세션과 함께 자동 제거된다.
 use crate::util::plock;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 const BUSY_HOLD_MS: u128 = 800; // 마지막 출력 후 이 시간 동안은 busy 유지
@@ -31,6 +38,55 @@ const FLOW_HIGH: u64 = 512 * 1024; // 미확인(un-acked) 바이트 상한 — �
 const FLOW_STALL_MS: u64 = 3000; // ack 유실(웹뷰 리로드 등) 시 이 시간 후 강제 재개
 const PENDING_CAP: usize = 8 * 1024 * 1024; // pending 상한 — 넘으면 PTY read 중단(OS 백프레셔)
 const EMIT_CHUNK: usize = 512 * 1024; // 이벤트 1건당 최대 크기 — 스톨 해제 직후 대형 IPC 폭탄 방지
+
+// 마지막 저장(=앱 종료) 후 이 시간이 지난 스냅샷은 세션과 함께 자동 제거.
+// mtime 기준이므로 "7일간 앱을 쓰지 않으면 제거"이며, 계속 쓰는 세션은 만료되지 않는다(의도).
+const SNAPSHOT_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
+// 스냅샷 저장·복원 시드 공용 상한 — xterm 은 어차피 5000줄만 보관하므로
+// 2MB 전체를 저장/주입하면 종료 지연·파싱 비용만 들고 대부분 잘려나간다. 뒤쪽(최신)만 유지.
+// (디스크에 남는 평문 터미널 출력의 노출 표면을 줄이는 효과도 있다)
+const RESTORE_SEED_CAP: usize = 512 * 1024;
+
+/// 현재 시각 (unix millis) — 세션 생성 순서 보존용
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
+/// 뒤쪽(최신) cap 바이트만 남기되, 시작점을 직전 개행 다음으로 스냅해
+/// ESC 시퀀스·UTF-8 문자가 중간에서 잘린 채 남는 것을 막는다
+fn tail_snap(bytes: &[u8], cap: usize) -> &[u8] {
+    if bytes.len() <= cap {
+        return bytes;
+    }
+    let start = bytes.len() - cap;
+    match bytes[start..].iter().position(|&b| b == b'\n') {
+        Some(nl) => &bytes[start + nl + 1..],
+        None => &bytes[start..], // 개행이 없으면 그대로 — 잔여 절단은 lossy 변환이 흡수
+    }
+}
+
+// 시드 앞의 이전 세션 기록이 켜 둔 터미널 모드를 강제 해제 — alt buffer(?1049)·
+// 마우스 트래킹(?1000/1002/1003/1006)·bracketed paste(?2004)가 남으면 새 셸이
+// 대체 버퍼에 갇히거나 드래그 선택이 깨진다. 이어서 wraparound·커서 표시·속성 복구.
+const SEED_MODE_RESET: &str =
+    "\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[m";
+
+/// 앱 종료 시 디스크에 저장되는 세션 스냅샷 (다음 실행에서 복원)
+#[derive(Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    pub id: String,
+    #[serde(rename = "projectId")]
+    pub project_id: Option<String>,
+    pub title: String,
+    pub cwd: String,
+    #[serde(rename = "createdAtMs", default)]
+    pub created_at_ms: u64,
+    /// 프론트가 동기화해 둔 프롬프트 히스토리 (구조는 프론트 소관 — 백엔드는 통과만)
+    #[serde(default)]
+    pub prompts: serde_json::Value,
+    #[serde(default)]
+    pub scrollback: String,
+}
 
 /// 세션 상태. serde 직렬화 결과는 소문자 문자열 — 프론트의 기존 비교 문자열과 동일
 #[derive(Serialize, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +108,7 @@ pub struct SessionMeta {
     pub last_output: Instant,
     pub busy_since: Instant,
     pub exited: bool,
+    pub created_at_ms: u64, // 생성 시각 — 목록 정렬·재시작 복원 순서 보존용
 }
 
 #[derive(Serialize, Clone)]
@@ -88,7 +145,7 @@ struct SessionIo {
 struct ChanInner {
     pending: Vec<u8>,    // 리더가 쌓고 이미터가 가져가는 미전송 출력
     scrollback: Vec<u8>, // 웹뷰 복구용 최근 출력 (emit 된 텍스트 기준, CAP 로 잘림)
-    total: u64,          // 지금까지 emit 한 누적 바이트 — 복구 시 중복 제거 기준점(off)
+    total: u64,          // off 발급용 논리 오프셋 (재시작 복원 시드 포함) — 복구 시 중복 제거 기준점
     outstanding: u64,    // emit 했지만 프론트가 아직 ack 하지 않은 바이트
     closed: bool,        // 셸 종료 또는 사용자 닫기
 }
@@ -118,7 +175,10 @@ pub struct PtyManager {
     ios: Mutex<HashMap<String, Arc<Mutex<SessionIo>>>>,
     children: Mutex<HashMap<String, Box<dyn Child + Send + Sync>>>,
     chans: Mutex<HashMap<String, Arc<SessionChan>>>,
-    seq: AtomicU64,
+    /// 세션별 프롬프트 히스토리 (프론트가 동기화, 앱 종료 시 스냅샷에 포함)
+    prompts: Mutex<HashMap<String, serde_json::Value>>,
+    /// 세션 스냅샷 저장 디렉토리 (init_snapshots 에서 설정)
+    snap_dir: Mutex<Option<PathBuf>>,
 }
 
 fn default_shell(override_shell: &str) -> String {
@@ -168,7 +228,8 @@ impl PtyManager {
             ios: Mutex::new(HashMap::new()),
             children: Mutex::new(HashMap::new()),
             chans: Mutex::new(HashMap::new()),
-            seq: AtomicU64::new(1),
+            prompts: Mutex::new(HashMap::new()),
+            snap_dir: Mutex::new(None),
         }
     }
 
@@ -203,6 +264,8 @@ impl PtyManager {
         });
     }
 
+    /// seed 가 Some 이면 앱 재시작 복원 — 스냅샷의 id·생성시각·메타를 재사용하고
+    /// 이전 스크롤백을 시드한다 (project_id/cwd/title 인자는 무시됨).
     pub fn create(
         &self,
         app: AppHandle,
@@ -210,12 +273,22 @@ impl PtyManager {
         cwd: Option<String>,
         shell_override: &str,
         title: Option<String>,
+        seed: Option<SessionSnapshot>,
     ) -> Result<SessionInfo, String> {
-        let id = format!("s{}", self.seq.fetch_add(1, Ordering::Relaxed));
+        // id 는 재시작을 넘어 유지되는 영속 id (스냅샷 파일명·프론트 localStorage 키로 사용)
+        let (id, created_at_ms, project_id, cwd, title) = match &seed {
+            Some(s) => (s.id.clone(), s.created_at_ms, s.project_id.clone(), Some(s.cwd.clone()), Some(s.title.clone())),
+            None => (crate::store::new_id(), now_ms(), project_id, cwd, title),
+        };
         let shell = default_shell(shell_override);
-        let cwd = cwd.unwrap_or_else(|| {
-            std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_else(|_| ".".into())
-        });
+        let home = || std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_else(|_| ".".into());
+        let mut cwd = cwd.unwrap_or_else(home);
+        // 저장된 cwd 가 사라졌으면(폴더 삭제·드라이브 미연결) 홈으로 폴백 —
+        // spawn 실패로 세션과 복원 기록이 통째로 유실되는 것을 막는다
+        let cwd_lost = !std::path::Path::new(&cwd).is_dir();
+        if cwd_lost {
+            cwd = home();
+        }
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -254,10 +327,35 @@ impl PtyManager {
             last_output: now - Duration::from_secs(10), // 시작 직후 프롬프트 에코를 busy 로 오인하지 않게
             busy_since: now,
             exited: false,
+            created_at_ms,
         };
         let info = meta.info();
 
         let chan = Arc::new(SessionChan::new());
+        // 재시작 복원: 이전 스크롤백을 시드하고 구분 배너를 붙인다.
+        // total 을 시드 길이로 시작시키면 라이브 emit 의 off 가 그 뒤에서 시작되므로
+        // 프론트의 off 기반 중복 제거(웹뷰 복구 경로)가 그대로 동작한다.
+        if let Some(s) = &seed {
+            if !s.scrollback.is_empty() {
+                let mut g = plock(&chan.inner);
+                g.scrollback.extend_from_slice(tail_snap(s.scrollback.as_bytes(), RESTORE_SEED_CAP));
+                // 이전 기록이 켜 둔 터미널 모드 해제 후 구분 배너
+                g.scrollback.extend_from_slice(SEED_MODE_RESET.as_bytes());
+                g.scrollback.extend_from_slice(
+                    "\r\n\x1b[2m─── 앱 재시작 · 위는 이전 세션 기록 (셸은 새로 시작됨) ───\x1b[0m\r\n".as_bytes(),
+                );
+                if cwd_lost {
+                    g.scrollback.extend_from_slice(
+                        "\x1b[33m원래 작업 폴더를 찾을 수 없어 홈에서 시작합니다.\x1b[0m\r\n".as_bytes(),
+                    );
+                }
+                g.scrollback.extend_from_slice(b"\r\n");
+                g.total = g.scrollback.len() as u64;
+            }
+            if !s.prompts.is_null() {
+                plock(&self.prompts).insert(id.clone(), s.prompts.clone());
+            }
+        }
         plock(&self.metas).insert(id.clone(), meta);
         plock(&self.ios).insert(
             id.clone(),
@@ -423,17 +521,30 @@ impl PtyManager {
     }
 
     pub fn close(&self, id: &str) {
-        if let Some(chan) = plock(&self.chans).remove(id) {
+        // 맵 락은 remove 즉시 놓는다 (가드를 문장 스코프로 떨어뜨림) —
+        // 락을 쥔 채 chan 통지·kill·파일 삭제를 하면 다른 세션의 생성/닫기가 그 뒤에서 대기한다
+        let chan = plock(&self.chans).remove(id);
+        if let Some(chan) = chan {
             let mut g = plock(&chan.inner);
             g.closed = true;
             chan.cv.notify_all();
         }
         // kill 은 세션 io 락과 무관하게 수행 — write 가 블록된 세션도 즉시 해제된다
-        if let Some(mut child) = plock(&self.children).remove(id) {
+        let child = plock(&self.children).remove(id);
+        if let Some(mut child) = child {
             let _ = child.kill();
         }
         plock(&self.ios).remove(id);
-        plock(&self.metas).remove(id);
+        let existed = plock(&self.metas).remove(id).is_some();
+        plock(&self.prompts).remove(id);
+        // 사용자가 닫은 세션은 스냅샷도 함께 제거 — 다음 실행에서 되살아나지 않게.
+        // 실존했던 세션 id 에만 삭제를 허용해 렌더러발 임의 경로("../..") 삭제를 차단한다
+        let dir = plock(&self.snap_dir).clone();
+        if existed {
+            if let Some(dir) = dir {
+                let _ = fs::remove_file(dir.join(format!("{}.json", id)));
+            }
+        }
     }
 
     /// 웹뷰 복구용 스크롤백 스냅샷.
@@ -474,6 +585,103 @@ impl PtyManager {
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
-        plock(&self.metas).values().map(|m| m.info()).collect()
+        // HashMap 순회 순서는 무작위 → 생성 시각으로 정렬해 사이드바 순서를 안정화
+        let map = plock(&self.metas);
+        let mut metas: Vec<&SessionMeta> = map.values().collect();
+        metas.sort_by_key(|m| m.created_at_ms);
+        metas.into_iter().map(|m| m.info()).collect()
+    }
+
+    // ── 앱 재시작 세션 복원 (스냅샷 영속화) ──
+
+    /// 스냅샷 디렉토리 설정 + 저장된 스냅샷 로드.
+    /// 오래된 스냅샷(SNAPSHOT_MAX_AGE_SECS)·손상 파일은 세션과 함께 자동 제거한다.
+    pub fn init_snapshots(&self, dir: PathBuf) -> Vec<SessionSnapshot> {
+        let _ = fs::create_dir_all(&dir);
+        let mut out = Vec::new();
+        if let Ok(entries) = fs::read_dir(&dir) {
+            let now = SystemTime::now();
+            for e in entries.flatten() {
+                let p = e.path();
+                let ext = p.extension().and_then(|x| x.to_str());
+                if ext == Some("tmp") {
+                    let _ = fs::remove_file(&p); // 저장 도중 실패한 임시 파일 잔재 정리
+                    continue;
+                }
+                if ext != Some("json") {
+                    continue;
+                }
+                let too_old = e
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|m| now.duration_since(m).ok())
+                    .map(|d| d.as_secs() > SNAPSHOT_MAX_AGE_SECS)
+                    .unwrap_or(false);
+                if too_old {
+                    let _ = fs::remove_file(&p);
+                    continue;
+                }
+                match fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<SessionSnapshot>(&s).ok()) {
+                    Some(snap) => out.push(snap),
+                    None => { let _ = fs::remove_file(&p); } // 손상 스냅샷은 제거 (복원 불가)
+                }
+            }
+        }
+        out.sort_by_key(|s| s.created_at_ms); // 이전 실행의 세션 순서 유지
+        *plock(&self.snap_dir) = Some(dir);
+        out
+    }
+
+    /// 앱 종료 시 호출 — 살아있는 모든 세션의 스냅샷을 디스크에 저장.
+    /// (닫힌 세션은 close 에서 이미 파일까지 제거됐으므로 여기 남아있지 않다)
+    pub fn flush_snapshots(&self) {
+        let Some(dir) = plock(&self.snap_dir).clone() else { return };
+        let metas: Vec<SessionMeta> = plock(&self.metas).values().cloned().collect();
+        for m in metas {
+            let scrollback = {
+                let chan = plock(&self.chans).get(&m.id).cloned();
+                match chan {
+                    // 저장도 시드 상한으로 절단 — 종료 시 직렬화 지연과 디스크 평문 노출을 줄인다
+                    Some(c) => String::from_utf8_lossy(tail_snap(&plock(&c.inner).scrollback, RESTORE_SEED_CAP)).into_owned(),
+                    None => String::new(),
+                }
+            };
+            let prompts = plock(&self.prompts).get(&m.id).cloned().unwrap_or(serde_json::Value::Null);
+            let snap = SessionSnapshot {
+                id: m.id.clone(),
+                project_id: m.project_id.clone(),
+                title: m.title.clone(),
+                cwd: m.cwd.clone(),
+                created_at_ms: m.created_at_ms,
+                prompts,
+                scrollback,
+            };
+            let Ok(json) = serde_json::to_string(&snap) else { continue };
+            // 원자적 저장 (tmp → rename) — 종료 도중 실패해도 이전 스냅샷이 보존된다
+            let path = dir.join(format!("{}.json", m.id));
+            let tmp = path.with_extension("json.tmp");
+            if fs::write(&tmp, json).is_ok() {
+                let _ = fs::rename(&tmp, &path);
+            }
+        }
+    }
+
+    /// 프론트가 보낸 세션별 프롬프트 히스토리 보관 (앱 종료 시 스냅샷에 포함).
+    /// 배열만 수용하고 상한을 강제한다 — 프론트의 300개 제한을 신뢰하지 않는다.
+    pub fn set_prompts(&self, id: &str, mut prompts: serde_json::Value) {
+        let Some(arr) = prompts.as_array_mut() else { return };
+        if arr.len() > 300 {
+            let excess = arr.len() - 300;
+            arr.drain(..excess); // 오래된 것부터 버린다
+        }
+        if plock(&self.metas).contains_key(id) {
+            plock(&self.prompts).insert(id.to_string(), prompts);
+        }
+    }
+
+    /// get_state 용 — 세션별 프롬프트 히스토리 맵 (복원 직후 프론트 시드용)
+    pub fn prompts_json(&self) -> serde_json::Value {
+        serde_json::to_value(plock(&self.prompts).clone()).unwrap_or_else(|_| serde_json::json!({}))
     }
 }

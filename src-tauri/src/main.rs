@@ -31,7 +31,9 @@ fn get_state(store: StoreState, ptys: State<PtyManager>) -> serde_json::Value {
         "settings": s.data.settings,
         "drafts": s.data.drafts,
         "sessions": ptys.list(),
-        "platform": std::env::consts::OS
+        "prompts": ptys.prompts_json(), // 재시작 복원된 세션의 프롬프트 히스토리
+        "platform": std::env::consts::OS,
+        "version": env!("CARGO_PKG_VERSION") // 헤더 버전 표기용
     })
 }
 
@@ -169,7 +171,13 @@ fn create_session(app: AppHandle, store: StoreState, ptys: State<PtyManager>, pr
             s.data.settings.shell.clone(),
         )
     };
-    ptys.create(app, project_id, cwd, &shell, title)
+    ptys.create(app, project_id, cwd, &shell, title, None)
+}
+
+// 프론트의 프롬프트 히스토리를 백엔드에 동기화 — 앱 종료 시 세션 스냅샷에 포함돼 재시작 후 복원된다
+#[tauri::command]
+fn set_session_prompts(ptys: State<PtyManager>, id: String, prompts: serde_json::Value) {
+    ptys.set_prompts(&id, prompts);
 }
 
 #[tauri::command]
@@ -330,6 +338,16 @@ fn install_crash_recovery(window: &tauri::WebviewWindow) {
 
 fn main() {
     tauri::Builder::default()
+        // 단일 인스턴스 강제 (반드시 첫 번째로 등록) — 두 번째 실행은 기존 창을 앞으로 가져온다.
+        // 세션 스냅샷 영속화 도입으로 두 인스턴스가 같은 sessions/ 파일을 쓰면
+        // 서로의 스냅샷을 덮어쓰거나 삭제하므로(데이터 손실) 프로세스 수준에서 차단한다.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -341,7 +359,23 @@ fn main() {
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             app.manage(Mutex::new(Store::load(config_dir)));
-            app.state::<PtyManager>().start_status_thread(app.handle().clone());
+            let ptys = app.state::<PtyManager>();
+            ptys.start_status_thread(app.handle().clone());
+
+            // 앱 재시작 세션 복원: 이전 종료 시 저장한 스냅샷으로
+            // 같은 위치(cwd)에 새 셸을 만들고 이전 스크롤백·프롬프트 히스토리를 시드한다.
+            // 프론트 boot() 는 get_state 의 세션 목록을 웹뷰 복구와 같은 경로로 복원한다.
+            let snap_dir = app.path().app_data_dir()?.join("sessions");
+            let shell = plock(&app.state::<Mutex<Store>>()).data.settings.shell.clone();
+            for snap in ptys.init_snapshots(snap_dir.clone()) {
+                let sid = snap.id.clone();
+                // 개별 실패는 건너뛰되(나머지 세션 복원엔 지장 없음),
+                // 복원 불가 스냅샷은 삭제해 매 실행 재시도 루프를 끊는다
+                if ptys.create(app.handle().clone(), None, None, &shell, None, Some(snap)).is_err() {
+                    let _ = fs::remove_file(snap_dir.join(format!("{}.json", sid)));
+                }
+            }
+
             #[cfg(windows)]
             if let Some(win) = app.get_webview_window("main") {
                 install_crash_recovery(&win);
@@ -361,6 +395,7 @@ fn main() {
             remove_preset,
             update_settings,
             create_session,
+            set_session_prompts,
             write_session,
             resize_session,
             close_session,
@@ -377,6 +412,17 @@ fn main() {
             install_update,
             notify
         ])
-        .run(tauri::generate_context!())
-        .expect("Terminal Assistance 실행 실패");
+        .build(tauri::generate_context!())
+        .expect("Terminal Assistance 실행 실패")
+        .run(|app, event| {
+            // 앱 종료 시 세션 스냅샷 저장 → 다음 실행에서 복원.
+            // 창 닫기(ExitRequested)와 최종 종료(Exit) 양쪽에서 저장해
+            // OS 종료/로그오프처럼 Exit 이 오지 않을 수 있는 경로를 이중 방어한다 (중복 저장은 무해)
+            match event {
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    app.state::<PtyManager>().flush_snapshots();
+                }
+                _ => {}
+            }
+        });
 }
