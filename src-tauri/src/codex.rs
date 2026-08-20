@@ -4,8 +4,8 @@
 // 읽기 전용 — 코덱스 저장소를 건드리지 않는다.
 use serde::Serialize;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 // rate_limits 는 token_count 마다 기록되므로 파일 꼬리에서 금방 나온다
@@ -77,6 +77,110 @@ fn latest_rollout() -> Option<(PathBuf, u64)> {
     best
 }
 
+// ── 채팅 뷰: cwd 매칭 rollout 탐색 + 레코드 파서 ──
+
+// cwd 판별을 위해 첫 줄(session_meta)을 여는 파일 수 상한 — 최신 mtime 순이라 앞에서 걸린다
+const CWD_SCAN_CAP: usize = 40;
+
+/// rollout 첫 줄(session_meta)의 작업 디렉토리
+fn rollout_cwd(path: &Path) -> Option<String> {
+    let f = fs::File::open(path).ok()?;
+    let mut line = String::new();
+    BufReader::new(f.take(64 * 1024)).read_line(&mut line).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&line).ok()?;
+    v.get("payload")?.get("cwd")?.as_str().map(str::to_string)
+}
+
+/// cwd 가 일치하는 최근 rollout (경로, mtime ms) — 채팅 뷰의 Codex 후보
+pub(crate) fn latest_rollout_for_cwd(cwd: &str) -> Option<(PathBuf, u64)> {
+    let root = crate::claude::home_dir()?.join(".codex").join("sessions");
+    let mut day_dirs = Vec::new();
+    'outer: for y in subdirs_desc(&root) {
+        for m in subdirs_desc(&y) {
+            for d in subdirs_desc(&m) {
+                day_dirs.push(d);
+                if day_dirs.len() >= SCAN_DAYS {
+                    break 'outer;
+                }
+            }
+        }
+    }
+    let mut files: Vec<(u64, PathBuf)> = Vec::new();
+    for dir in day_dirs {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Some(ms) = e
+                .metadata().ok()
+                .and_then(|md| md.modified().ok())
+                .and_then(|mt| mt.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+            {
+                files.push((ms, p));
+            }
+        }
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files
+        .into_iter()
+        .take(CWD_SCAN_CAP)
+        .find(|(_, p)| rollout_cwd(p).as_deref() == Some(cwd))
+        .map(|(ms, p)| (p, ms))
+}
+
+/// rollout 레코드 1개 → 채팅 메시지.
+/// developer(주입 지침)·reasoning·AGENTS.md 류 래퍼 user 텍스트는 잡음이라 제외
+pub(crate) fn rollout_line_msgs(v: &serde_json::Value, out: &mut Vec<crate::claude::ChatMsg>) {
+    use crate::claude::{ChatMsg, CHAT_MSG_CAP, TOOL_HINT_CAP};
+    if v.get("type").and_then(|x| x.as_str()) != Some("response_item") {
+        return;
+    }
+    let Some(p) = v.get("payload") else { return };
+    match p.get("type").and_then(|x| x.as_str()) {
+        Some("message") => {
+            let role = match p.get("role").and_then(|x| x.as_str()) {
+                Some(r @ ("user" | "assistant")) => r,
+                _ => return, // developer = 시스템 주입
+            };
+            let Some(arr) = p.get("content").and_then(|c| c.as_array()) else { return };
+            let text = arr
+                .iter()
+                .filter_map(|b| match b.get("type").and_then(|x| x.as_str()) {
+                    Some("input_text") | Some("output_text") => b.get("text").and_then(|x| x.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let t = text.trim();
+            if t.is_empty() || t.starts_with('<') || t.starts_with("# AGENTS.md") {
+                return;
+            }
+            out.push(ChatMsg { role: role.into(), kind: "text".into(), text: t.chars().take(CHAT_MSG_CAP).collect() });
+        }
+        Some("function_call") => {
+            let name = p.get("name").and_then(|x| x.as_str()).unwrap_or("도구");
+            // arguments 는 JSON 문자열 — 대표 필드 추출 시도, 실패하면 원문 축약
+            let hint = p
+                .get("arguments")
+                .and_then(|x| x.as_str())
+                .map(|a| {
+                    serde_json::from_str::<serde_json::Value>(a)
+                        .ok()
+                        .map(|av| crate::claude::tool_hint(&av))
+                        .filter(|h| !h.is_empty())
+                        .unwrap_or_else(|| a.trim().replace('\n', " ").chars().take(TOOL_HINT_CAP).collect())
+                })
+                .unwrap_or_default();
+            let text = if hint.is_empty() { name.to_string() } else { format!("{}: {}", name, hint) };
+            out.push(ChatMsg { role: "assistant".into(), kind: "tool".into(), text });
+        }
+        _ => {}
+    }
+}
+
 fn window_of(v: &serde_json::Value) -> Option<CodexWindow> {
     Some(CodexWindow {
         window_minutes: v.get("window_minutes")?.as_u64()?,
@@ -103,6 +207,37 @@ fn tail_rate_limits(path: &PathBuf) -> Option<serde_json::Value> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msgs_of(line: &str) -> Vec<crate::claude::ChatMsg> {
+        let mut out = Vec::new();
+        rollout_line_msgs(&serde_json::from_str(line).unwrap(), &mut out);
+        out
+    }
+
+    #[test]
+    fn rollout_parses_messages_and_tools() {
+        let u = msgs_of(r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"질문"}]}}"#);
+        assert_eq!((u[0].role.as_str(), u[0].text.as_str()), ("user", "질문"));
+        let a = msgs_of(r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"답"}]}}"#);
+        assert_eq!((a[0].role.as_str(), a[0].text.as_str()), ("assistant", "답"));
+        let f = msgs_of(r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"ls\"]}"}}"#);
+        assert_eq!(f[0].kind.as_str(), "tool");
+        assert!(f[0].text.starts_with("shell:"));
+    }
+
+    #[test]
+    fn rollout_skips_noise() {
+        // developer 주입·AGENTS.md 래퍼·reasoning·이벤트 레코드는 채팅에 나오면 안 된다
+        assert!(msgs_of(r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"주입 지침"}]}}"#).is_empty());
+        assert!(msgs_of(r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions"}]}}"##).is_empty());
+        assert!(msgs_of(r#"{"type":"response_item","payload":{"type":"reasoning"}}"#).is_empty());
+        assert!(msgs_of(r#"{"type":"event_msg","payload":{"type":"token_count"}}"#).is_empty());
+    }
 }
 
 /// 코덱스 사용량 (없으면 None). async 커맨드 → 파일 탐색이 UI 를 막지 않는다.

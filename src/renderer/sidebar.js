@@ -3,9 +3,12 @@
 function statusTag(status) {
   const t = document.createElement('span');
   t.className = 'status-tag ' + status;
-  t.textContent = { idle: '대기중', running: '진행중', done: '완료', exited: '종료됨' }[status] || status;
+  t.textContent = { idle: '대기중', running: '진행중', waiting: '허가 대기', done: '완료', exited: '종료됨' }[status] || status;
   return t;
 }
+
+// 세션 제목 편집용 더블클릭 판정 상태 — 렌더 재구축을 넘어 유지돼야 하므로 모듈 스코프
+let renameClick = { sid: null, at: 0 };
 
 // 폴딩 상태는 렌더러 로컬 설정 (localStorage)
 const Collapsed = {
@@ -71,7 +74,57 @@ function renderSidebar() {
       }
     };
     row.appendChild(x);
-    row.onclick = () => App.activateSession(s.id);
+    // 더블 클릭 = 제목 인라인 편집.
+    // 네이티브 dblclick 을 쓰지 않는 이유: 첫 클릭의 activateSession 이 사이드바를
+    // 재구축해 행 노드가 교체되는데, WKWebView 는 같은 노드의 연속 클릭만 더블클릭으로
+    // 인정해 이벤트가 영영 발생하지 않는다 → 모듈 상태로 직접 판정한다.
+    row.onclick = () => {
+      const now = Date.now();
+      if (renameClick.sid === s.id && now - renameClick.at < 400) {
+        renameClick = { sid: null, at: 0 };
+        startRename();
+        return;
+      }
+      renameClick = { sid: s.id, at: now };
+      App.activateSession(s.id);
+    };
+    // 인라인 편집 시작. Enter/포커스 이탈 = 확정, Esc = 취소, 빈 값 = 원복
+    const startRename = () => {
+      if (row.querySelector('.session-rename')) return; // 이미 편집 중
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'session-rename';
+      input.value = s.title;
+      input.maxLength = 40;
+      t.replaceWith(input);
+      input.focus();
+      input.select();
+      // 편집 중 클릭이 행 활성화/드래그로 새지 않게
+      input.onclick = (ev) => ev.stopPropagation();
+      input.onmousedown = (ev) => ev.stopPropagation();
+      let done = false; // Enter → blur 이중 확정 방지
+      const finish = async (commit) => {
+        if (done) return;
+        done = true;
+        const title = input.value.trim();
+        if (commit && title && title !== s.title) {
+          try {
+            await ta.renameSession(s.id, title);
+            s.title = title;
+            App.renderTopbar(); // 헤더의 '프로젝트명 — 제목' 즉시 갱신
+          } catch (err) {
+            console.warn('세션 이름 변경 실패:', err);
+          }
+        }
+        renderSidebar(); // input → 제목 span 복원
+      };
+      input.onkeydown = (ev) => {
+        ev.stopPropagation(); // 전역 단축키(Cmd+1~9 등)로 새지 않게
+        if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); finish(true); }
+        else if (ev.key === 'Escape') finish(false);
+      };
+      input.onblur = () => finish(true);
+    };
     return row;
   };
 

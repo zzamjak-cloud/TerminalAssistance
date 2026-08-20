@@ -45,6 +45,9 @@ pub struct Settings {
     /// 비활성 세션 작업 완료 시 데스크톱 알림
     #[serde(rename = "notifyOnDone", default = "default_true")]
     pub notify_on_done: bool,
+    /// 비활성 세션이 실행 허가를 기다릴 때 데스크톱 알림
+    #[serde(rename = "notifyOnWaiting", default = "default_true")]
+    pub notify_on_waiting: bool,
 }
 
 fn default_font_size() -> u32 { 13 }
@@ -52,7 +55,7 @@ fn default_true() -> bool { true }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { font_size: 13, shell: String::new(), notify_on_done: true }
+        Settings { font_size: 13, shell: String::new(), notify_on_done: true, notify_on_waiting: true }
     }
 }
 

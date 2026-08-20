@@ -6,7 +6,7 @@ const App = {
   state: {
     projects: [],
     presets: [],
-    settings: { fontSize: 13, shell: '', notifyOnDone: true },
+    settings: { fontSize: 13, shell: '', notifyOnDone: true, notifyOnWaiting: true },
     sessions: [],   // { id, projectId, title, status, cwd }
     activeId: null,
     platform: '',   // 백엔드가 알려주는 OS (windows | macos | linux)
@@ -38,6 +38,8 @@ const App = {
       if (!s) return;
       s.status = status;
       if (status === 'done') App.onDone(s, busyMs);
+      else App.clearDoneTimers(sessionId); // 새 작업 시작/입력 등으로 done 이탈 → 확인 추적 취소
+      if (status === 'waiting') App.onWaiting(s);
       updateSessionStatus(s); // 전체 재구축 대신 해당 행만 갱신 (호버·드래그 유지)
       App.renderTopbar();
     });
@@ -48,6 +50,15 @@ const App = {
       const paths = payload && payload.paths ? payload.paths : [];
       if (paths.length) App.handleDrop(paths);
     });
+    // 다른 앱에 있다가 돌아온 경우 — 활성 세션이 완료 상태면 그 시점부터 열람 카운트다운
+    window.addEventListener('focus', () => App.checkDoneViewed(App.state.activeId));
+    // 허가 대기 배지 클릭 → 대기 중인 세션으로 점프 (여러 개면 클릭할 때마다 순환)
+    document.getElementById('waiting-indicator').onclick = () => {
+      const ws = App.state.sessions.filter((x) => x.status === 'waiting');
+      if (!ws.length) return;
+      const i = ws.findIndex((x) => x.id === App.state.activeId);
+      App.activateSession(ws[(i + 1) % ws.length].id);
+    };
 
     document.getElementById('btn-add-project').onclick = () => App.showProjectModal();
     document.getElementById('btn-home-session').onclick = () => App.createSession(null);
@@ -188,7 +199,19 @@ const App = {
     await ta.reorderProjects(arr.map((p) => p.id)).catch((e) => console.warn('프로젝트 순서 저장 실패:', e));
   },
 
+  // '프로젝트명 — S2' 형태의 세션 식별 라벨 (헤더·알림·팬아웃 공용)
+  sessionLabel(s) {
+    const proj = App.state.projects.find((p) => p.id === s.projectId);
+    return proj ? proj.name + ' — ' + s.title : s.title;
+  },
+
   renderTopbar() {
+    if (App.applyViewMode) App.applyViewMode(); // 탭 표시 동기화 (세션 없음 → 숨김)
+    // 허가 대기 집계 배지 — 어느 세션을 보고 있든 대기 발생을 놓치지 않게 헤더에 상시 표시
+    const waiting = App.state.sessions.filter((x) => x.status === 'waiting');
+    const wi = document.getElementById('waiting-indicator');
+    wi.classList.toggle('hidden', !waiting.length);
+    if (waiting.length) wi.textContent = '허가 대기 ' + waiting.length;
     const el = document.getElementById('active-info');
     const s = App.state.sessions.find((x) => x.id === App.state.activeId);
     if (!s) { el.textContent = '세션 없음'; el.title = ''; return; }
@@ -196,7 +219,7 @@ const App = {
     el.title = s.cwd; // 경로는 표시 대신 호버 툴팁으로
     el.appendChild(statusTag(s.status));
     const t = document.createElement('span');
-    t.textContent = s.title;
+    t.textContent = App.sessionLabel(s);
     el.appendChild(t);
     const b = App.state.branches[s.id];
     if (b) {
@@ -243,7 +266,8 @@ const App = {
     App.state.activeId = id;
     localStorage.setItem('ta-active-session', id); // 웹뷰 리로드 복구 시 활성 세션 유지용
     TerminalView.activate(id);
-    App.ackIfDone(id);
+    App.checkDoneViewed(id); // 즉시 해제 대신 열람 카운트다운 — 무엇이 끝났는지 볼 시간을 준다
+    if (App.applyViewMode) App.applyViewMode(true); // 세션별 터미널/채팅 탭 상태 복원
     App.renderAll();
     App.refreshBranch(); // 전환 즉시 브랜치 표시 (다음 폴링까지 기다리지 않게)
   },
@@ -263,6 +287,8 @@ const App = {
     App.state.sessions = App.state.sessions.filter((s) => s.id !== id);
     delete App.state.images[id];
     delete App.state.branches[id];
+    App.clearDoneTimers(id);
+    if (App.viewModes) { App.viewModes.delete(id); App.chatStates.delete(id); }
     TerminalView.dispose(id);
     if (App.state.activeId === id) {
       const next = App.state.sessions[App.state.sessions.length - 1];
@@ -277,15 +303,53 @@ const App = {
     if (s && s.status === 'done') ta.ackSession(id);
   },
 
-  // 작업 완료: 보고 있지 않은 세션이면 데스크톱 알림, 보고 있으면 즉시 배지 해제
+  // ── 완료 배지 확인 추적 ──
+  // 단순 타임아웃이 아니라 "사용자가 봤는가"가 기준: 열람(활성 세션 + 창 포커스)하면
+  // 그때부터 DONE_VIEW_MS 후 해제, 끝내 안 보면 DONE_FALLBACK_MS 폴백 해제.
+  // 키 입력(ackIfDone)은 여전히 즉시 해제, 새 작업 시작은 추적 자체를 취소한다.
+  DONE_VIEW_MS: 5000,
+  DONE_FALLBACK_MS: 5 * 60 * 1000,
+  doneTimers: new Map(), // sessionId → { view, fallback }
+
+  // 작업 완료: 확인 추적 시작 + 보고 있지 않은 세션이면 데스크톱 알림
   onDone(s, busyMs) {
+    App.clearDoneTimers(s.id);
+    App.doneTimers.set(s.id, {
+      view: null,
+      fallback: setTimeout(() => ta.ackSession(s.id), App.DONE_FALLBACK_MS)
+    });
+    App.checkDoneViewed(s.id); // 이미 보고 있으면 곧장 열람 카운트다운
     const watching = s.id === App.state.activeId && document.hasFocus();
-    if (watching) {
-      ta.ackSession(s.id);
-      s.status = 'idle';
-    } else {
+    if (!watching && App.state.settings.notifyOnDone) {
       const secs = Math.round((busyMs || 0) / 1000);
-      ta.notify('작업 완료 — ' + s.title, secs + '초 동안 실행되던 작업이 끝났습니다.');
+      ta.notify('작업 완료 — ' + App.sessionLabel(s), secs + '초 동안 실행되던 작업이 끝났습니다.');
+    }
+  },
+
+  // 완료 세션이 열람 중이면 해제 카운트다운 시작 (세션 전환·창 포커스 복귀 시 호출)
+  checkDoneViewed(id) {
+    const s = App.state.sessions.find((x) => x.id === id);
+    if (!s || s.status !== 'done') return;
+    if (!(id === App.state.activeId && document.hasFocus())) return;
+    const t = App.doneTimers.get(id);
+    if (!t || t.view) return; // 추적 없음(비정상) 또는 이미 카운트다운 중
+    t.view = setTimeout(() => ta.ackSession(id), App.DONE_VIEW_MS);
+  },
+
+  clearDoneTimers(id) {
+    const t = App.doneTimers.get(id);
+    if (t) {
+      clearTimeout(t.view);
+      clearTimeout(t.fallback);
+      App.doneTimers.delete(id);
+    }
+  },
+
+  // 허가 대기: 보고 있는 세션은 화면에 이미 프롬프트가 떠 있으므로 비활성 세션만 알림
+  onWaiting(s) {
+    const watching = s.id === App.state.activeId && document.hasFocus();
+    if (!watching && App.state.settings.notifyOnWaiting) {
+      ta.notify('허가 대기 — ' + App.sessionLabel(s), 'AI 도구가 실행 허가를 기다리고 있습니다.');
     }
   },
 

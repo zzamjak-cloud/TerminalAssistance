@@ -6,6 +6,11 @@ on:
     tags:
       - 'v*'
 
+# 같은 태그로 재푸시 시 동시 실행 방지 — 자산·latest.json 서명 불일치(v0.6.0 사고) 재발 방지
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   publish:
     permissions:

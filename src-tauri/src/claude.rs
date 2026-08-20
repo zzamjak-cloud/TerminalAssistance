@@ -23,7 +23,7 @@ pub struct ClaudeSession {
 
 /// Claude Code 의 프로젝트 디렉토리명 규칙: 절대 경로에서 영숫자 외 문자를 전부 '-' 로 치환
 /// (예: /Users/a/.b → -Users-a--b, C:\dev → C--dev)
-fn munge_path(p: &str) -> String {
+pub(crate) fn munge_path(p: &str) -> String {
     p.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
@@ -124,4 +124,144 @@ pub async fn list_claude_sessions(cwd: String) -> Vec<ClaudeSession> {
         }
     }
     out
+}
+
+// ── 채팅 뷰: 세션 jsonl 파서 (tail 본체는 chat.rs) ──
+pub(crate) const CHAT_TAIL_INIT: u64 = 256 * 1024; // 첫 로드 시 파일 끝에서 읽는 최대 범위 (대형 세션 방어)
+pub(crate) const CHAT_MSG_CAP: usize = 4000; // 말풍선 1개 텍스트 상한
+pub(crate) const TOOL_HINT_CAP: usize = 100;
+
+#[derive(Serialize)]
+pub struct ChatMsg {
+    pub role: String, // "user" | "assistant"
+    pub kind: String, // "text" | "tool"
+    pub text: String,
+}
+
+#[derive(Serialize)]
+pub struct ChatChunk {
+    pub file: String, // tail 중인 세션 id — 프론트의 파일 전환(로그 리셋) 감지용
+    pub offset: u64,
+    pub messages: Vec<ChatMsg>,
+}
+
+/// 디렉토리에서 최근 활동 세션 id (agent-* 제외) — 훅 미설치 시의 폴백 식별
+pub(crate) fn latest_session_id(dir: &Path) -> Option<String> {
+    fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                return None;
+            }
+            let id = p.file_stem()?.to_str()?.to_string();
+            if id.starts_with("agent-") {
+                return None;
+            }
+            Some((e.metadata().ok()?.modified().ok()?, id))
+        })
+        .max_by_key(|(m, _)| *m)
+        .map(|(_, id)| id)
+}
+
+/// tool_use 입력에서 사람이 알아볼 대표값 하나 (파일 경로·명령 등)
+pub(crate) fn tool_hint(input: &serde_json::Value) -> String {
+    for k in ["file_path", "command", "pattern", "url", "path", "query", "description", "prompt"] {
+        if let Some(s) = input.get(k).and_then(|x| x.as_str()) {
+            return s.trim().replace('\n', " ").chars().take(TOOL_HINT_CAP).collect();
+        }
+    }
+    String::new()
+}
+
+/// jsonl 레코드 1개 → 채팅 메시지들. 훅/메타/사이드체인/래퍼 텍스트는 잡음이라 제외
+pub(crate) fn line_msgs(v: &serde_json::Value, out: &mut Vec<ChatMsg>) {
+    if v.get("isSidechain").and_then(|x| x.as_bool()) == Some(true)
+        || v.get("isMeta").and_then(|x| x.as_bool()) == Some(true)
+    {
+        return;
+    }
+    match v.get("type").and_then(|x| x.as_str()) {
+        Some("user") => {
+            let Some(content) = v.get("message").and_then(|m| m.get("content")) else { return };
+            let text = match content {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Array(arr) => arr
+                    .iter()
+                    .filter_map(|b| {
+                        if b.get("type").and_then(|x| x.as_str()) == Some("text") {
+                            b.get("text").and_then(|x| x.as_str()).map(str::to_string)
+                        } else {
+                            None // tool_result·이미지 블록은 채팅에 표시하지 않음
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => return,
+            };
+            let t = text.trim();
+            if t.is_empty() || t.starts_with('<') || t.starts_with("Caveat:") {
+                return;
+            }
+            out.push(ChatMsg { role: "user".into(), kind: "text".into(), text: t.chars().take(CHAT_MSG_CAP).collect() });
+        }
+        Some("assistant") => {
+            let Some(arr) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) else { return };
+            for b in arr {
+                match b.get("type").and_then(|x| x.as_str()) {
+                    Some("text") => {
+                        let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("").trim();
+                        if !t.is_empty() {
+                            out.push(ChatMsg { role: "assistant".into(), kind: "text".into(), text: t.chars().take(CHAT_MSG_CAP).collect() });
+                        }
+                    }
+                    Some("tool_use") => {
+                        let name = b.get("name").and_then(|x| x.as_str()).unwrap_or("도구");
+                        let hint = b.get("input").map(tool_hint).unwrap_or_default();
+                        let text = if hint.is_empty() { name.to_string() } else { format!("{}: {}", name, hint) };
+                        out.push(ChatMsg { role: "assistant".into(), kind: "tool".into(), text });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msgs_of(line: &str) -> Vec<ChatMsg> {
+        let mut out = Vec::new();
+        line_msgs(&serde_json::from_str(line).unwrap(), &mut out);
+        out
+    }
+
+    #[test]
+    fn chat_parses_user_and_assistant() {
+        let u = msgs_of(r#"{"type":"user","message":{"content":"테스트 프롬프트"}}"#);
+        assert_eq!((u[0].role.as_str(), u[0].text.as_str()), ("user", "테스트 프롬프트"));
+        let a = msgs_of(
+            r#"{"type":"assistant","message":{"content":[
+                {"type":"text","text":"답변"},
+                {"type":"tool_use","name":"Read","input":{"file_path":"src/a.ts"}}]}}"#,
+        );
+        assert_eq!(a.len(), 2);
+        assert_eq!((a[0].kind.as_str(), a[0].text.as_str()), ("text", "답변"));
+        assert_eq!((a[1].kind.as_str(), a[1].text.as_str()), ("tool", "Read: src/a.ts"));
+    }
+
+    #[test]
+    fn chat_skips_noise() {
+        // 메타·사이드체인·래퍼 텍스트·tool_result 는 채팅에 나오면 안 된다
+        assert!(msgs_of(r#"{"type":"user","isMeta":true,"message":{"content":"x"}}"#).is_empty());
+        assert!(msgs_of(r#"{"type":"user","isSidechain":true,"message":{"content":"x"}}"#).is_empty());
+        assert!(msgs_of(r#"{"type":"user","message":{"content":"<system-reminder>x</system-reminder>"}}"#).is_empty());
+        assert!(msgs_of(r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"y"}]}}"#).is_empty());
+        assert!(msgs_of(r#"{"type":"summary","summary":"s"}"#).is_empty());
+    }
 }

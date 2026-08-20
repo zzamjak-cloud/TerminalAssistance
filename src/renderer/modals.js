@@ -253,13 +253,20 @@ Object.assign(App, {
       });
   },
 
-  showSettingsModal() {
+  async showSettingsModal() {
     const st = App.state.settings;
+    // 연동 설치 여부는 외부 설정 파일(~/.claude, ~/.codex)이 진실 — 열 때마다 조회
+    let hooks = { claude: false, codex: false };
+    try { hooks = await ta.hooksStatus(); } catch (_) {}
     App.modal(`
       <h3>설정</h3>
       <label>글꼴 크기</label><input type="number" id="m-font" min="9" max="24" value="${st.fontSize}">
       <label>셸 (비우면 OS 기본)</label><input type="text" id="m-shell" placeholder="${App.state.platform === 'windows' ? 'powershell.exe' : '/bin/zsh'}" value="${escapeHtml(st.shell || '')}">
       <div class="check"><input type="checkbox" id="m-notify" ${st.notifyOnDone ? 'checked' : ''}><label for="m-notify" style="margin:0">비활성 세션 작업 완료 시 알림</label></div>
+      <div class="check"><input type="checkbox" id="m-notify-wait" ${st.notifyOnWaiting ? 'checked' : ''}><label for="m-notify-wait" style="margin:0">비활성 세션 허가 대기 시 알림</label></div>
+      <label>AI 도구 연동 — 허가 대기(🟡) 감지</label>
+      <div class="check"><input type="checkbox" id="m-hook-claude" ${hooks.claude ? 'checked' : ''}><label for="m-hook-claude" style="margin:0">Claude Code 훅 (~/.claude/settings.json 병합, 백업 생성)</label></div>
+      <div class="check"><input type="checkbox" id="m-hook-codex" ${hooks.codex ? 'checked' : ''}><label for="m-hook-codex" style="margin:0">Codex 알림 (~/.codex/config.toml 병합, 백업 생성)</label></div>
       <div class="modal-actions"><button id="m-cancel">취소</button><button id="m-save">저장</button></div>`,
       (m, close) => {
         m.querySelector('#m-cancel').onclick = close;
@@ -267,10 +274,18 @@ Object.assign(App, {
           const patch = {
             fontSize: Math.max(9, Math.min(24, Number(m.querySelector('#m-font').value) || 13)),
             shell: m.querySelector('#m-shell').value.trim(),
-            notifyOnDone: m.querySelector('#m-notify').checked
+            notifyOnDone: m.querySelector('#m-notify').checked,
+            notifyOnWaiting: m.querySelector('#m-notify-wait').checked
           };
           try { App.state.settings = await ta.updateSettings(patch); }
           catch (e) { alert('저장 실패: ' + e); return; }
+          // 연동 토글은 변경된 것만 반영 — 실패해도 설정 저장은 유지되므로 개별 보고
+          const wantClaude = m.querySelector('#m-hook-claude').checked;
+          const wantCodex = m.querySelector('#m-hook-codex').checked;
+          try { if (wantClaude !== hooks.claude) await ta.setClaudeHooks(wantClaude); }
+          catch (e) { alert('Claude Code 연동 실패: ' + e); }
+          try { if (wantCodex !== hooks.codex) await ta.setCodexHooks(wantCodex); }
+          catch (e) { alert('Codex 연동 실패: ' + e); }
           TerminalView.setFontSize(App.state.settings.fontSize);
           close();
         };

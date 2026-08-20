@@ -143,6 +143,28 @@ const TerminalView = {
       if (ev.isComposing || ev.keyCode === 229) return true;
       if (ev.type !== 'keydown') return true;
       const mod = ev.metaKey || ev.ctrlKey;
+      // ── 맥북(Home/End 키 없음) 텍스트 이동 — macOS 에디터 관행을 터미널 시퀀스로 재현 ──
+      // Cmd+←/→ = 줄 시작/끝(Home/End 키와 동일 시퀀스), Option+←/→ = 단어 이동(ESC b/f),
+      // Cmd+⌫ = 줄 시작까지 삭제(^U), Option+⌫ = 단어 삭제(^W)
+      if (App.state.platform === 'macos' && !ev.shiftKey && !ev.ctrlKey) {
+        const horiz = ev.key === 'ArrowLeft' || ev.key === 'ArrowRight';
+        if (ev.metaKey && !ev.altKey && horiz) {
+          ev.preventDefault(); // 웹뷰의 히스토리 뒤로/앞으로 내비게이션 차단
+          const appMode = term.modes && term.modes.applicationCursorKeysMode;
+          ta.write(session.id, ev.key === 'ArrowLeft'
+            ? (appMode ? '\x1bOH' : '\x1b[H')
+            : (appMode ? '\x1bOF' : '\x1b[F'));
+          return false;
+        }
+        if (ev.altKey && !ev.metaKey && horiz) {
+          ta.write(session.id, ev.key === 'ArrowLeft' ? '\x1bb' : '\x1bf');
+          return false;
+        }
+        if (ev.key === 'Backspace' && (ev.metaKey !== ev.altKey)) {
+          ta.write(session.id, ev.metaKey ? '\x15' : '\x17');
+          return false;
+        }
+      }
       // Cmd/Ctrl+V: 클립보드에 이미지가 있으면 경로 첨부로 대체, 아니면 텍스트 붙여넣기
       if (mod && !ev.altKey && !ev.shiftKey && ev.key.toLowerCase() === 'v') {
         App.pasteToSession(session.id);

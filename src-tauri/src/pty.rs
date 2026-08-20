@@ -5,7 +5,8 @@
 //
 // 출력 경로 (웹뷰 과부하/OOM 방지 3단 방어):
 //   리더 스레드(PTY read → pending 버퍼) → 이미터 스레드(16ms 코얼레싱 → emit)
-//   1) 코얼레싱: emit 을 최대 초당 ~60회로 묶어 IPC 폭주를 차단
+//   1) 버스트 수집 코얼레싱: 출력이 잠잠해질 때까지(2ms 공백, 최대 16ms) 모아
+//      TUI 재그리기를 한 프레임으로 보내고, emit 을 최대 초당 ~60회로 묶어 IPC 폭주 차단
 //   2) flow control: 프론트가 ack 하지 않은 바이트가 FLOW_HIGH 를 넘으면 emit 일시정지
 //   3) 백프레셔: pending 이 PENDING_CAP 을 넘으면 PTY read 자체를 멈춰
 //      OS 파이프 버퍼가 차게 만들고, 결국 자식 프로세스의 write 가 블록된다
@@ -25,7 +26,8 @@ use tauri::{AppHandle, Emitter};
 const BUSY_HOLD_MS: u128 = 800; // 마지막 출력 후 이 시간 동안은 busy 유지
 const DONE_MIN_MS: u128 = 3000; // 이보다 오래 busy 였다가 멈추면 '완료'로 간주
 
-const COALESCE_MS: u64 = 16; // 출력 묶음 전송 주기 (~60fps)
+const COALESCE_MS: u64 = 16; // 버스트 수집 최대 지연 (~60fps 하한)
+const QUIET_MS: u64 = 2; // 버스트 종료 판정 공백 — 이 시간 동안 새 출력이 없으면 방출
 const SCROLLBACK_CAP: usize = 2 * 1024 * 1024; // 세션당 백엔드 보관 스크롤백 (복구용)
 const SCROLLBACK_SLACK: usize = SCROLLBACK_CAP / 4; // 트리밍 슬랙 — emit 마다 memmove 하지 않도록 일괄 처리
 const FLOW_HIGH: u64 = 512 * 1024; // 미확인(un-acked) 바이트 상한 — 넘으면 emit 일시정지
@@ -44,6 +46,7 @@ fn now_ms() -> u64 {
 pub enum Status {
     Idle,
     Running,
+    Waiting, // AI 도구가 실행 허가를 기다림 (훅/OSC 신호 기반 — 출력 휴리스틱보다 우선)
     Done,
     Exited,
 }
@@ -59,6 +62,8 @@ pub struct SessionMeta {
     pub busy_since: Instant,
     pub exited: bool,
     pub created_at_ms: u64, // 생성 시각 — 목록 정렬·재시작 복원 순서 보존용
+    pub waiting: bool,      // 허가 대기 신호 (훅 상태 파일 또는 OSC 알림)
+    pub waiting_cleared_ms: u64, // 마지막 사용자 입력 시각 — 이보다 낡은 훅 waiting 은 무시
 }
 
 #[derive(Serialize, Clone)]
@@ -69,6 +74,8 @@ pub struct SessionInfo {
     pub title: String,
     pub status: Status,
     pub cwd: String,
+    #[serde(rename = "createdAtMs")]
+    pub created_at_ms: u64, // 채팅 뷰 신선도 기준 (세션 생성 이전 대화는 표시하지 않음)
 }
 
 impl SessionMeta {
@@ -79,6 +86,7 @@ impl SessionMeta {
             title: self.title.clone(),
             status: self.status,
             cwd: self.cwd.clone(),
+            created_at_ms: self.created_at_ms,
         }
     }
 }
@@ -167,6 +175,95 @@ fn carve_utf8(carry: &[u8]) -> (String, Vec<u8>) {
     }
 }
 
+/// PTY 출력에서 OSC(터미널 알림) 페이로드를 추출하는 증분 스캐너.
+/// 시퀀스(`ESC ] … BEL` 또는 `ESC ] … ESC \`)가 read 청크 경계에서 잘려도 동작한다.
+/// Codex 의 [tui] notifications(OSC 9), OSC 777(notify) 를 잡기 위한 것 —
+/// OSC 52(클립보드) 같은 대형 페이로드는 캡을 넘기면 수집을 포기하고 종결자까지 건너뛴다.
+struct OscScanner {
+    state: OscState,
+    payload: Vec<u8>,
+    overflow: bool,
+}
+
+#[derive(PartialEq)]
+enum OscState {
+    Ground,
+    Esc,      // ESC 수신
+    InOsc,    // ESC ] 수신 — 페이로드 수집 중
+    InOscEsc, // 페이로드 중 ESC 수신 — 다음이 '\' 면 ST 종결
+}
+
+const OSC_PAYLOAD_CAP: usize = 1024;
+
+impl OscScanner {
+    fn new() -> Self {
+        OscScanner { state: OscState::Ground, payload: Vec::new(), overflow: false }
+    }
+
+    /// 청크를 소비하고 완성된 OSC 페이로드들을 반환
+    fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
+        let mut out = Vec::new();
+        for &b in bytes {
+            match self.state {
+                OscState::Ground => {
+                    if b == 0x1b {
+                        self.state = OscState::Esc;
+                    }
+                }
+                OscState::Esc => {
+                    if b == b']' {
+                        self.state = OscState::InOsc;
+                        self.payload.clear();
+                        self.overflow = false;
+                    } else if b != 0x1b {
+                        self.state = OscState::Ground;
+                    }
+                }
+                OscState::InOsc => {
+                    if b == 0x07 {
+                        self.finish(&mut out);
+                    } else if b == 0x1b {
+                        self.state = OscState::InOscEsc;
+                    } else if self.payload.len() < OSC_PAYLOAD_CAP {
+                        self.payload.push(b);
+                    } else {
+                        self.overflow = true;
+                    }
+                }
+                OscState::InOscEsc => {
+                    if b == b'\\' {
+                        self.finish(&mut out);
+                    } else {
+                        // ESC 뒤 '\' 가 아니면 비정상 시퀀스 — 수집 포기
+                        self.state = if b == 0x1b { OscState::Esc } else { OscState::Ground };
+                        self.payload.clear();
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn finish(&mut self, out: &mut Vec<String>) {
+        self.state = OscState::Ground;
+        if !self.overflow {
+            out.push(String::from_utf8_lossy(&self.payload).into_owned());
+        }
+        self.payload.clear();
+    }
+}
+
+/// 알림성 OSC 페이로드가 '허가 대기' 신호인지 분류.
+/// OSC 9(`9;메시지`) / OSC 777(`777;notify;제목;본문`) 만 대상 — 그 외(창 제목 등)는 무시.
+/// 미분류 메시지는 버린다 (오탐으로 배지가 잘못 켜지는 것보다 놓치는 쪽이 안전).
+fn osc_waiting_signal(payload: &str) -> bool {
+    if !(payload.starts_with("9;") || payload.starts_with("777;")) {
+        return false;
+    }
+    let l = payload.to_lowercase();
+    l.contains("approv") || l.contains("permission") || l.contains("허가")
+}
+
 impl PtyManager {
     pub fn new() -> Self {
         PtyManager {
@@ -177,33 +274,70 @@ impl PtyManager {
         }
     }
 
-    /// 상태 머신 폴링 스레드 (앱 시작 시 1회 기동)
+    /// 상태 머신 폴링 스레드 (앱 시작 시 1회 기동).
+    /// 출력 휴리스틱에 훅 상태 파일(claude)·OSC 신호(codex, 리더 스레드가 기록)를 병합한다.
+    /// 우선순위: Waiting > Running(출력) > Done/Idle — waiting 중에도 스피너 출력이 나오므로.
     pub fn start_status_thread(&self, app: AppHandle) {
         let metas = Arc::clone(&self.metas);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(500));
-            let mut changed: Vec<(String, Status, u128)> = Vec::new();
-            {
-                let mut map = plock(&metas);
-                let now = Instant::now();
-                for m in map.values_mut() {
-                    if m.exited {
-                        continue;
-                    }
-                    let busy = now.duration_since(m.last_output).as_millis() < BUSY_HOLD_MS;
-                    if busy && m.status != Status::Running {
-                        m.status = Status::Running;
-                        changed.push((m.id.clone(), m.status, 0));
-                    } else if !busy && m.status == Status::Running {
-                        // 충분히 오래 돌던 작업이 멈춤 → 완료. 짧은 출력(에코 등)은 그냥 idle
-                        let busy_ms = now.duration_since(m.busy_since).as_millis();
-                        m.status = if busy_ms >= DONE_MIN_MS { Status::Done } else { Status::Idle };
-                        changed.push((m.id.clone(), m.status, busy_ms));
+        std::thread::spawn(move || {
+            let mut hook_mtime: Option<std::time::SystemTime> = None;
+            let mut hook_states: std::collections::HashMap<String, crate::hooks::HookState> =
+                std::collections::HashMap::new();
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                // 훅 상태 파일 재로딩 — 디렉토리 mtime 이 그대로면 캐시 재사용
+                if let Some(fresh) = crate::hooks::read_states(&mut hook_mtime) {
+                    hook_states = fresh;
+                }
+                let mut changed: Vec<(String, Status, u128)> = Vec::new();
+                {
+                    let mut map = plock(&metas);
+                    let now = Instant::now();
+                    for m in map.values_mut() {
+                        if m.exited {
+                            continue;
+                        }
+                        // 훅 신호 병합 — 사용자 입력(waiting_cleared_ms)보다 낡은 신호는 무시
+                        if let Some(h) = hook_states.get(&m.id) {
+                            if h.ts > m.waiting_cleared_ms {
+                                match h.state.as_str() {
+                                    "waiting" => m.waiting = true,
+                                    "busy" | "done" => {
+                                        m.waiting = false;
+                                        m.waiting_cleared_ms = h.ts;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        let busy = now.duration_since(m.last_output).as_millis() < BUSY_HOLD_MS;
+                        let new_status = if m.waiting {
+                            Status::Waiting
+                        } else if busy {
+                            Status::Running
+                        } else if m.status == Status::Running {
+                            // 충분히 오래 돌던 작업이 멈춤 → 완료. 짧은 출력(에코 등)은 그냥 idle
+                            let busy_ms = now.duration_since(m.busy_since).as_millis();
+                            if busy_ms >= DONE_MIN_MS { Status::Done } else { Status::Idle }
+                        } else if m.status == Status::Waiting {
+                            Status::Idle // waiting 해제 후 무출력 — 승인 직후 잠깐의 공백
+                        } else {
+                            m.status
+                        };
+                        if new_status != m.status {
+                            let busy_ms = if new_status == Status::Done {
+                                now.duration_since(m.busy_since).as_millis()
+                            } else {
+                                0
+                            };
+                            m.status = new_status;
+                            changed.push((m.id.clone(), m.status, busy_ms));
+                        }
                     }
                 }
-            }
-            for (id, status, busy_ms) in changed {
-                emit_status(&app, &id, status, busy_ms);
+                for (id, status, busy_ms) in changed {
+                    emit_status(&app, &id, status, busy_ms);
+                }
             }
         });
     }
@@ -238,6 +372,8 @@ impl PtyManager {
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // Claude Code 훅(자식 프로세스)이 자기 세션을 식별하는 열쇠 — hooks.rs 참고
+        cmd.env("TA_SESSION_ID", &id);
         // GUI 앱은 LANG 을 상속받지 못해 셸이 C 로케일로 동작 → 한글 등 멀티바이트 입력이 깨짐
         if std::env::var("LANG").is_err() {
             cmd.env("LANG", "ko_KR.UTF-8");
@@ -263,6 +399,8 @@ impl PtyManager {
             busy_since: now,
             exited: false,
             created_at_ms,
+            waiting: false,
+            waiting_cleared_ms: 0,
         };
         let info = meta.info();
 
@@ -281,10 +419,15 @@ impl PtyManager {
         let sid = id.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut osc = OscScanner::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break, // EOF = 셸 종료
                     Ok(n) => {
+                        // OSC 알림 감지 (codex approval-requested 등) — 어느 PTY 출력인지
+                        // 여기서 원천적으로 알므로 세션 매칭이 필요 없다
+                        let waiting_signal =
+                            osc.feed(&buf[..n]).iter().any(|p| osc_waiting_signal(p));
                         {
                             let mut map = plock(&metas);
                             if let Some(m) = map.get_mut(&sid) {
@@ -293,6 +436,9 @@ impl PtyManager {
                                     m.busy_since = now; // idle → busy 진입 시각
                                 }
                                 m.last_output = now;
+                                if waiting_signal {
+                                    m.waiting = true;
+                                }
                             }
                         }
                         let mut g = plock(&chan_r.inner);
@@ -337,8 +483,24 @@ impl PtyManager {
                         break;
                     }
                 }
-                // 2) 코얼레싱 창 — 이 사이 도착분까지 묶어 한 번에 보낸다
-                std::thread::sleep(Duration::from_millis(COALESCE_MS));
+                // 2) 버스트 수집 코얼레싱 — 출력이 QUIET_MS 동안 잠잠해질 때까지 모아
+                //    한 프레임으로 보낸다. TUI 재그리기(지우기+다시쓰기)가 emit 경계에서
+                //    쪼개지면 반쯤 그려진 중간 상태가 화면에 비쳐 깜빡이기 때문.
+                //    타이핑 에코(낱개 출력)는 첫 공백 판정에서 바로 나가 지연이 ~QUIET_MS 다.
+                //    상한: 지연 COALESCE_MS, 수집량 EMIT_CHUNK/2 — 넘으면 스트리밍 전환
+                let collect_start = Instant::now();
+                loop {
+                    let before = plock(&chan_e.inner).pending.len();
+                    std::thread::sleep(Duration::from_millis(QUIET_MS));
+                    let g = plock(&chan_e.inner);
+                    if g.pending.len() == before
+                        || g.closed
+                        || g.pending.len() >= EMIT_CHUNK / 2
+                        || collect_start.elapsed().as_millis() >= COALESCE_MS as u128
+                    {
+                        break;
+                    }
+                }
                 // 3) flow control 확인 후 pending 인출
                 let (raw, closed_now) = {
                     let mut g = plock(&chan_e.inner);
@@ -413,6 +575,15 @@ impl PtyManager {
     }
 
     pub fn write(&self, id: &str, data: &str) {
+        // 사용자 입력 = 허가 응답 가능성 — waiting 즉시 해제 (500ms 폴링을 기다리지 않음).
+        // 낡은 훅 waiting 파일이 다시 켜지 않도록 해제 시각을 기록한다
+        {
+            let mut map = plock(&self.metas);
+            if let Some(m) = map.get_mut(id) {
+                m.waiting = false;
+                m.waiting_cleared_ms = now_ms();
+            }
+        }
         // 맵 락은 조회 즉시 놓고 세션별 락으로 쓰기 — 한 세션의 블로킹 write 가
         // 다른 세션의 write/resize/close 를 막지 않는다
         let io = plock(&self.ios).get(id).cloned();
@@ -447,6 +618,7 @@ impl PtyManager {
         }
         plock(&self.ios).remove(id);
         plock(&self.metas).remove(id);
+        crate::hooks::remove_state(id); // SessionEnd 훅이 못 지운 경우의 보강 정리
     }
 
     /// 웹뷰 복구용 스크롤백 스냅샷.
@@ -475,6 +647,14 @@ impl PtyManager {
         }
     }
 
+    /// 세션 제목 변경 (사이드바 인라인 편집)
+    pub fn rename(&self, id: &str, title: &str) {
+        let mut map = plock(&self.metas);
+        if let Some(m) = map.get_mut(id) {
+            m.title = title.to_string();
+        }
+    }
+
     /// 사용자가 해당 세션을 확인함 → '완료' 배지 해제
     pub fn ack(&self, app: &AppHandle, id: &str) {
         let mut map = plock(&self.metas);
@@ -492,5 +672,40 @@ impl PtyManager {
         let mut metas: Vec<&SessionMeta> = map.values().collect();
         metas.sort_by_key(|m| m.created_at_ms);
         metas.into_iter().map(|m| m.info()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc_scanner_handles_chunk_split() {
+        // 시퀀스가 read 청크 경계에서 잘려도 이어서 조립돼야 한다
+        let mut s = OscScanner::new();
+        assert!(s.feed(b"hello \x1b]9;approval requ").is_empty());
+        let out = s.feed(b"ested\x07 world");
+        assert_eq!(out, vec!["9;approval requested".to_string()]);
+        assert!(osc_waiting_signal(&out[0]));
+    }
+
+    #[test]
+    fn osc_scanner_st_terminator_and_title_noise() {
+        let mut s = OscScanner::new();
+        let out = s.feed(b"\x1b]777;notify;Codex;approval requested\x1b\\\x1b]0;window title\x07");
+        assert_eq!(out.len(), 2);
+        assert!(osc_waiting_signal(&out[0]));
+        assert!(!osc_waiting_signal(&out[1])); // 창 제목(OSC 0)은 알림이 아님
+    }
+
+    #[test]
+    fn osc_scanner_drops_oversized_payload() {
+        // OSC 52(클립보드) 같은 대형 페이로드는 수집 포기 — 이후 시퀀스는 정상 처리
+        let mut s = OscScanner::new();
+        let mut big = b"\x1b]52;c;".to_vec();
+        big.extend(std::iter::repeat(b'A').take(OSC_PAYLOAD_CAP * 2));
+        big.extend(b"\x07\x1b]9;permission needed\x07");
+        let out = s.feed(&big);
+        assert_eq!(out, vec!["9;permission needed".to_string()]);
     }
 }

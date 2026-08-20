@@ -27,15 +27,26 @@
     updateSettings: (patch) => invoke('update_settings', {
       fontSize: patch.fontSize ?? null,
       shell: patch.shell ?? null,
-      notifyOnDone: patch.notifyOnDone ?? null
+      notifyOnDone: patch.notifyOnDone ?? null,
+      notifyOnWaiting: patch.notifyOnWaiting ?? null
     }),
+
+    // AI 도구 연동 상태 { claude, codex } / 설치·제거 (허가 대기 감지)
+    hooksStatus: () => invoke('hooks_status'),
+    setClaudeHooks: (enable) => invoke('set_claude_hooks', { enable }),
+    setCodexHooks: (enable) => invoke('set_codex_hooks', { enable }),
 
     createSession: (projectId) => invoke('create_session', { projectId: projectId || null }),
     // Claude Code 가 저장해 둔 세션 목록 (cwd 기준) — [{ id, mtimeMs, preview }]
     listClaudeSessions: (cwd) => invoke('list_claude_sessions', { cwd }),
+    // 훅이 기록한 해당 터미널 세션의 Claude 세션 UUID (없으면 null)
+    claudeSessionOf: (sessionId) => invoke('claude_session_of', { sessionId }),
+    // 채팅 뷰용 대화 증분 tail (Claude/Codex 자동 선택, since 이전 대화 제외) — { file, offset, messages } | null
+    chatTail: (cwd, sid, file, offset, since) => invoke('chat_tail', { cwd, sid: sid || null, file: file || null, offset: offset || 0, since: since || null }),
     write: (id, data) => invoke('write_session', { id, data }),
     resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
     closeSession: (id) => invoke('close_session', { id }),
+    renameSession: (id, title) => invoke('rename_session', { id, title }),
     ackSession: (id) => invoke('ack_session', { id }),
     // 웹뷰 리로드/크래시 복구용 스크롤백 스냅샷 { data, off }
     getScrollback: (id) => invoke('get_scrollback', { id }),

@@ -1,8 +1,10 @@
 // Terminal Assistance — Tauri 진입점 + IPC 커맨드 정의
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod chat;
 mod claude;
 mod codex;
+mod hooks;
 mod pty;
 mod store;
 mod util;
@@ -151,11 +153,12 @@ fn remove_preset(store: StoreState, id: String) -> Result<(), String> {
 
 // ── 설정 ──
 #[tauri::command]
-fn update_settings(store: StoreState, font_size: Option<u32>, shell: Option<String>, notify_on_done: Option<bool>) -> Result<store::Settings, String> {
+fn update_settings(store: StoreState, font_size: Option<u32>, shell: Option<String>, notify_on_done: Option<bool>, notify_on_waiting: Option<bool>) -> Result<store::Settings, String> {
     let mut s = plock(&store);
     if let Some(v) = font_size { s.data.settings.font_size = v; }
     if let Some(v) = shell { s.data.settings.shell = v; }
     if let Some(v) = notify_on_done { s.data.settings.notify_on_done = v; }
+    if let Some(v) = notify_on_waiting { s.data.settings.notify_on_waiting = v; }
     s.save()?;
     Ok(s.data.settings.clone())
 }
@@ -163,21 +166,37 @@ fn update_settings(store: StoreState, font_size: Option<u32>, shell: Option<Stri
 // ── 세션 ──
 #[tauri::command]
 fn create_session(app: AppHandle, store: StoreState, ptys: State<PtyManager>, project_id: Option<String>) -> Result<pty::SessionInfo, String> {
-    let (cwd, title, shell) = {
+    let (cwd, shell) = {
         let s = plock(&store);
         let proj = project_id.as_ref().and_then(|pid| s.data.projects.iter().find(|p| &p.id == pid));
-        (
-            proj.map(|p| p.path.clone()),
-            proj.map(|p| p.name.clone()),
-            s.data.settings.shell.clone(),
-        )
+        (proj.map(|p| p.path.clone()), s.data.settings.shell.clone())
     };
-    ptys.create(app, project_id, cwd, &shell, title)
+    // 세션 제목: 같은 그룹(프로젝트 또는 홈) 안의 순번 — S1, S2…
+    // 프로젝트명 중복 표기를 없애고 '프로젝트명 — S2' 형태로 식별 가능하게 한다 (표기는 프론트)
+    let n = ptys
+        .list()
+        .iter()
+        .filter(|s| s.project_id == project_id)
+        .filter_map(|s| s.title.strip_prefix('S').and_then(|r| r.parse::<u32>().ok()))
+        .max()
+        .unwrap_or(0)
+        + 1;
+    ptys.create(app, project_id, cwd, &shell, Some(format!("S{}", n)))
 }
 
 #[tauri::command]
 fn write_session(ptys: State<PtyManager>, id: String, data: String) {
     ptys.write(&id, &data);
+}
+
+#[tauri::command]
+fn rename_session(ptys: State<PtyManager>, id: String, title: String) -> Result<(), String> {
+    let t = title.trim();
+    if t.is_empty() {
+        return Err("제목이 비어 있습니다".into());
+    }
+    ptys.rename(&id, t);
+    Ok(())
 }
 
 #[tauri::command]
@@ -323,12 +342,9 @@ async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Re
     app.restart();
 }
 
-// ── 완료 알림 (설정이 켜져 있을 때만) ──
+// ── 데스크톱 알림 — 종류별(완료/허가 대기) 게이트는 프론트가 각 설정으로 판단한다 ──
 #[tauri::command]
-fn notify(app: AppHandle, store: StoreState, title: String, body: String) {
-    if !plock(&store).data.settings.notify_on_done {
-        return;
-    }
+fn notify(app: AppHandle, title: String, body: String) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
@@ -391,6 +407,8 @@ fn main() {
             app.manage(Mutex::new(Store::load(config_dir)));
             let ptys = app.state::<PtyManager>();
             ptys.start_status_thread(app.handle().clone());
+            hooks::clean_state_dir(); // 이전 실행이 남긴 훅 상태 파일 정리
+            hooks::refresh_hook_script(); // 설치된 훅 스크립트를 최신 임베드 버전으로 갱신
 
             // 구버전(≤0.5.x)이 남긴 종료 시 세션 스냅샷 정리 —
             // 기능 제거 후에도 평문 터미널 기록이 디스크에 남지 않게 한다
@@ -418,6 +436,7 @@ fn main() {
             update_settings,
             create_session,
             write_session,
+            rename_session,
             resize_session,
             close_session,
             ack_session,
@@ -434,7 +453,12 @@ fn main() {
             notify,
             git_branch,
             claude::list_claude_sessions,
-            codex::codex_usage
+            chat::chat_tail,
+            codex::codex_usage,
+            hooks::hooks_status,
+            hooks::claude_session_of,
+            hooks::set_claude_hooks,
+            hooks::set_codex_hooks
         ])
         .run(tauri::generate_context!())
         .expect("Terminal Assistance 실행 실패");

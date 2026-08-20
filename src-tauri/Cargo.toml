@@ -1,6 +1,6 @@
 [package]
 name = "terminal-assistance"
-version = "0.6.0"
+version = "0.7.0"
 description = "AI ?쒕???硫???꾨줈?앺듃 ?곕????뚰겕?ㅽ럹?댁뒪"
 authors = ["zzamjak-cloud"]
 license = "MIT"
@@ -20,6 +20,8 @@ tauri-plugin-single-instance = "2"
 portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# ~/.codex/config.toml 병합 설치용 — 사용자 설정의 포맷·주석을 보존한다
+toml_edit = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # ?쒖뒪??硫붾え由??꾪솴 ?쒖떆??(硫붾え由?議고쉶留??ъ슜)
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
