@@ -24,14 +24,8 @@
     <main id="main">
       <div id="topbar">
         <div id="active-info">세션 없음</div>
-        <div id="view-tabs" style="display:none" title="메인 화면 전환">
-          <button data-mode="term" class="active">터미널</button>
-          <button data-mode="chat">채팅</button>
-        </div>
         <div id="topbar-actions">
           <div id="waiting-indicator" class="hidden" title="클릭 시 허가 대기 중인 세션으로 이동"></div>
-          <div id="codex-indicator" class="hidden" title="코덱스 사용량"></div>
-          <div id="mem-indicator" title="시스템 메모리 사용률"></div>
           <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
           <button id="btn-toggle-prompts" title="Claude 세션·다음 프롬프트 패널 토글">☰ 패널</button>
         </div>
@@ -46,32 +40,38 @@
             <b>Cmd/Ctrl+1~9</b> 세션 전환 · <b>Cmd/Ctrl+T</b> 새 세션</p>
           </div>
         </div>
-        <div id="chat-view" style="display:none">
-          <div id="chat-log"></div>
-          <div id="chat-input-row">
-            <textarea id="chat-input" placeholder="프롬프트 입력… (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
-            <button id="chat-send">전송</button>
-          </div>
-        </div>
       </div>
       <div id="image-strip"></div>
     </main>
     <div class="resize-handle" id="resize-right" title="드래그로 너비 조절"></div>
     <aside id="prompt-panel" class="hidden">
-      <section id="history-panel">
-        <div id="prompt-head">
-          <span>Claude 세션</span>
-          <span>
-            <button id="btn-claude-refresh" title="목록 새로고침">↻</button>
-            <button id="btn-fold-right" class="fold-btn" title="패널 접기">⟩</button>
-          </span>
+      <!-- 패널 최상단 헤더: 코덱스 남은 사용량 + 시스템 메모리 -->
+      <div id="usage-head">
+        <span id="panel-codex" class="hidden" title="코덱스 남은 사용량"></span>
+        <span id="panel-mem" title="시스템 메모리 사용률"></span>
+        <span class="spacer"></span>
+        <button id="btn-fold-right" class="fold-btn" title="패널 접기">⟩</button>
+      </div>
+      <section id="history-panel" class="panel-sec" data-sec="claude">
+        <div class="sec-head">
+          <span class="chevron open">❯</span><span class="sec-title">Claude 세션</span>
+          <button id="btn-claude-refresh" title="목록 새로고침">↻</button>
         </div>
-        <div id="claude-list"></div>
+        <div id="claude-list" class="sec-body"></div>
       </section>
-      <div id="panel-divider" title="드래그로 높이 조절"></div>
-      <section id="draft-panel">
-        <div class="wp-head"><span>다음 프롬프트</span><button id="btn-draft-add">+ 초안</button></div>
-        <div id="draft-list"></div>
+      <section id="plan-panel" class="panel-sec" data-sec="plans">
+        <div class="sec-head">
+          <span class="chevron open">❯</span><span class="sec-title">계획 문서</span>
+          <button id="btn-plan-refresh" title="목록 새로고침">↻</button>
+        </div>
+        <div id="plan-list" class="sec-body"></div>
+      </section>
+      <section id="draft-panel" class="panel-sec" data-sec="drafts">
+        <div class="sec-head">
+          <span class="chevron open">❯</span><span class="sec-title">다음 프롬프트</span>
+          <button id="btn-draft-add">+ 초안</button>
+        </div>
+        <div id="draft-list" class="sec-body"></div>
       </section>
     </aside>
   </div>
@@ -93,8 +93,8 @@
   <!-- app.js 가 App 을 정의하고, 아래 파일들이 Object.assign 으로 영역별 메서드를 붙인다 -->
   <script src="app.js"></script>
   <script src="drafts.js"></script>
-  <script src="chat-view.js"></script>
   <script src="claude-sessions.js"></script>
+  <script src="plans.js"></script>
   <script src="panel-layout.js"></script>
   <script src="modals.js"></script>
 </body>

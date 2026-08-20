@@ -12,11 +12,14 @@ const App = {
     platform: '',   // 백엔드가 알려주는 OS (windows | macos | linux)
     images: {},     // sessionId → [{ path, src }] 최근 첨부 이미지
     branches: {},   // sessionId → git 브랜치명 (헤더 표시용, 2초 폴링)
-    drafts: {}      // projectId(또는 '') → [{ id, text }] 다음 프롬프트 초안 (영속화)
+    drafts: {},     // projectId(또는 '') → [{ id, text }] 다음 프롬프트 초안 (영속화)
+    projectEmptyId: null // 세션 없는 프로젝트 선택 시 '새 세션 시작' 화면 대상
   },
 
   async boot() {
     TerminalView.init();
+    // 기본 온보딩 안내(index.html 정적 마크업)를 보관 — 빈 프로젝트 화면과 번갈아 쓴다
+    App._emptyDefault = document.getElementById('empty-state').innerHTML;
     const st = await ta.getState();
     Object.assign(App.state, {
       projects: st.projects, presets: st.presets, settings: st.settings, sessions: st.sessions,
@@ -67,6 +70,7 @@ const App = {
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
     document.getElementById('btn-draft-add').onclick = () => App.addDraft();
     document.getElementById('btn-claude-refresh').onclick = () => App.renderClaudeList(true);
+    document.getElementById('btn-plan-refresh').onclick = () => App.renderPlanList(true);
     // 시스템 메모리 폴링 (2초)
     setInterval(() => App.pollStatus(), 2000);
     App.pollStatus();
@@ -113,8 +117,47 @@ const App = {
     App.renderTopbar();
     App.renderImageStrip();
     App.renderClaudeList();
+    App.renderPlanList();
     App.renderDraftList();
-    document.getElementById('empty-state').style.display = App.state.sessions.length ? 'none' : 'flex';
+    App.renderEmptyState();
+  },
+
+  // ── 메인 영역 빈 화면 ──
+  // 세션 없는 프로젝트를 선택하면 해당 프로젝트의 '새 세션 시작' 화면,
+  // 세션이 하나도 없으면 기본 온보딩 안내, 그 외에는 숨김.
+  showProjectEmpty(projectId) {
+    App.state.projectEmptyId = projectId;
+    App.renderAll();
+  },
+
+  renderEmptyState() {
+    const el = document.getElementById('empty-state');
+    const pid = App.state.projectEmptyId;
+    const proj = pid && App.state.projects.find((p) => p.id === pid);
+    // 선택한 프로젝트에 세션이 생겼거나 프로젝트가 삭제됐으면 선택 해제
+    if (!proj || App.state.sessions.some((s) => s.projectId === pid)) {
+      App.state.projectEmptyId = null;
+      el.textContent = '';
+      if (App.state.sessions.length) {
+        el.style.display = 'none';
+      } else {
+        el.style.display = 'flex';
+        el.innerHTML = App._emptyDefault;
+      }
+      return;
+    }
+    el.style.display = 'flex';
+    el.textContent = '';
+    const h = document.createElement('h2');
+    h.textContent = proj.name;
+    h.style.color = proj.color;
+    const p = document.createElement('p');
+    p.textContent = '아직 이 프로젝트에 세션이 없습니다.';
+    const btn = document.createElement('button');
+    btn.id = 'btn-empty-new';
+    btn.textContent = '＋ 새 세션 시작';
+    btn.onclick = () => App.createSession(proj.id); // activateSession 이 화면을 터미널로 전환
+    el.append(h, p, btn);
   },
 
   // 활성 세션 브랜치 갱신 — 값이 바뀐 경우에만 헤더 재렌더
@@ -130,44 +173,44 @@ const App = {
     } catch (_) { /* 조회 실패는 무시 */ }
   },
 
-  // ── 코덱스 사용량 (헤더 표시) ──
+  // ── 코덱스 남은 사용량 (우측 패널 최상단 헤더 표시) ──
   // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 최근 12시간 내 기록이 있을 때만 표시.
   async pollCodexUsage() {
-    const el = document.getElementById('codex-indicator');
+    const el = document.getElementById('panel-codex');
     let u = null;
     try { u = await ta.codexUsage(); } catch (_) { /* 조회 실패 = 미표시 */ }
     if (!u || !u.windows.length || Date.now() - u.mtimeMs > 12 * 3600 * 1000) {
-      el.classList.add('hidden');
+      el.className = 'hidden';
       return;
     }
     const label = (m) => m === 300 ? '5시간' : m === 10080 ? '주간' : Math.round(m / 60) + '시간';
-    const parts = u.windows.map((w) => `${label(w.windowMinutes)} ${Math.round(w.usedPercent)}%`);
-    const worst = Math.max(...u.windows.map((w) => w.usedPercent));
-    let cls = 'ok';                  // < 50% : 여유 (녹색)
-    if (worst >= 90) cls = 'crit';   // ≥ 90% : 소진 임박 (빨강)
-    else if (worst >= 75) cls = 'warn';
-    else if (worst >= 50) cls = 'mid';
-    el.className = cls;
-    el.textContent = 'Codex ' + parts.join(' · ');
-    el.title = u.windows.map((w) =>
-      `${label(w.windowMinutes)} ${w.usedPercent.toFixed(1)}% 사용` +
+    const parts = u.windows.map((w) => `${label(w.windowMinutes)} ${Math.max(0, 100 - Math.round(w.usedPercent))}%`);
+    const worstLeft = Math.min(...u.windows.map((w) => 100 - w.usedPercent));
+    let cls = 'ok';                      // > 50% 남음 : 여유 (녹색)
+    if (worstLeft <= 10) cls = 'crit';   // ≤ 10% 남음 : 소진 임박 (빨강)
+    else if (worstLeft <= 25) cls = 'warn';
+    else if (worstLeft <= 50) cls = 'mid';
+    el.className = 'gauge ' + cls;
+    el.textContent = 'Codex ' + parts.join('·');
+    el.title = '남은 사용량:\n' + u.windows.map((w) =>
+      `${label(w.windowMinutes)} ${(100 - w.usedPercent).toFixed(1)}% 남음` +
       (w.resetsAt ? ` (리셋 ${new Date(w.resetsAt * 1000).toLocaleString()})` : '')
     ).join('\n') + (u.plan ? `\n플랜: ${u.plan}` : '') +
       `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleTimeString()}`;
   },
 
-  // ── 시스템 메모리 폴링 ──
+  // ── 시스템 메모리 폴링 (우측 패널 헤더 표시) ──
   async pollStatus() {
     App.refreshBranch(); // 같은 2초 주기에 브랜치도 함께 갱신 (checkout 반영)
     try {
       const m = await ta.getMemory();
-      const el = document.getElementById('mem-indicator');
       let cls = 'ok';                       // < 60% : 원활 (녹색)
       if (m.pct >= 85) cls = 'crit';        // ≥ 85% : 위험 (빨강, 점멸)
       else if (m.pct >= 75) cls = 'warn';   // ≥ 75% : 버거움 (주황)
       else if (m.pct >= 60) cls = 'mid';    // ≥ 60% : 주의 (노랑)
-      el.className = cls;
-      el.textContent = `메모리 ${m.pct}% 사용중`;
+      const el = document.getElementById('panel-mem');
+      el.className = 'gauge ' + cls;
+      el.textContent = `mem ${m.pct}%`;
       el.title = `시스템 메모리 ${m.usedGb} / ${m.totalGb} GB`;
     } catch (_) { /* 조회 실패는 무시 */ }
   },
@@ -206,7 +249,6 @@ const App = {
   },
 
   renderTopbar() {
-    if (App.applyViewMode) App.applyViewMode(); // 탭 표시 동기화 (세션 없음 → 숨김)
     // 허가 대기 집계 배지 — 어느 세션을 보고 있든 대기 발생을 놓치지 않게 헤더에 상시 표시
     const waiting = App.state.sessions.filter((x) => x.status === 'waiting');
     const wi = document.getElementById('waiting-indicator');
@@ -264,10 +306,10 @@ const App = {
 
   activateSession(id) {
     App.state.activeId = id;
+    App.state.projectEmptyId = null; // 세션 활성화 = 빈 프로젝트 시작 화면 해제
     localStorage.setItem('ta-active-session', id); // 웹뷰 리로드 복구 시 활성 세션 유지용
     TerminalView.activate(id);
     App.checkDoneViewed(id); // 즉시 해제 대신 열람 카운트다운 — 무엇이 끝났는지 볼 시간을 준다
-    if (App.applyViewMode) App.applyViewMode(true); // 세션별 터미널/채팅 탭 상태 복원
     App.renderAll();
     App.refreshBranch(); // 전환 즉시 브랜치 표시 (다음 폴링까지 기다리지 않게)
   },
@@ -288,7 +330,6 @@ const App = {
     delete App.state.images[id];
     delete App.state.branches[id];
     App.clearDoneTimers(id);
-    if (App.viewModes) { App.viewModes.delete(id); App.chatStates.delete(id); }
     TerminalView.dispose(id);
     if (App.state.activeId === id) {
       const next = App.state.sessions[App.state.sessions.length - 1];

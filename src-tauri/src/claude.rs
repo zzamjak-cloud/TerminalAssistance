@@ -126,10 +126,10 @@ pub async fn list_claude_sessions(cwd: String) -> Vec<ClaudeSession> {
     out
 }
 
-// ── 채팅 뷰: 세션 jsonl 파서 (tail 본체는 chat.rs) ──
-pub(crate) const CHAT_TAIL_INIT: u64 = 256 * 1024; // 첫 로드 시 파일 끝에서 읽는 최대 범위 (대형 세션 방어)
+// ── 세션 열람 팝업: 세션 jsonl → 대화 메시지 파서 ──
 pub(crate) const CHAT_MSG_CAP: usize = 4000; // 말풍선 1개 텍스트 상한
 pub(crate) const TOOL_HINT_CAP: usize = 100;
+const VIEW_TAIL_CAP: u64 = 512 * 1024; // 열람 시 파일 끝에서 읽는 최대 범위 (대형 세션 방어)
 
 #[derive(Serialize)]
 pub struct ChatMsg {
@@ -138,31 +138,45 @@ pub struct ChatMsg {
     pub text: String,
 }
 
-#[derive(Serialize)]
-pub struct ChatChunk {
-    pub file: String, // tail 중인 세션 id — 프론트의 파일 전환(로그 리셋) 감지용
-    pub offset: u64,
-    pub messages: Vec<ChatMsg>,
-}
-
-/// 디렉토리에서 최근 활동 세션 id (agent-* 제외) — 훅 미설치 시의 폴백 식별
-pub(crate) fn latest_session_id(dir: &Path) -> Option<String> {
-    fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter_map(|e| {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
-                return None;
-            }
-            let id = p.file_stem()?.to_str()?.to_string();
-            if id.starts_with("agent-") {
-                return None;
-            }
-            Some((e.metadata().ok()?.modified().ok()?, id))
-        })
-        .max_by_key(|(m, _)| *m)
-        .map(|(_, id)| id)
+/// 세션 열람 팝업용: 저장된 세션 jsonl 의 꼬리를 파싱해 대화 메시지 목록으로 반환.
+/// 읽기 전용 — Claude Code 저장소를 건드리지 않는다.
+#[tauri::command]
+pub async fn claude_session_messages(cwd: String, id: String) -> Vec<ChatMsg> {
+    // id 는 우리가 나열한 파일 스템이지만, 경로 탈출 문자는 방어적으로 거부
+    if id.contains('/') || id.contains('\\') || id.contains("..") {
+        return Vec::new();
+    }
+    let Some(home) = home_dir() else { return Vec::new() };
+    let path = home
+        .join(".claude").join("projects").join(munge_path(&cwd))
+        .join(format!("{}.jsonl", id));
+    let Ok(mut f) = fs::File::open(&path) else { return Vec::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(VIEW_TAIL_CAP);
+    use std::io::{Seek, SeekFrom};
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    if f.read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+    // 중간에서 시작했다면 첫 부분 줄(잘린 레코드)은 버린다
+    let begin = if start > 0 {
+        buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(buf.len())
+    } else {
+        0
+    };
+    let mut out = Vec::new();
+    for line in buf[begin..].split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) {
+            line_msgs(&v, &mut out);
+        }
+    }
+    out
 }
 
 /// tool_use 입력에서 사람이 알아볼 대표값 하나 (파일 경로·명령 등)

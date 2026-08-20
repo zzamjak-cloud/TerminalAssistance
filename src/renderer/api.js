@@ -39,10 +39,11 @@
     createSession: (projectId) => invoke('create_session', { projectId: projectId || null }),
     // Claude Code 가 저장해 둔 세션 목록 (cwd 기준) — [{ id, mtimeMs, preview }]
     listClaudeSessions: (cwd) => invoke('list_claude_sessions', { cwd }),
-    // 훅이 기록한 해당 터미널 세션의 Claude 세션 UUID (없으면 null)
-    claudeSessionOf: (sessionId) => invoke('claude_session_of', { sessionId }),
-    // 채팅 뷰용 대화 증분 tail (Claude/Codex 자동 선택, since 이전 대화 제외) — { file, offset, messages } | null
-    chatTail: (cwd, sid, file, offset, since) => invoke('chat_tail', { cwd, sid: sid || null, file: file || null, offset: offset || 0, since: since || null }),
+    // 세션 열람 팝업용: 저장된 세션 기록 → 대화 메시지 [{ role, kind, text }]
+    claudeSessionMessages: (cwd, id) => invoke('claude_session_messages', { cwd, id }),
+    // 계획 문서 (프로젝트 경로 귀속 영속화) — 목록 [{ id, sessionId, createdMs, title }] / 본문
+    listPlanDocs: (cwd) => invoke('list_plan_docs', { cwd }),
+    getPlanDoc: (cwd, id) => invoke('get_plan_doc', { cwd, id }),
     write: (id, data) => invoke('write_session', { id, data }),
     resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
     closeSession: (id) => invoke('close_session', { id }),

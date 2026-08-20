@@ -2,12 +2,14 @@
 Object.assign(App, {
   _modalCleanup: null, // 이전 모달의 keydown(Esc) 리스너 해제 함수
 
-  modal(html, onOpen) {
+  // opts.wide: 문서 열람 등 넓은 팝업 (기본 420px → 680px)
+  modal(html, onOpen, opts) {
     // close() 를 거치지 않고 모달 위에 새 모달을 여는 경로(프리셋 관리 → 수정 등)에서
     // 이전 Esc 리스너가 document 에 남지 않도록 먼저 정리한다
     if (App._modalCleanup) { App._modalCleanup(); App._modalCleanup = null; }
     const bd = document.getElementById('modal-backdrop');
     const m = document.getElementById('modal');
+    m.classList.toggle('wide', !!(opts && opts.wide));
     m.innerHTML = html;
     bd.classList.remove('hidden');
     // 바깥 클릭으로는 닫지 않는다 — 입력 중 드래그가 배경 클릭으로 판정돼

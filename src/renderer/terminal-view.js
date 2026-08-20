@@ -42,6 +42,14 @@ const TerminalView = {
     // macOS 는 _keyDownSeen 가드를 우회해 insertText 를 직접 전송한다.
     const core = term._core;
     let imeCommit = null; // { text, at } — 직전 조합 커밋 (중복/합성 keypress 판별용)
+    // ── textarea 미러 보정 (macOS 전용, 아래 IME 블록에서 실제 동작 부여) ──
+    // differ 는 textarea 를 터미널 입력 라인의 미러로 쓴다. 그런데 xterm 이 처리하고
+    // 취소하는 백스페이스류는 터미널에서만 지워지고 textarea 에는 글자가 남아 미러가
+    // 어긋나고, 이후 IME 의 음절 교체 diff 가 "이미 지운 글자"를 또 지우는 연쇄 삭제가
+    // 됐다 (백스페이스 후 재입력 시 이전 텍스트가 계속 사라지던 버그의 원인).
+    let mirrorTrimChar = () => {};
+    let mirrorTrimWord = () => {};
+    let mirrorClear = () => {};
     if (core && typeof core._inputEvent === 'function' && term.textarea) {
       const origInputEvent = core._inputEvent.bind(core);
       const isMac = App.state.platform === 'macos';
@@ -81,13 +89,30 @@ const TerminalView = {
           const out = '\x7f'.repeat(deleted) + inserted;
           if (out) core.coreService.triggerDataEvent(out, true);
         });
-        // IME 가 소비한 백스페이스(keyCode 229): 자모 분해는 위 diff 가 처리하지만,
-        // IME 텍스트 경계를 넘어 지울 때는 textarea 변화 없이 keydown 만 온다 → DEL 폴백
+        // 미러 보정 구현 (서로게이트 쌍 안전하게 문자 단위로)
+        mirrorTrimChar = () => {
+          const chars = Array.from(taEl.value);
+          if (chars.length) { chars.pop(); taEl.value = chars.join(''); }
+        };
+        mirrorTrimWord = () => { taEl.value = taEl.value.replace(/\S+\s*$/, ''); };
+        mirrorClear = () => { taEl.value = ''; };
+
         taEl.addEventListener('keydown', (ev) => {
+          // 일반 백스페이스(keyCode 8): xterm 이 \x7f 전송 후 이벤트를 취소해
+          // textarea 에는 글자가 남는다 → 미러에서도 한 글자 지워 desync 를 막는다
+          if (ev.key === 'Backspace' && ev.keyCode !== 229 && !ev.metaKey && !ev.altKey && !ev.ctrlKey) {
+            mirrorTrimChar();
+            return;
+          }
+          // IME 가 소비한 백스페이스(keyCode 229): 자모 분해는 위 diff 가 처리하지만,
+          // IME 텍스트 경계를 넘어 지울 때는 textarea 변화 없이 keydown 만 온다 → DEL 폴백
           if (ev.keyCode !== 229 || ev.key !== 'Backspace') return;
           sawInput = false;
           setTimeout(() => {
-            if (!sawInput) core.coreService.triggerDataEvent('\x7f', true);
+            if (!sawInput) {
+              core.coreService.triggerDataEvent('\x7f', true);
+              mirrorTrimChar(); // 전송한 삭제를 미러에도 반영 — 남겨두면 diff 이중 삭제
+            }
           }, 0);
         });
         // xterm 의 keydown(229) 기반 textarea diff 전송기는 위 differ 와 이중 전송
@@ -157,26 +182,34 @@ const TerminalView = {
           return false;
         }
         if (ev.altKey && !ev.metaKey && horiz) {
+          ev.preventDefault(); // textarea 의 단어 단위 캐럿 이동 차단 — IME 삽입 위치 desync 방지
           ta.write(session.id, ev.key === 'ArrowLeft' ? '\x1bb' : '\x1bf');
           return false;
         }
         if (ev.key === 'Backspace' && (ev.metaKey !== ev.altKey)) {
+          // preventDefault 필수: 기본 동작이 textarea 의 단어/줄을 지우면 input diff 가
+          // 같은 삭제를 한 번 더 전송해 이중 삭제가 된다
+          ev.preventDefault();
+          if (ev.metaKey) mirrorClear(); else mirrorTrimWord(); // 전송분을 미러에도 반영
           ta.write(session.id, ev.metaKey ? '\x15' : '\x17');
           return false;
         }
       }
       // Cmd/Ctrl+V: 클립보드에 이미지가 있으면 경로 첨부로 대체, 아니면 텍스트 붙여넣기
       if (mod && !ev.altKey && !ev.shiftKey && ev.key.toLowerCase() === 'v') {
+        ev.preventDefault();
         App.pasteToSession(session.id);
         return false;
       }
       // Cmd/Ctrl+1~9: 세션 전환 (터미널 포커스 중에도 동작)
       if (mod && ev.key >= '1' && ev.key <= '9') {
+        ev.preventDefault();
         App.activateByIndex(Number(ev.key) - 1);
         return false;
       }
       // Cmd/Ctrl+T: 현재 프로젝트에 새 세션
       if (mod && ev.key.toLowerCase() === 't') {
+        ev.preventDefault();
         App.newSessionInActiveProject();
         return false;
       }

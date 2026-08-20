@@ -58,18 +58,64 @@ Object.assign(App, {
       text.className = 'cs-text';
       text.textContent = it.preview;
       row.title = it.preview + '\n\n' + new Date(it.mtimeMs).toLocaleString()
-        + '\n클릭하면 새 터미널에서 claude --resume 으로 재개합니다.';
-      row.onclick = () => App.resumeClaudeSession(it);
+        + '\n클릭하면 저장된 대화 내용을 보여줍니다.';
+      row.onclick = () => App.showClaudeSessionPopup(it);
       row.append(time, text);
       el.appendChild(row);
     }
   },
 
-  // 같은 프로젝트에 새 터미널을 열고 resume 명령 실행.
+  // 세션 항목 클릭 → 저장된 대화 내용을 팝업으로 열람. 재개는 팝업의 버튼으로.
+  async showClaudeSessionPopup(it) {
+    const cwd = App.claudeCwd();
+    let msgs = [];
+    try { msgs = await ta.claudeSessionMessages(cwd, it.id); } catch (_) { /* 실패 = 빈 내용 */ }
+    App.modal(`
+      <h3>Claude 세션 기록</h3>
+      <div class="modal-sub"></div>
+      <div class="cv-log"></div>
+      <div class="modal-actions">
+        <button id="m-resume">새 터미널에서 이어서 진행</button>
+        <button id="m-close">닫기</button>
+      </div>`,
+      (m, close) => {
+        m.querySelector('.modal-sub').textContent =
+          new Date(it.mtimeMs).toLocaleString() + ' · ' + it.id.slice(0, 8);
+        const log = m.querySelector('.cv-log');
+        if (!msgs.length) {
+          const e = document.createElement('div');
+          e.className = 'prompt-empty';
+          e.textContent = '표시할 대화 내용이 없습니다.';
+          log.appendChild(e);
+        }
+        for (const msg of msgs) {
+          const b = document.createElement('div');
+          b.className = 'cv-msg ' + (msg.kind === 'tool' ? 'tool' : msg.role);
+          b.textContent = msg.kind === 'tool' ? '· ' + msg.text : msg.text;
+          log.appendChild(b);
+        }
+        log.scrollTop = log.scrollHeight; // 최근 대화부터 보이게
+        m.querySelector('#m-resume').onclick = () => { close(); App.resumeClaudeSession(it); };
+        m.querySelector('#m-close').onclick = close;
+      }, { wide: true });
+  },
+
+  // 재개 자동화: 새 세션을 자동 생성하고 그 안에서 resume 명령을 즉시 실행한다.
+  // 세션 경로는 기록의 cwd 와 일치하는 프로젝트 우선 — Claude Code 는 세션을 경로 기준으로
+  // 찾으므로 홈 터미널에서 열람했더라도 올바른 경로에서 재개된다.
   // 셸 초기화 출력과 입력이 얽히지 않도록 잠시 뒤에 보낸다 (그 전 입력도 PTY 가 버퍼링하긴 함)
+  _resuming: false, // 연타로 세션이 여러 개 생기지 않게
   async resumeClaudeSession(it) {
-    const s = App.state.sessions.find((x) => x.id === App.state.activeId);
-    const info = await App.createSession(s ? s.projectId : null);
-    if (info) setTimeout(() => ta.write(info.id, 'claude --resume ' + it.id + '\r'), 600);
+    if (App._resuming) return;
+    App._resuming = true;
+    try {
+      const cwd = App.claudeCwd();
+      const active = App.state.sessions.find((x) => x.id === App.state.activeId);
+      const proj = App.state.projects.find((p) => p.path === cwd);
+      const info = await App.createSession(proj ? proj.id : (active ? active.projectId : null));
+      if (info) setTimeout(() => ta.write(info.id, 'claude --resume ' + it.id + '\r'), 600);
+    } finally {
+      App._resuming = false;
+    }
   }
 });

@@ -1,10 +1,10 @@
 // Terminal Assistance — Tauri 진입점 + IPC 커맨드 정의
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod chat;
 mod claude;
 mod codex;
 mod hooks;
+mod plans;
 mod pty;
 mod store;
 mod util;
@@ -453,7 +453,9 @@ fn main() {
             notify,
             git_branch,
             claude::list_claude_sessions,
-            chat::chat_tail,
+            claude::claude_session_messages,
+            plans::list_plan_docs,
+            plans::get_plan_doc,
             codex::codex_usage,
             hooks::hooks_status,
             hooks::claude_session_of,

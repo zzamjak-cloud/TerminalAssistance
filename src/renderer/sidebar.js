@@ -131,8 +131,8 @@ function renderSidebar() {
   for (const p of projects) {
     const mySessions = sessions.filter((s) => s.projectId === p.id);
     const folded = Collapsed.has(p.id);
-    // 현재 활성 세션이 이 프로젝트 소속이면 프로젝트 행도 파랑으로 강조
-    const hasActive = mySessions.some((s) => s.id === activeId);
+    // 현재 활성 세션이 이 프로젝트 소속(또는 빈 프로젝트 선택 중)이면 프로젝트 행도 파랑으로 강조
+    const hasActive = mySessions.some((s) => s.id === activeId) || p.id === App.state.projectEmptyId;
 
     const box = document.createElement('div');
     box.className = 'project';
@@ -141,12 +141,17 @@ function renderSidebar() {
     const row = document.createElement('div');
     row.className = 'project-row' + (hasActive ? ' active' : '');
 
-    // 폴딩 토글: 접힘 ❯(희미) / 펼침은 CSS 로 90도 회전(선명)
+    // 폴딩 토글: 접힘 ❯(희미) / 펼침은 CSS 로 90도 회전(선명).
+    // 세션이 없으면 접을 것도 없으므로 아이콘 없이 자리만 맞춘다
     const chev = document.createElement('span');
-    chev.className = 'chevron ' + (folded ? 'folded' : 'open');
-    chev.textContent = '❯';
-    chev.title = folded ? '펼치기' : '접기';
-    chev.onclick = (e) => { e.stopPropagation(); Collapsed.toggle(p.id); renderSidebar(); };
+    if (mySessions.length) {
+      chev.className = 'chevron ' + (folded ? 'folded' : 'open');
+      chev.textContent = '❯';
+      chev.title = folded ? '펼치기' : '접기';
+      chev.onclick = (e) => { e.stopPropagation(); Collapsed.toggle(p.id); renderSidebar(); };
+    } else {
+      chev.className = 'chevron';
+    }
     row.appendChild(chev);
 
     // 컬러 아이콘 대신 프로젝트 이름에 색상 적용
@@ -186,8 +191,12 @@ function renderSidebar() {
     actions.appendChild(addBtn);
     actions.appendChild(editBtn);
     row.appendChild(actions);
-    // 클릭 = 폴딩 접기/펼치기 (세션 추가는 ＋ 버튼으로만). 경로는 호버 툴팁으로만 표시
-    row.onclick = () => { Collapsed.toggle(p.id); renderSidebar(); };
+    // 클릭 = 폴딩 접기/펼치기 (세션 추가는 ＋ 버튼으로만). 경로는 호버 툴팁으로만 표시.
+    // 세션이 없는 프로젝트는 접을 것이 없으므로 메인 영역에 '새 세션 시작' 화면을 띄운다
+    row.onclick = () => {
+      if (mySessions.length) { Collapsed.toggle(p.id); renderSidebar(); }
+      else App.showProjectEmpty(p.id);
+    };
     row.title = p.path;
     box.appendChild(row);
 

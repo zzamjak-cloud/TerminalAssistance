@@ -1,12 +1,13 @@
 // 패널 레이아웃: 좌측 사이드바·우측 프롬프트/작업 패널의 폴딩과 드래그 리사이즈.
-// 저장 키: ta-left-w / ta-right-w / ta-hist-h / ta-left-fold / ta-prompt-panel
+// 저장 키: ta-left-w / ta-right-w / ta-left-fold / ta-prompt-panel / ta-sec-fold
 Object.assign(App, {
   togglePromptPanel() {
     const p = document.getElementById('prompt-panel');
     const hidden = p.classList.toggle('hidden');
     document.getElementById('resize-right').style.display = hidden ? 'none' : '';
     localStorage.setItem('ta-prompt-panel', hidden ? '0' : '1');
-    if (!hidden) { App.renderClaudeList(); App.renderDraftList(); } // 닫혀 있는 동안의 변경 반영
+    // 닫혀 있는 동안의 변경 반영
+    if (!hidden) { App.renderClaudeList(); App.renderPlanList(); App.renderDraftList(); }
     setTimeout(() => TerminalView.fitActive(), PANEL_ANIM_MS); // 슬라이딩 종료 후 리핏
   },
 
@@ -66,28 +67,32 @@ Object.assign(App, {
     wireResize('resize-left', sb, 'ta-left-w', 180, 420, true);
     wireResize('resize-right', pp, 'ta-right-w', 200, 460, false);
 
-    // 히스토리/초안 사이 가로 분할선: 드래그로 상단(히스토리) 높이 조절
-    const histPanel = document.getElementById('history-panel');
-    const hh = Number(localStorage.getItem('ta-hist-h'));
-    if (hh >= 90) histPanel.style.height = hh + 'px';
-    document.getElementById('panel-divider').onmousedown = (e) => {
-      e.preventDefault();
-      const handle = e.target;
-      const startY = e.clientY, startH = histPanel.offsetHeight;
-      handle.classList.add('active');
-      const move = (ev) => {
-        const max = pp.offsetHeight - 130; // 하단(초안) 최소 공간 확보
-        const h = Math.max(90, Math.min(max, startH + (ev.clientY - startY)));
-        histPanel.style.height = h + 'px';
+    App.initSectionFolds();
+  },
+
+  // 우측 패널 섹션(Claude 세션·계획 문서·다음 프롬프트) 접기/펼치기 — 상태는 localStorage
+  initSectionFolds() {
+    let folded = {};
+    try { folded = JSON.parse(localStorage.getItem('ta-sec-fold') || '{}'); } catch (_) {}
+    document.querySelectorAll('#prompt-panel .panel-sec').forEach((sec) => {
+      const key = sec.dataset.sec;
+      const arrow = sec.querySelector('.chevron');
+      const apply = () => {
+        const f = !!folded[key];
+        sec.classList.toggle('folded', f);
+        arrow.classList.toggle('folded', f);
+        arrow.classList.toggle('open', !f);
       };
-      const up = () => {
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', up);
-        handle.classList.remove('active');
-        localStorage.setItem('ta-hist-h', histPanel.offsetHeight);
+      apply();
+      const head = sec.querySelector('.sec-head');
+      head.onclick = () => {
+        folded[key] = !folded[key];
+        localStorage.setItem('ta-sec-fold', JSON.stringify(folded));
+        apply();
       };
-      window.addEventListener('mousemove', move);
-      window.addEventListener('mouseup', up);
-    };
+      // 헤더 안의 버튼(새로고침·+ 초안) 클릭이 폴딩 토글로 새지 않게
+      head.querySelectorAll('button').forEach((b) =>
+        b.addEventListener('click', (e) => e.stopPropagation()));
+    });
   }
 });
