@@ -29,6 +29,22 @@ const TerminalView = {
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
     term.open(holder);
 
+    // 한글 IME 중복 입력 수정 (xterm 5.5.0 + WebView2):
+    // 조합 커밋 텍스트는 compositionend 경로로 이미 pty 에 전송되는데, WebView2 는 커밋
+    // input(insertText) 이벤트를 keyup 이후에 발생시켜 xterm _inputEvent 의 _keyDownSeen
+    // 가드를 통과 → 같은 텍스트가 한 번 더 전송된다 (xterm.js#5887 의 조합 상태 가드 제안과 동일).
+    // 조합 중이거나 조합 결과 전송 대기 중이면 input 경로를 차단한다. 이모지 피커·받아쓰기처럼
+    // 조합 이벤트 없는 insertText 는 두 플래그가 모두 false 라 영향받지 않는다.
+    const core = term._core;
+    if (core && typeof core._inputEvent === 'function') {
+      const origInputEvent = core._inputEvent.bind(core);
+      core._inputEvent = (ev) => {
+        const ch = core._compositionHelper;
+        if (ev.isComposing || (ch && (ch._isComposing || ch._isSendingComposition))) return false;
+        return origInputEvent(ev);
+      };
+    }
+
     term.onData((d) => {
       ta.write(session.id, d);
       App.trackInput(session.id, d); // 프롬프트 히스토리용 입력 추적
