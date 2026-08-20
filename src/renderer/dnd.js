@@ -65,8 +65,11 @@ function makeSortable(opts) {
         if (indicator) indicator.remove();
         document.body.classList.remove('sorting');
         if (target) opts.onDrop(src.dataset.id, target.dataset.id, before);
-        // 드래그를 끝낸 mouseup 직후의 click 은 실행으로 이어지지 않게 차단
-        window.addEventListener('click', (ce) => { ce.stopPropagation(); ce.preventDefault(); }, { capture: true, once: true });
+        // 드래그를 끝낸 mouseup 과 같은 틱에 발생하는 click 만 차단.
+        // (이전엔 once 리스너가 무기한 남아, 드롭 없이 끝난 드래그 뒤 첫 정상 클릭을 삼켰음)
+        const swallow = (ce) => { ce.stopPropagation(); ce.preventDefault(); };
+        window.addEventListener('click', swallow, { capture: true, once: true });
+        setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
       }
     };
 

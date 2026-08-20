@@ -9,7 +9,10 @@ static ID_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 타임스탬프+시퀀스 기반 고유 id (외부 크레이트 없이)
 pub fn new_id() -> String {
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
     let n = ID_SEQ.fetch_add(1, Ordering::Relaxed);
     format!("{:x}{:x}", ts, n)
 }
@@ -94,16 +97,15 @@ impl Store {
         Store { file, data }
     }
 
-    pub fn save(&self) {
+    /// 저장 실패를 호출부(IPC 커맨드)로 전파해 프론트가 사용자에게 알릴 수 있게 한다
+    pub fn save(&self) -> Result<(), String> {
         if let Some(dir) = self.file.parent() {
             let _ = fs::create_dir_all(dir);
         }
         // 원자적 저장: 임시 파일에 완성한 뒤 rename — 저장 도중 크래시로 인한 설정 파일 손상 방지
-        if let Ok(json) = serde_json::to_string_pretty(&self.data) {
-            let tmp = self.file.with_extension("json.tmp");
-            if fs::write(&tmp, json).is_ok() {
-                let _ = fs::rename(&tmp, &self.file);
-            }
-        }
+        let json = serde_json::to_string_pretty(&self.data).map_err(|e| e.to_string())?;
+        let tmp = self.file.with_extension("json.tmp");
+        fs::write(&tmp, json).map_err(|e| format!("설정 저장 실패: {}", e))?;
+        fs::rename(&tmp, &self.file).map_err(|e| format!("설정 저장 실패: {}", e))
     }
 }

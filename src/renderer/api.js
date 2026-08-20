@@ -42,10 +42,6 @@
 
     // 시스템 메모리 현황 { pct, usedGb, totalGb }
     getMemory: () => invoke('get_memory'),
-    // 진행 계획: Claude Code todo 자동 연동분(null 가능) / 수동 항목
-    getAutoPlan: (id) => invoke('get_auto_plan', { id }),
-    getManualPlan: (id) => invoke('get_manual_plan', { id }),
-    setManualPlan: (id, items) => invoke('set_manual_plan', { id, items }),
     // '다음 프롬프트' 초안 (프로젝트별, 키: projectId 또는 "")
     setDrafts: (key, drafts) => invoke('set_drafts', { key, drafts }),
 

@@ -1,11 +1,4 @@
 // 사이드바: 프로젝트 목록(폴딩·포인터 드래그 정렬) + 프로젝트별 세션 목록 + 상태 시각화
-function statusDot(status) {
-  const d = document.createElement('span');
-  d.className = 'status-dot ' + status;
-  d.title = { idle: '대기', running: '실행 중', done: '작업 완료', exited: '종료됨' }[status] || status;
-  return d;
-}
-
 // 세션 상태를 한글 태그로 표시 (원형 점보다 직관적)
 function statusTag(status) {
   const t = document.createElement('span');
@@ -38,6 +31,16 @@ function initSidebarSort() {
   });
 }
 
+// 상태 전이 시 전체 재구축 대신 해당 세션 행의 태그만 교체.
+// 전체 재구축은 호버 표시가 깜빡이고 드래그 중이던 요소가 DOM 에서 떨어져 나가는 부작용이 있다.
+// 행이 없으면(프로젝트 접힘 → mini-dots 표시 등) 전체 렌더로 폴백.
+function updateSessionStatus(s) {
+  const row = document.querySelector(`#project-list .session-row[data-sid="${s.id}"]`);
+  if (!row) { renderSidebar(); return; }
+  const tag = row.querySelector('.status-tag');
+  if (tag) tag.replaceWith(statusTag(s.status));
+}
+
 function renderSidebar() {
   const list = document.getElementById('project-list');
   list.textContent = '';
@@ -46,16 +49,27 @@ function renderSidebar() {
   const sessionRow = (s) => {
     const row = document.createElement('div');
     row.className = 'session-row' + (s.id === activeId ? ' active' : '');
+    row.dataset.sid = s.id; // 상태 전이 시 증분 갱신용
     const t = document.createElement('span');
     t.className = 'session-title';
     t.textContent = s.title;
     row.appendChild(t);
     row.appendChild(statusTag(s.status));
+    // 닫기 버튼: 첫 클릭 = "삭제 확인" 표시(재클릭 시 실제 닫기) — 실수 방지
     const x = document.createElement('button');
-    x.className = 'session-close';
-    x.textContent = '✕';
-    x.title = '세션 닫기';
-    x.onclick = (e) => { e.stopPropagation(); App.closeSession(s.id); };
+    const armed = ArmedConfirm.isArmed(['session-close', s.id]);
+    x.className = 'session-close' + (armed ? ' confirm' : '');
+    x.textContent = armed ? '삭제 확인' : '✕';
+    x.title = armed ? '한 번 더 클릭하면 닫기' : '세션 닫기';
+    x.onclick = (e) => {
+      e.stopPropagation();
+      if (armed) {
+        ArmedConfirm.disarm();
+        App.closeSession(s.id);
+      } else {
+        ArmedConfirm.arm(['session-close', s.id], renderSidebar);
+      }
+    };
     row.appendChild(x);
     row.onclick = () => App.activateSession(s.id);
     return row;
@@ -64,18 +78,20 @@ function renderSidebar() {
   for (const p of projects) {
     const mySessions = sessions.filter((s) => s.projectId === p.id);
     const folded = Collapsed.has(p.id);
+    // 현재 활성 세션이 이 프로젝트 소속이면 프로젝트 행도 파랑으로 강조
+    const hasActive = mySessions.some((s) => s.id === activeId);
 
     const box = document.createElement('div');
     box.className = 'project';
     box.dataset.id = p.id;
 
     const row = document.createElement('div');
-    row.className = 'project-row';
+    row.className = 'project-row' + (hasActive ? ' active' : '');
 
-    // 폴딩 토글: 접힘 ▸(희미) / 펼침 ▾(선명)
+    // 폴딩 토글: 접힘 ❯(희미) / 펼침은 CSS 로 90도 회전(선명)
     const chev = document.createElement('span');
     chev.className = 'chevron ' + (folded ? 'folded' : 'open');
-    chev.textContent = '❯'; // 접힘 ❯(희미) / 펼침은 CSS 로 90도 회전(선명)
+    chev.textContent = '❯';
     chev.title = folded ? '펼치기' : '접기';
     chev.onclick = (e) => { e.stopPropagation(); Collapsed.toggle(p.id); renderSidebar(); };
     row.appendChild(chev);
@@ -129,7 +145,7 @@ function renderSidebar() {
     const box = document.createElement('div');
     box.className = 'project';
     const row = document.createElement('div');
-    row.className = 'project-row';
+    row.className = 'project-row' + (orphans.some((s) => s.id === activeId) ? ' active' : '');
     const name = document.createElement('span');
     name.className = 'project-name';
     name.textContent = '일반 터미널';

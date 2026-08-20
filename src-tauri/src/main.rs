@@ -1,11 +1,10 @@
 // Terminal Assistance — Tauri 진입점 + IPC 커맨드 정의
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod plan;
 mod pty;
 mod store;
+mod util;
 
-use plan::PlanWatcher;
 use pty::PtyManager;
 use serde_json::json;
 use std::fs;
@@ -16,13 +15,16 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
+use util::{plock, reorder_by_ids};
 
 type StoreState<'a> = State<'a, Mutex<Store>>;
+
+const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 // ── 초기 상태 ──
 #[tauri::command]
 fn get_state(store: StoreState, ptys: State<PtyManager>) -> serde_json::Value {
-    let s = store.lock().unwrap();
+    let s = plock(&store);
     json!({
         "projects": s.data.projects,
         "presets": s.data.presets,
@@ -38,89 +40,66 @@ type MemState = Mutex<sysinfo::System>;
 
 #[tauri::command]
 fn get_memory(mem: State<MemState>) -> serde_json::Value {
-    let mut s = mem.lock().unwrap();
+    let mut s = plock(&mem);
     s.refresh_memory();
     let total = s.total_memory();
     let used = s.used_memory();
     let pct = if total > 0 { (used as f64 / total as f64 * 100.0).round() as u32 } else { 0 };
     json!({
         "pct": pct,
-        "usedGb": (used as f64 / 1073741824.0 * 10.0).round() / 10.0,
-        "totalGb": (total as f64 / 1073741824.0 * 10.0).round() / 10.0
+        "usedGb": (used as f64 / GIB * 10.0).round() / 10.0,
+        "totalGb": (total as f64 / GIB * 10.0).round() / 10.0
     })
-}
-
-// ── 진행 계획 (자동 연동 + 수동) ──
-#[tauri::command]
-fn get_auto_plan(watcher: State<PlanWatcher>, id: String) -> serde_json::Value {
-    watcher.auto_plan(&id)
-}
-
-#[tauri::command]
-fn get_manual_plan(watcher: State<PlanWatcher>, id: String) -> Vec<plan::ManualItem> {
-    watcher.manual_plan(&id)
-}
-
-#[tauri::command]
-fn set_manual_plan(watcher: State<PlanWatcher>, id: String, items: Vec<plan::ManualItem>) {
-    watcher.set_manual_plan(&id, items);
 }
 
 // ── '다음 프롬프트' 초안 (프로젝트별 영속화, 키: projectId 또는 "") ──
 #[tauri::command]
-fn set_drafts(store: StoreState, key: String, drafts: Vec<store::Draft>) {
-    let mut s = store.lock().unwrap();
+fn set_drafts(store: StoreState, key: String, drafts: Vec<store::Draft>) -> Result<(), String> {
+    let mut s = plock(&store);
     if drafts.is_empty() {
         s.data.drafts.remove(&key);
     } else {
         s.data.drafts.insert(key, drafts);
     }
-    s.save();
+    s.save()
 }
 
 // ── 프로젝트 ──
 #[tauri::command]
-fn add_project(store: StoreState, name: String, path: String, color: Option<String>) -> Project {
+fn add_project(store: StoreState, name: String, path: String, color: Option<String>) -> Result<Project, String> {
     let p = Project { id: new_id(), name, path, color: color.unwrap_or_else(|| "#4f8cc9".into()) };
-    let mut s = store.lock().unwrap();
+    let mut s = plock(&store);
     s.data.projects.push(p.clone());
-    s.save();
-    p
+    s.save()?;
+    Ok(p)
 }
 
 #[tauri::command]
-fn update_project(store: StoreState, id: String, name: Option<String>, path: Option<String>, color: Option<String>) {
-    let mut s = store.lock().unwrap();
-    if let Some(p) = s.data.projects.iter_mut().find(|p| p.id == id) {
-        if let Some(v) = name { p.name = v; }
-        if let Some(v) = path { p.path = v; }
-        if let Some(v) = color { p.color = v; }
-    }
-    s.save();
+fn update_project(store: StoreState, id: String, name: Option<String>, path: Option<String>, color: Option<String>) -> Result<(), String> {
+    let mut s = plock(&store);
+    let Some(p) = s.data.projects.iter_mut().find(|p| p.id == id) else {
+        return Err("프로젝트를 찾을 수 없습니다".into());
+    };
+    if let Some(v) = name { p.name = v; }
+    if let Some(v) = path { p.path = v; }
+    if let Some(v) = color { p.color = v; }
+    s.save()
 }
 
 // 사이드바 드래그앤드롭 정렬 결과를 그대로 저장 (ids 순서 = 표시 순서)
 #[tauri::command]
-fn reorder_projects(store: StoreState, ids: Vec<String>) {
-    let mut s = store.lock().unwrap();
-    let mut rest: Vec<store::Project> = s.data.projects.drain(..).collect();
-    let mut ordered = Vec::with_capacity(rest.len());
-    for id in &ids {
-        if let Some(pos) = rest.iter().position(|p| &p.id == id) {
-            ordered.push(rest.remove(pos));
-        }
-    }
-    ordered.extend(rest); // ids 에 없던 항목은 뒤에 보존
-    s.data.projects = ordered;
-    s.save();
+fn reorder_projects(store: StoreState, ids: Vec<String>) -> Result<(), String> {
+    let mut s = plock(&store);
+    reorder_by_ids(&mut s.data.projects, &ids, |p| &p.id);
+    s.save()
 }
 
 #[tauri::command]
-fn remove_project(store: StoreState, id: String) {
-    let mut s = store.lock().unwrap();
+fn remove_project(store: StoreState, id: String) -> Result<(), String> {
+    let mut s = plock(&store);
     s.data.projects.retain(|p| p.id != id);
     s.data.presets.retain(|p| p.project_id.as_deref() != Some(id.as_str()));
-    s.save();
+    s.save()
 }
 
 #[tauri::command]
@@ -131,65 +110,58 @@ async fn pick_folder(app: AppHandle) -> Option<String> {
 
 // ── 프리셋 ──
 #[tauri::command]
-fn add_preset(store: StoreState, label: String, command: String, project_id: Option<String>) -> Preset {
+fn add_preset(store: StoreState, label: String, command: String, project_id: Option<String>) -> Result<Preset, String> {
     let p = Preset { id: new_id(), label, command, project_id };
-    let mut s = store.lock().unwrap();
+    let mut s = plock(&store);
     s.data.presets.push(p.clone());
-    s.save();
-    p
+    s.save()?;
+    Ok(p)
 }
 
 #[tauri::command]
-fn update_preset(store: StoreState, id: String, label: Option<String>, command: Option<String>, project_id: Option<String>, clear_project: Option<bool>) {
-    let mut s = store.lock().unwrap();
-    if let Some(p) = s.data.presets.iter_mut().find(|p| p.id == id) {
-        if let Some(v) = label { p.label = v; }
-        if let Some(v) = command { p.command = v; }
-        if clear_project == Some(true) { p.project_id = None; }
-        else if project_id.is_some() { p.project_id = project_id; }
-    }
-    s.save();
+fn update_preset(store: StoreState, id: String, label: Option<String>, command: Option<String>, project_id: Option<String>, clear_project: Option<bool>) -> Result<(), String> {
+    let mut s = plock(&store);
+    let Some(p) = s.data.presets.iter_mut().find(|p| p.id == id) else {
+        return Err("프리셋을 찾을 수 없습니다".into());
+    };
+    if let Some(v) = label { p.label = v; }
+    if let Some(v) = command { p.command = v; }
+    if clear_project == Some(true) { p.project_id = None; }
+    else if project_id.is_some() { p.project_id = project_id; }
+    s.save()
 }
 
 // 프리셋 드래그앤드롭 정렬 (ids 순서 = 표시 순서)
 #[tauri::command]
-fn reorder_presets(store: StoreState, ids: Vec<String>) {
-    let mut s = store.lock().unwrap();
-    let mut rest: Vec<store::Preset> = s.data.presets.drain(..).collect();
-    let mut ordered = Vec::with_capacity(rest.len());
-    for id in &ids {
-        if let Some(pos) = rest.iter().position(|p| &p.id == id) {
-            ordered.push(rest.remove(pos));
-        }
-    }
-    ordered.extend(rest);
-    s.data.presets = ordered;
-    s.save();
+fn reorder_presets(store: StoreState, ids: Vec<String>) -> Result<(), String> {
+    let mut s = plock(&store);
+    reorder_by_ids(&mut s.data.presets, &ids, |p| &p.id);
+    s.save()
 }
 
 #[tauri::command]
-fn remove_preset(store: StoreState, id: String) {
-    let mut s = store.lock().unwrap();
+fn remove_preset(store: StoreState, id: String) -> Result<(), String> {
+    let mut s = plock(&store);
     s.data.presets.retain(|p| p.id != id);
-    s.save();
+    s.save()
 }
 
 // ── 설정 ──
 #[tauri::command]
-fn update_settings(store: StoreState, font_size: Option<u32>, shell: Option<String>, notify_on_done: Option<bool>) -> store::Settings {
-    let mut s = store.lock().unwrap();
+fn update_settings(store: StoreState, font_size: Option<u32>, shell: Option<String>, notify_on_done: Option<bool>) -> Result<store::Settings, String> {
+    let mut s = plock(&store);
     if let Some(v) = font_size { s.data.settings.font_size = v; }
     if let Some(v) = shell { s.data.settings.shell = v; }
     if let Some(v) = notify_on_done { s.data.settings.notify_on_done = v; }
-    s.save();
-    s.data.settings.clone()
+    s.save()?;
+    Ok(s.data.settings.clone())
 }
 
 // ── 세션 ──
 #[tauri::command]
 fn create_session(app: AppHandle, store: StoreState, ptys: State<PtyManager>, project_id: Option<String>) -> Result<pty::SessionInfo, String> {
     let (cwd, title, shell) = {
-        let s = store.lock().unwrap();
+        let s = plock(&store);
         let proj = project_id.as_ref().and_then(|pid| s.data.projects.iter().find(|p| &p.id == pid));
         (
             proj.map(|p| p.path.clone()),
@@ -211,9 +183,8 @@ fn resize_session(ptys: State<PtyManager>, id: String, cols: u16, rows: u16) {
 }
 
 #[tauri::command]
-fn close_session(ptys: State<PtyManager>, watcher: State<PlanWatcher>, id: String) {
+fn close_session(ptys: State<PtyManager>, id: String) {
     ptys.close(&id);
-    watcher.remove_session(&id);
 }
 
 #[tauri::command]
@@ -297,7 +268,7 @@ async fn check_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Resu
     match updater.check().await {
         Ok(Some(update)) => {
             let info = UpdateInfo { version: update.version.clone(), notes: update.body.clone() };
-            *pending.lock().unwrap() = Some(update);
+            *plock(&pending) = Some(update);
             Ok(Some(info))
         }
         _ => Ok(None), // 업데이트 없음 또는 네트워크 오류 → 조용히 무시
@@ -306,7 +277,7 @@ async fn check_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Resu
 
 #[tauri::command]
 async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Result<(), String> {
-    let update = pending.lock().unwrap().take();
+    let update = plock(&pending).take();
     let Some(update) = update else { return Err("보류 중인 업데이트가 없습니다".into()) };
     update
         .download_and_install(|_, _| {}, || {})
@@ -318,7 +289,7 @@ async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Re
 // ── 완료 알림 (설정이 켜져 있을 때만) ──
 #[tauri::command]
 fn notify(app: AppHandle, store: StoreState, title: String, body: String) {
-    if !store.lock().unwrap().data.settings.notify_on_done {
+    if !plock(&store).data.settings.notify_on_done {
         return;
     }
     let _ = app.notification().builder().title(title).body(body).show();
@@ -366,13 +337,11 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PtyManager::new())
         .manage(PendingUpdate::default())
-        .manage(PlanWatcher::new())
         .manage(MemState::new(sysinfo::System::new()))
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             app.manage(Mutex::new(Store::load(config_dir)));
             app.state::<PtyManager>().start_status_thread(app.handle().clone());
-            PlanWatcher::start(app.handle().clone());
             #[cfg(windows)]
             if let Some(win) = app.get_webview_window("main") {
                 install_crash_recovery(&win);
@@ -399,9 +368,6 @@ fn main() {
             get_scrollback,
             ack_data,
             get_memory,
-            get_auto_plan,
-            get_manual_plan,
-            set_manual_plan,
             set_drafts,
             clipboard_image,
             clipboard_text,

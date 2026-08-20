@@ -27,8 +27,7 @@
         <div id="topbar-actions">
           <div id="mem-indicator" title="시스템 메모리 사용률"></div>
           <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
-          <button id="btn-toggle-work" title="진행 계획·다음 프롬프트 패널 토글">◧ 작업</button>
-          <button id="btn-toggle-prompts" title="프롬프트 히스토리 패널 토글">☰ 프롬프트</button>
+          <button id="btn-toggle-prompts" title="프롬프트 히스토리·다음 프롬프트 패널 토글">☰ 프롬프트</button>
         </div>
       </div>
       <div id="preset-bar"></div>
@@ -41,34 +40,26 @@
             <b>Cmd/Ctrl+1~9</b> 세션 전환 · <b>Cmd/Ctrl+T</b> 새 세션</p>
           </div>
         </div>
-        <div class="resize-handle" id="resize-work" title="드래그로 너비 조절"></div>
-        <aside id="work-panel" class="hidden">
-          <section id="plan-panel">
-            <div class="wp-head"><span>진행 계획</span><span class="wp-sub" id="plan-src"></span></div>
-            <div id="plan-list"></div>
-            <div id="plan-add-row">
-              <input type="text" id="plan-add-input" placeholder="수동 항목 추가 후 Enter">
-            </div>
-          </section>
-          <div id="work-divider" title="드래그로 높이 조절"></div>
-          <section id="draft-panel">
-            <div class="wp-head"><span>다음 프롬프트</span><button id="btn-draft-add">+ 초안</button></div>
-            <div id="draft-list"></div>
-          </section>
-        </aside>
       </div>
       <div id="image-strip"></div>
     </main>
     <div class="resize-handle" id="resize-right" title="드래그로 너비 조절"></div>
     <aside id="prompt-panel" class="hidden">
-      <div id="prompt-head">
-        <span>프롬프트 히스토리</span>
-        <span>
-          <button id="btn-clear-prompts" title="현재 세션 목록 비우기">비우기</button>
-          <button id="btn-fold-right" class="fold-btn" title="패널 접기">⟩</button>
-        </span>
-      </div>
-      <div id="prompt-list"></div>
+      <section id="history-panel">
+        <div id="prompt-head">
+          <span>프롬프트 히스토리</span>
+          <span>
+            <button id="btn-clear-prompts" title="현재 세션 목록 비우기">비우기</button>
+            <button id="btn-fold-right" class="fold-btn" title="패널 접기">⟩</button>
+          </span>
+        </div>
+        <div id="prompt-list"></div>
+      </section>
+      <div id="panel-divider" title="드래그로 높이 조절"></div>
+      <section id="draft-panel">
+        <div class="wp-head"><span>다음 프롬프트</span><button id="btn-draft-add">+ 초안</button></div>
+        <div id="draft-list"></div>
+      </section>
     </aside>
   </div>
 
@@ -81,10 +72,16 @@
   <script src="vendor/addon-web-links.js"></script>
   <script src="vendor/addon-webgl.js"></script>
   <script src="api.js"></script>
+  <script src="util.js"></script>
   <script src="dnd.js"></script>
   <script src="terminal-view.js"></script>
   <script src="sidebar.js"></script>
   <script src="presets.js"></script>
+  <!-- app.js 가 App 을 정의하고, 아래 파일들이 Object.assign 으로 영역별 메서드를 붙인다 -->
   <script src="app.js"></script>
+  <script src="drafts.js"></script>
+  <script src="prompt-history.js"></script>
+  <script src="panel-layout.js"></script>
+  <script src="modals.js"></script>
 </body>
 </html>

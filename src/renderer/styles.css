@@ -7,9 +7,16 @@
   --fg: #d5d9e4;
   --fg-dim: #8b91a3;
   --accent: #4f8cc9;
+  --accent-strong: #2e6cd6;  /* 강조 파랑 (활성 표시 바·전역 프리셋 테두리) */
+  --accent-fill: #1c3a63;    /* 파랑 채움 배경 (활성 세션·전역 칩·전송 버튼) */
+  --accent-fill-hi: #24497c; /* 위 배경의 hover */
   --running: #3fb950;
   --done: #58a6ff;
   --exited: #f85149;
+  --warn: #e3b341;           /* 주의 (메모리 표시기) */
+  --caution: #f0883e;        /* 버거움 (메모리 표시기) */
+  --danger-bg: #4a1517;      /* 2단계 확인(무장) 상태 배경 */
+  --danger-fg: #ff6b64;      /* 2단계 확인(무장) 상태 전경 */
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -65,9 +72,10 @@ button:hover { border-color: var(--accent); }
   cursor: pointer;
 }
 .project-row:hover { background: var(--bg-hover); }
-.project-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+/* 활성 세션이 속한 프로젝트: 연한 파랑 틴트 + 좌측 파랑 바 (rgba 는 --accent-strong 의 알파 버전) */
+.project-row.active { background: rgba(46, 108, 214, .18); box-shadow: inset 3px 0 0 var(--accent-strong); }
+.project-row.active:hover { background: rgba(46, 108, 214, .28); }
 .project-name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-path { font-size: 10px; color: var(--fg-dim); padding: 0 6px 2px 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-actions { display: none; gap: 0; }
 .project-row:hover .project-actions { display: flex; }
 .project-actions button { padding: 0 3px; font-size: 15px; line-height: 1; border: none; background: none; color: var(--fg-dim); }
@@ -81,16 +89,29 @@ button:hover { border-color: var(--accent); }
   color: var(--fg-dim);
 }
 .session-row:hover { background: var(--bg-hover); }
-.session-row.active { background: var(--bg-hover); color: var(--fg); }
+/* 현재 보고 있는 세션: 진한 파랑 배경 + 좌측 파랑 바 (전역 프리셋 칩과 같은 톤) */
+.session-row.active {
+  background: var(--accent-fill);
+  color: #eaf1fb;
+  box-shadow: inset 3px 0 0 var(--accent-strong);
+}
+.session-row.active:hover { background: var(--accent-fill-hi); }
+.session-row.active .session-title { font-weight: 600; }
 .session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-close { border: none; background: none; color: var(--fg-dim); padding: 0 4px; visibility: hidden; }
 .session-row:hover .session-close { visibility: visible; }
+/* 삭제 확인 상태: 빨강 "삭제 확인" — 한 번 더 클릭해야 닫힘 */
+.session-close.confirm {
+  visibility: visible;
+  background: var(--danger-bg);
+  border: 1px solid var(--exited);
+  color: var(--danger-fg);
+  border-radius: 6px;
+  font-size: 10px; font-weight: 700;
+  padding: 1px 6px;
+  white-space: nowrap; flex: none;
+}
 
-/* 상태 점 */
-.status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--fg-dim); }
-.status-dot.running { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
-.status-dot.done { background: var(--done); box-shadow: 0 0 6px var(--done); }
-.status-dot.exited { background: var(--exited); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 /* 세션 상태 한글 태그 */
 .status-tag {
@@ -128,10 +149,10 @@ button:hover { border-color: var(--accent); }
   white-space: nowrap;
 }
 #mem-indicator:empty { display: none; }
-#mem-indicator.ok   { color: #3fb950; background: rgba(63, 185, 80, .13); }
-#mem-indicator.mid  { color: #e3b341; background: rgba(227, 179, 65, .13); }
-#mem-indicator.warn { color: #f0883e; background: rgba(240, 136, 62, .15); }
-#mem-indicator.crit { color: #f85149; background: rgba(248, 81, 73, .18); animation: pulse 1.2s ease-in-out infinite; }
+#mem-indicator.ok   { color: var(--running); background: rgba(63, 185, 80, .13); }
+#mem-indicator.mid  { color: var(--warn); background: rgba(227, 179, 65, .13); }
+#mem-indicator.warn { color: var(--caution); background: rgba(240, 136, 62, .15); }
+#mem-indicator.crit { color: var(--exited); background: rgba(248, 81, 73, .18); animation: pulse 1.2s ease-in-out infinite; }
 
 #preset-bar {
   display: flex; gap: 6px; flex-wrap: wrap;
@@ -151,15 +172,14 @@ button:hover { border-color: var(--accent); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .preset-chip:hover { border-color: var(--accent); background: #2a3550; }
-.preset-chip .scope { color: var(--fg-dim); font-size: 10px; margin-right: 4px; }
 /* 전역 프리셋: 파랑 배경, 목록 맨앞 고정 */
-.preset-chip.global { background: #1c3a63; border-color: #2e6cd6; }
-.preset-chip.global:hover { background: #24497c; }
+.preset-chip.global { background: var(--accent-fill); border-color: var(--accent-strong); }
+.preset-chip.global:hover { background: var(--accent-fill-hi); }
 /* 실행 확인 상태: 빨강 "{이름} 실행" — 한 번 더 클릭해야 실행 */
 .preset-chip.armed {
-  background: #4a1517;
+  background: var(--danger-bg);
   border-color: var(--exited);
-  color: #ff6b64;
+  color: var(--danger-fg);
   font-weight: 700;
 }
 /* ── 프리셋 관리 팝업 ── */
@@ -188,7 +208,6 @@ button:hover { border-color: var(--accent); }
 #term-area { flex: 1; position: relative; min-height: 0; min-width: 0; padding: 4px 0 0 8px; }
 .term-holder { position: absolute; inset: 4px 0 0 8px; display: none; }
 .term-holder.active { display: block; }
-.term-holder.dragover { outline: 2px dashed var(--accent); outline-offset: -4px; }
 
 #empty-state {
   position: absolute; inset: 0;
@@ -198,78 +217,24 @@ button:hover { border-color: var(--accent); }
 #empty-state h2 { color: var(--fg); font-size: 17px; }
 #empty-state p { line-height: 1.7; }
 
-/* ── 우측 작업 패널 (진행 계획 + 다음 프롬프트) ── */
-#work-panel {
-  width: 300px;
-  flex: none;
-  min-width: 0;
-  background: var(--bg-panel);
-  border-left: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-#work-panel.hidden { display: none; }
-#work-panel .wp-head {
+/* ── 다음 프롬프트 초안 (프롬프트 히스토리 패널 하단 섹션) ── */
+#prompt-panel .wp-head {
   display: flex; justify-content: space-between; align-items: center;
   padding: 9px 12px;
   border-bottom: 1px solid var(--border);
   font-weight: 700; font-size: 12px;
   flex: none;
 }
-#work-panel .wp-head button { padding: 2px 8px; font-size: 11px; }
-#work-panel .wp-sub { font-weight: 400; font-size: 10px; color: var(--fg-dim); }
+#prompt-panel .wp-head button { padding: 2px 8px; font-size: 11px; }
 
-#plan-panel {
-  display: flex; flex-direction: column;
-  flex: none;
-  height: 50%;
-  min-height: 90px;
-}
-#plan-list { flex: 1; overflow-y: auto; padding: 6px; }
-#plan-add-row { padding: 6px; border-top: 1px solid var(--border); flex: none; }
-#plan-add-row input {
-  width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--fg);
-  padding: 5px 8px;
-  font-size: 12px;
-}
-.plan-sec { font-size: 10px; color: var(--fg-dim); font-weight: 700; padding: 6px 4px 3px; }
-.plan-item {
-  display: flex; gap: 7px; align-items: flex-start;
-  padding: 4px 6px;
-  border-radius: 6px;
-  font-size: 12px; line-height: 1.45;
-}
-.plan-item .pi-box {
-  flex: none; width: 15px; text-align: center;
-  color: var(--fg-dim); font-size: 11px; margin-top: 1px;
-}
-.plan-item .pi-text { flex: 1; word-break: break-all; user-select: text; }
-.plan-item.done .pi-text { color: var(--fg-dim); text-decoration: line-through; }
-.plan-item.done .pi-box { color: var(--running); }
-.plan-item.active { background: rgba(63, 185, 80, .09); }
-.plan-item.active .pi-box { color: var(--running); }
-.plan-item.manual { cursor: pointer; }
-.plan-item.manual:hover { background: var(--bg-hover); }
-.plan-item .pi-del {
-  border: none; background: none; color: var(--fg-dim);
-  padding: 0 3px; visibility: hidden; cursor: pointer; flex: none;
-}
-.plan-item:hover .pi-del { visibility: visible; }
-.plan-item .pi-del:hover { color: var(--exited); }
-.plan-empty { color: var(--fg-dim); font-size: 11px; line-height: 1.6; padding: 8px 6px; }
-
-#work-divider {
+/* 히스토리/초안 사이 가로 분할선 */
+#panel-divider {
   height: 5px; flex: none;
   cursor: row-resize;
   background: var(--border);
   transition: background .15s;
 }
-#work-divider:hover, #work-divider.active { background: var(--accent); }
+#panel-divider:hover, #panel-divider.active { background: var(--accent); }
 
 #draft-panel { display: flex; flex-direction: column; flex: 1; min-height: 90px; }
 #draft-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
@@ -299,9 +264,9 @@ button:hover { border-color: var(--accent); }
   padding: 4px 8px 7px;
 }
 .draft-card .draft-actions .draft-send {
-  background: #1c3a63; border-color: #2e6cd6; font-weight: 700;
+  background: var(--accent-fill); border-color: var(--accent-strong); font-weight: 700;
 }
-.draft-card .draft-actions .draft-send:hover { background: #24497c; }
+.draft-card .draft-actions .draft-send:hover { background: var(--accent-fill-hi); }
 .draft-card .draft-actions .draft-del { color: var(--fg-dim); }
 .draft-card .draft-actions .draft-del:hover { color: var(--exited); border-color: var(--exited); }
 .draft-empty { color: var(--fg-dim); font-size: 11px; line-height: 1.6; padding: 4px 2px; }
@@ -371,7 +336,6 @@ button:hover { border-color: var(--accent); }
 #sidebar.collapsed #sidebar-foot { display: none; }
 #sidebar.collapsed #sidebar-head { justify-content: center; padding: 12px 4px; }
 #sidebar.collapsed #btn-fold-left { transform: rotate(180deg); }
-#prompt-panel.hidden { display: flex; width: 0 !important; border-left: none; }
 #prompt-head > span { display: flex; gap: 4px; align-items: center; }
 #prompt-head > span:first-child, #prompt-panel span, #prompt-panel button { white-space: nowrap; }
 .fold-btn { padding: 2px 7px; font-size: 12px; }
@@ -421,15 +385,24 @@ body.sorting * { cursor: grabbing !important; }
   border-left: 2px dashed var(--accent);
 }
 
-/* ── 우측 프롬프트 히스토리 패널 ── */
+/* ── 우측 패널 (프롬프트 히스토리 + 다음 프롬프트) ── */
+/* min-width 는 지정하지 않는다 — JS 리사이즈 최소값(200px)이 유효하도록 */
 #prompt-panel {
-  width: 240px; min-width: 240px;
+  width: 260px;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 #prompt-panel.hidden { display: none; }
+/* 상단 히스토리 섹션: 분할선 드래그로 높이 조절 */
+#history-panel {
+  display: flex; flex-direction: column;
+  flex: none;
+  height: 55%;
+  min-height: 90px;
+}
 #prompt-head {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 12px;
@@ -462,6 +435,28 @@ body.sorting * { cursor: grabbing !important; }
 }
 .prompt-item.gone { opacity: .4; }
 .prompt-item.gone .pt { text-decoration: line-through; }
+/* 히스토리 항목 삭제 버튼: 호버 시 표시, 첫 클릭 후 빨강 "삭제 확인" */
+.prompt-item .px {
+  flex: none;
+  border: none; background: none;
+  color: var(--fg-dim);
+  padding: 0 2px; margin-top: 1px; margin-left: auto;
+  font-size: 10px;
+  cursor: pointer;
+  visibility: hidden;
+}
+.prompt-item:hover .px { visibility: visible; }
+.prompt-item .px:hover { color: var(--fg); }
+.prompt-item .px.confirm {
+  visibility: visible;
+  background: var(--danger-bg);
+  border: 1px solid var(--exited);
+  color: var(--danger-fg);
+  border-radius: 6px;
+  font-weight: 700;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
 
 /* 터미널 버퍼 내 프롬프트 구분선 (xterm 데코레이션) */
 .prompt-divider {

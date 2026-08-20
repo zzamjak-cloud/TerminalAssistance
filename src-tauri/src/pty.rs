@@ -11,12 +11,13 @@
 //      OS 파이프 버퍼가 차게 만들고, 결국 자식 프로세스의 write 가 블록된다
 // 또한 emit 한 텍스트를 세션별 링버퍼(scrollback)에 보관해,
 // 웹뷰가 크래시/리로드돼도 get_scrollback 으로 화면을 복원할 수 있다.
+use crate::util::plock;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
@@ -25,14 +26,20 @@ const DONE_MIN_MS: u128 = 3000; // 이보다 오래 busy 였다가 멈추면 '�
 
 const COALESCE_MS: u64 = 16; // 출력 묶음 전송 주기 (~60fps)
 const SCROLLBACK_CAP: usize = 2 * 1024 * 1024; // 세션당 백엔드 보관 스크롤백 (복구용)
+const SCROLLBACK_SLACK: usize = SCROLLBACK_CAP / 4; // 트리밍 슬랙 — emit 마다 memmove 하지 않도록 일괄 처리
 const FLOW_HIGH: u64 = 512 * 1024; // 미확인(un-acked) 바이트 상한 — 넘으면 emit 일시정지
 const FLOW_STALL_MS: u64 = 3000; // ack 유실(웹뷰 리로드 등) 시 이 시간 후 강제 재개
 const PENDING_CAP: usize = 8 * 1024 * 1024; // pending 상한 — 넘으면 PTY read 중단(OS 백프레셔)
 const EMIT_CHUNK: usize = 512 * 1024; // 이벤트 1건당 최대 크기 — 스톨 해제 직후 대형 IPC 폭탄 방지
 
-/// 뮤텍스 poisoning 무해화 — 한 스레드의 패닉이 다른 스레드의 패닉으로 전파되지 않게
-fn plock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+/// 세션 상태. serde 직렬화 결과는 소문자 문자열 — 프론트의 기존 비교 문자열과 동일
+#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    Idle,
+    Running,
+    Done,
+    Exited,
 }
 
 #[derive(Clone)]
@@ -41,7 +48,7 @@ pub struct SessionMeta {
     pub project_id: Option<String>,
     pub title: String,
     pub cwd: String,
-    pub status: String, // idle | running | done | exited
+    pub status: Status,
     pub last_output: Instant,
     pub busy_since: Instant,
     pub exited: bool,
@@ -53,7 +60,7 @@ pub struct SessionInfo {
     #[serde(rename = "projectId")]
     pub project_id: Option<String>,
     pub title: String,
-    pub status: String,
+    pub status: Status,
     pub cwd: String,
 }
 
@@ -63,17 +70,18 @@ impl SessionMeta {
             id: self.id.clone(),
             project_id: self.project_id.clone(),
             title: self.title.clone(),
-            status: self.status.clone(),
+            status: self.status,
             cwd: self.cwd.clone(),
         }
     }
 }
 
-/// 입출력 핸들 (메타와 분리해 락 경합 최소화)
+/// 입출력 핸들 (메타와 분리해 락 경합 최소화).
+/// 세션별 락으로 감싸므로 한 세션의 블로킹 write 가 다른 세션의 I/O 를 막지 않는다.
+/// child 는 별도 맵에 보관 — write 가 블록된 세션도 close 시 kill 로 즉시 해제 가능.
 struct SessionIo {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
 }
 
 /// 리더 ↔ 이미터 ↔ 프론트(ack) 사이의 세션별 출력 채널 상태
@@ -107,7 +115,8 @@ impl SessionChan {
 
 pub struct PtyManager {
     metas: Arc<Mutex<HashMap<String, SessionMeta>>>,
-    ios: Mutex<HashMap<String, SessionIo>>,
+    ios: Mutex<HashMap<String, Arc<Mutex<SessionIo>>>>,
+    children: Mutex<HashMap<String, Box<dyn Child + Send + Sync>>>,
     chans: Mutex<HashMap<String, Arc<SessionChan>>>,
     seq: AtomicU64,
 }
@@ -125,7 +134,7 @@ fn default_shell(override_shell: &str) -> String {
     }
 }
 
-fn emit_status(app: &AppHandle, id: &str, status: &str, busy_ms: u128) {
+fn emit_status(app: &AppHandle, id: &str, status: Status, busy_ms: u128) {
     let _ = app.emit(
         "ta:status",
         serde_json::json!({ "sessionId": id, "status": status, "busyMs": busy_ms }),
@@ -157,6 +166,7 @@ impl PtyManager {
         PtyManager {
             metas: Arc::new(Mutex::new(HashMap::new())),
             ios: Mutex::new(HashMap::new()),
+            children: Mutex::new(HashMap::new()),
             chans: Mutex::new(HashMap::new()),
             seq: AtomicU64::new(1),
         }
@@ -167,7 +177,7 @@ impl PtyManager {
         let metas = Arc::clone(&self.metas);
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_millis(500));
-            let mut changed: Vec<(String, String, u128)> = Vec::new();
+            let mut changed: Vec<(String, Status, u128)> = Vec::new();
             {
                 let mut map = plock(&metas);
                 let now = Instant::now();
@@ -176,19 +186,19 @@ impl PtyManager {
                         continue;
                     }
                     let busy = now.duration_since(m.last_output).as_millis() < BUSY_HOLD_MS;
-                    if busy && m.status != "running" {
-                        m.status = "running".into();
-                        changed.push((m.id.clone(), m.status.clone(), 0));
-                    } else if !busy && m.status == "running" {
+                    if busy && m.status != Status::Running {
+                        m.status = Status::Running;
+                        changed.push((m.id.clone(), m.status, 0));
+                    } else if !busy && m.status == Status::Running {
                         // 충분히 오래 돌던 작업이 멈춤 → 완료. 짧은 출력(에코 등)은 그냥 idle
                         let busy_ms = now.duration_since(m.busy_since).as_millis();
-                        m.status = if busy_ms >= DONE_MIN_MS { "done".into() } else { "idle".into() };
-                        changed.push((m.id.clone(), m.status.clone(), busy_ms));
+                        m.status = if busy_ms >= DONE_MIN_MS { Status::Done } else { Status::Idle };
+                        changed.push((m.id.clone(), m.status, busy_ms));
                     }
                 }
             }
             for (id, status, busy_ms) in changed {
-                emit_status(&app, &id, &status, busy_ms);
+                emit_status(&app, &id, status, busy_ms);
             }
         });
     }
@@ -240,7 +250,7 @@ impl PtyManager {
             project_id,
             title,
             cwd,
-            status: "idle".into(),
+            status: Status::Idle,
             last_output: now - Duration::from_secs(10), // 시작 직후 프롬프트 에코를 busy 로 오인하지 않게
             busy_since: now,
             exited: false,
@@ -251,8 +261,9 @@ impl PtyManager {
         plock(&self.metas).insert(id.clone(), meta);
         plock(&self.ios).insert(
             id.clone(),
-            SessionIo { writer, master: pair.master, child },
+            Arc::new(Mutex::new(SessionIo { writer, master: pair.master })),
         );
+        plock(&self.children).insert(id.clone(), child);
         plock(&self.chans).insert(id.clone(), Arc::clone(&chan));
 
         // ── 리더 스레드: PTY 출력 → pending 버퍼 + 활동 시각 갱신 ──
@@ -293,7 +304,7 @@ impl PtyManager {
                 let mut map = plock(&metas);
                 if let Some(m) = map.get_mut(&sid) {
                     m.exited = true;
-                    m.status = "exited".into();
+                    m.status = Status::Exited;
                 }
             }
             let mut g = plock(&chan_r.inner);
@@ -363,7 +374,9 @@ impl PtyManager {
                             g.total += take as u64;
                             g.outstanding += take as u64;
                             g.scrollback.extend_from_slice(piece.as_bytes());
-                            if g.scrollback.len() > SCROLLBACK_CAP {
+                            // 슬랙을 두고 일괄 트리밍 — 포화 상태에서 emit 마다 2MB memmove 가
+                            // (락을 쥔 채) 일어나는 것을 방지. 복사 횟수가 1/SLACK 로 줄어든다.
+                            if g.scrollback.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
                                 let excess = g.scrollback.len() - SCROLLBACK_CAP;
                                 g.scrollback.drain(..excess);
                             }
@@ -383,7 +396,7 @@ impl PtyManager {
                 }
             }
             // 종료 통지 — 남은 출력을 모두 flush 한 뒤에 보낸다
-            emit_status(&app, &sid, "exited", 0);
+            emit_status(&app, &sid, Status::Exited, 0);
             let _ = app.emit("ta:exit", serde_json::json!({ "sessionId": sid }));
         });
 
@@ -391,8 +404,11 @@ impl PtyManager {
     }
 
     pub fn write(&self, id: &str, data: &str) {
-        if let Some(io) = plock(&self.ios).get_mut(id) {
-            let _ = io.writer.write_all(data.as_bytes());
+        // 맵 락은 조회 즉시 놓고 세션별 락으로 쓰기 — 한 세션의 블로킹 write 가
+        // 다른 세션의 write/resize/close 를 막지 않는다
+        let io = plock(&self.ios).get(id).cloned();
+        if let Some(io) = io {
+            let _ = plock(&io).writer.write_all(data.as_bytes());
         }
     }
 
@@ -400,8 +416,9 @@ impl PtyManager {
         if cols == 0 || rows == 0 {
             return;
         }
-        if let Some(io) = plock(&self.ios).get(id) {
-            let _ = io.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        let io = plock(&self.ios).get(id).cloned();
+        if let Some(io) = io {
+            let _ = plock(&io).master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         }
     }
 
@@ -411,9 +428,11 @@ impl PtyManager {
             g.closed = true;
             chan.cv.notify_all();
         }
-        if let Some(mut io) = plock(&self.ios).remove(id) {
-            let _ = io.child.kill();
+        // kill 은 세션 io 락과 무관하게 수행 — write 가 블록된 세션도 즉시 해제된다
+        if let Some(mut child) = plock(&self.children).remove(id) {
+            let _ = child.kill();
         }
+        plock(&self.ios).remove(id);
         plock(&self.metas).remove(id);
     }
 
@@ -447,23 +466,14 @@ impl PtyManager {
     pub fn ack(&self, app: &AppHandle, id: &str) {
         let mut map = plock(&self.metas);
         if let Some(m) = map.get_mut(id) {
-            if m.status == "done" {
-                m.status = "idle".into();
-                emit_status(app, id, "idle", 0);
+            if m.status == Status::Done {
+                m.status = Status::Idle;
+                emit_status(app, id, Status::Idle, 0);
             }
         }
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
         plock(&self.metas).values().map(|m| m.info()).collect()
-    }
-
-    /// 현재 '실행 중' 상태인 세션 id 목록 (진행 계획 자동 바인딩용)
-    pub fn running_ids(&self) -> Vec<String> {
-        plock(&self.metas)
-            .values()
-            .filter(|m| m.status == "running")
-            .map(|m| m.id.clone())
-            .collect()
     }
 }
