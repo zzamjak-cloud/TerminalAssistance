@@ -1,5 +1,5 @@
 // 앱 상태·부트스트랩·세션 수명주기.
-// 나머지 책임은 파일로 분리: 초안 drafts.js / 프롬프트 히스토리 prompt-history.js /
+// 나머지 책임은 파일로 분리: 초안 drafts.js / Claude 세션 열람 claude-sessions.js /
 // 패널 레이아웃 panel-layout.js / 모달 modals.js / 사이드바·프리셋 렌더 sidebar.js·presets.js /
 // 터미널 terminal-view.js. 각 파일이 Object.assign(App, ...) 으로 메서드를 붙인다.
 const App = {
@@ -11,10 +11,9 @@ const App = {
     activeId: null,
     platform: '',   // 백엔드가 알려주는 OS (windows | macos | linux)
     images: {},     // sessionId → [{ path, src }] 최근 첨부 이미지
-    prompts: {},    // sessionId → [{ n, text, ts, marker, line }] 제출한 프롬프트 히스토리
+    branches: {},   // sessionId → git 브랜치명 (헤더 표시용, 2초 폴링)
     drafts: {}      // projectId(또는 '') → [{ id, text }] 다음 프롬프트 초안 (영속화)
   },
-  _inputBufs: {}, // sessionId → 입력 중인 라인 버퍼 (프롬프트 추적용)
 
   async boot() {
     TerminalView.init();
@@ -25,21 +24,6 @@ const App = {
     });
     // 사이드바 제목 우측 버전 표기
     document.getElementById('app-version').textContent = st.version ? 'v' + st.version : '';
-
-    // 앱 재시작 복원: 백엔드가 보관한 프롬프트 히스토리 시드.
-    // 스냅샷은 외부 파일이므로 원소 단위로 검증 — 손상 항목 하나가 렌더 전체를 죽이지 않게.
-    // xterm 마커는 소실되고 이전 버퍼 기준 line 도 무의미 → 텍스트 검색 폴백으로만 점프.
-    for (const [sid, list] of Object.entries(st.prompts || {})) {
-      if (!Array.isArray(list)) continue;
-      const items = list
-        .filter((it) => it && typeof it.text === 'string' && Number.isFinite(it.n))
-        .map((it) => ({
-          n: it.n, text: it.text,
-          ts: Number.isFinite(it.ts) ? new Date(it.ts) : new Date(0),
-          marker: null, line: -1
-        }));
-      if (items.length) App.state.prompts[sid] = items;
-    }
 
     // 웹뷰 리로드/크래시 복구: 백엔드에 살아있는 세션의 터미널 뷰를 먼저 frozen 으로 만들어
     // 리스너 등록 후 도착하는 라이브 출력을 큐에 담아 두고, 스크롤백 주입 뒤 이어붙인다.
@@ -71,15 +55,13 @@ const App = {
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
     document.getElementById('btn-draft-add').onclick = () => App.addDraft();
+    document.getElementById('btn-claude-refresh').onclick = () => App.renderClaudeList(true);
     // 시스템 메모리 폴링 (2초)
     setInterval(() => App.pollStatus(), 2000);
     App.pollStatus();
-    document.getElementById('btn-clear-prompts').onclick = () => {
-      if (!App.state.activeId) return;
-      delete App.state.prompts[App.state.activeId];
-      App.syncPrompts(App.state.activeId, 0); // 비운 상태를 백엔드 스냅샷에 즉시 반영
-      App.renderPromptList();
-    };
+    // 코덱스 사용량 폴링 (10초 — 파일 꼬리 읽기라 가볍지만 데이터 갱신 주기도 느리다)
+    setInterval(() => App.pollCodexUsage(), 10000);
+    App.pollCodexUsage();
     if (localStorage.getItem('ta-prompt-panel') === '1') {
       document.getElementById('prompt-panel').classList.remove('hidden');
     }
@@ -119,13 +101,53 @@ const App = {
     renderPresets();
     App.renderTopbar();
     App.renderImageStrip();
-    App.renderPromptList();
+    App.renderClaudeList();
     App.renderDraftList();
     document.getElementById('empty-state').style.display = App.state.sessions.length ? 'none' : 'flex';
   },
 
+  // 활성 세션 브랜치 갱신 — 값이 바뀐 경우에만 헤더 재렌더
+  async refreshBranch() {
+    const s = App.state.sessions.find((x) => x.id === App.state.activeId);
+    if (!s) return;
+    try {
+      const b = await ta.gitBranch(s.cwd);
+      if (App.state.branches[s.id] !== b) {
+        App.state.branches[s.id] = b;
+        App.renderTopbar();
+      }
+    } catch (_) { /* 조회 실패는 무시 */ }
+  },
+
+  // ── 코덱스 사용량 (헤더 표시) ──
+  // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 최근 12시간 내 기록이 있을 때만 표시.
+  async pollCodexUsage() {
+    const el = document.getElementById('codex-indicator');
+    let u = null;
+    try { u = await ta.codexUsage(); } catch (_) { /* 조회 실패 = 미표시 */ }
+    if (!u || !u.windows.length || Date.now() - u.mtimeMs > 12 * 3600 * 1000) {
+      el.classList.add('hidden');
+      return;
+    }
+    const label = (m) => m === 300 ? '5시간' : m === 10080 ? '주간' : Math.round(m / 60) + '시간';
+    const parts = u.windows.map((w) => `${label(w.windowMinutes)} ${Math.round(w.usedPercent)}%`);
+    const worst = Math.max(...u.windows.map((w) => w.usedPercent));
+    let cls = 'ok';                  // < 50% : 여유 (녹색)
+    if (worst >= 90) cls = 'crit';   // ≥ 90% : 소진 임박 (빨강)
+    else if (worst >= 75) cls = 'warn';
+    else if (worst >= 50) cls = 'mid';
+    el.className = cls;
+    el.textContent = 'Codex ' + parts.join(' · ');
+    el.title = u.windows.map((w) =>
+      `${label(w.windowMinutes)} ${w.usedPercent.toFixed(1)}% 사용` +
+      (w.resetsAt ? ` (리셋 ${new Date(w.resetsAt * 1000).toLocaleString()})` : '')
+    ).join('\n') + (u.plan ? `\n플랜: ${u.plan}` : '') +
+      `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleTimeString()}`;
+  },
+
   // ── 시스템 메모리 폴링 ──
   async pollStatus() {
+    App.refreshBranch(); // 같은 2초 주기에 브랜치도 함께 갱신 (checkout 반영)
     try {
       const m = await ta.getMemory();
       const el = document.getElementById('mem-indicator');
@@ -169,16 +191,20 @@ const App = {
   renderTopbar() {
     const el = document.getElementById('active-info');
     const s = App.state.sessions.find((x) => x.id === App.state.activeId);
-    if (!s) { el.textContent = '세션 없음'; return; }
+    if (!s) { el.textContent = '세션 없음'; el.title = ''; return; }
     el.textContent = '';
+    el.title = s.cwd; // 경로는 표시 대신 호버 툴팁으로
     el.appendChild(statusTag(s.status));
     const t = document.createElement('span');
     t.textContent = s.title;
     el.appendChild(t);
-    const c = document.createElement('span');
-    c.style.cssText = 'color:var(--fg-dim);font-weight:400;font-size:11px';
-    c.textContent = s.cwd;
-    el.appendChild(c);
+    const b = App.state.branches[s.id];
+    if (b) {
+      const g = document.createElement('span');
+      g.style.cssText = 'color:var(--fg-dim);font-weight:400;font-size:11px';
+      g.textContent = '⎇ ' + b;
+      el.appendChild(g);
+    }
   },
 
   renderImageStrip() {
@@ -207,6 +233,7 @@ const App = {
       App.state.sessions.push(info);
       TerminalView.create(info, App.state.settings.fontSize);
       App.activateSession(info.id);
+      return info; // Claude 세션 재개 등 후속 입력용
     } catch (e) {
       alert('세션 생성 실패: ' + e);
     }
@@ -218,6 +245,7 @@ const App = {
     TerminalView.activate(id);
     App.ackIfDone(id);
     App.renderAll();
+    App.refreshBranch(); // 전환 즉시 브랜치 표시 (다음 폴링까지 기다리지 않게)
   },
 
   activateByIndex(i) {
@@ -234,10 +262,7 @@ const App = {
     await ta.closeSession(id);
     App.state.sessions = App.state.sessions.filter((s) => s.id !== id);
     delete App.state.images[id];
-    delete App.state.prompts[id];
-    delete App._inputBufs[id];
-    clearTimeout(App._promptSyncTimers[id]); // 닫힌 세션으로의 늦은 동기화 IPC 방지
-    delete App._promptSyncTimers[id];
+    delete App.state.branches[id];
     TerminalView.dispose(id);
     if (App.state.activeId === id) {
       const next = App.state.sessions[App.state.sessions.length - 1];
@@ -293,7 +318,7 @@ const App = {
     const id = App.state.activeId;
     if (!id) return;
     TerminalView.paste(id, preset.command);
-    if (execute) { ta.write(id, '\r'); App.trackInput(id, '\r'); }
+    if (execute) ta.write(id, '\r');
     TerminalView.activate(id);
   }
 };

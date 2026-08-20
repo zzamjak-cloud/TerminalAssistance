@@ -120,7 +120,12 @@ function renderSidebar() {
     const addBtn = document.createElement('button');
     addBtn.textContent = '＋';
     addBtn.title = '새 세션';
-    addBtn.onclick = (e) => { e.stopPropagation(); App.createSession(p.id); };
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      // 접힌 프로젝트에 세션을 추가하면 자동으로 펼친다 — 새 세션이 바로 보이도록
+      if (Collapsed.has(p.id)) Collapsed.toggle(p.id);
+      App.createSession(p.id); // activateSession → renderAll 이 펼침 상태로 다시 그린다
+    };
     const editBtn = document.createElement('button');
     editBtn.textContent = '✎';
     editBtn.title = '수정';

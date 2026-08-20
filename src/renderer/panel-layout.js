@@ -6,7 +6,7 @@ Object.assign(App, {
     const hidden = p.classList.toggle('hidden');
     document.getElementById('resize-right').style.display = hidden ? 'none' : '';
     localStorage.setItem('ta-prompt-panel', hidden ? '0' : '1');
-    if (!hidden) { App.renderPromptList(); App.renderDraftList(); } // 닫혀 있는 동안의 변경 반영
+    if (!hidden) { App.renderClaudeList(); App.renderDraftList(); } // 닫혀 있는 동안의 변경 반영
     setTimeout(() => TerminalView.fitActive(), PANEL_ANIM_MS); // 슬라이딩 종료 후 리핏
   },
 

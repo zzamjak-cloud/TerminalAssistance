@@ -25,9 +25,10 @@
       <div id="topbar">
         <div id="active-info">세션 없음</div>
         <div id="topbar-actions">
+          <div id="codex-indicator" class="hidden" title="코덱스 사용량"></div>
           <div id="mem-indicator" title="시스템 메모리 사용률"></div>
           <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
-          <button id="btn-toggle-prompts" title="프롬프트 히스토리·다음 프롬프트 패널 토글">☰ 프롬프트</button>
+          <button id="btn-toggle-prompts" title="Claude 세션·다음 프롬프트 패널 토글">☰ 패널</button>
         </div>
       </div>
       <div id="preset-bar"></div>
@@ -47,13 +48,13 @@
     <aside id="prompt-panel" class="hidden">
       <section id="history-panel">
         <div id="prompt-head">
-          <span>프롬프트 히스토리</span>
+          <span>Claude 세션</span>
           <span>
-            <button id="btn-clear-prompts" title="현재 세션 목록 비우기">비우기</button>
+            <button id="btn-claude-refresh" title="목록 새로고침">↻</button>
             <button id="btn-fold-right" class="fold-btn" title="패널 접기">⟩</button>
           </span>
         </div>
-        <div id="prompt-list"></div>
+        <div id="claude-list"></div>
       </section>
       <div id="panel-divider" title="드래그로 높이 조절"></div>
       <section id="draft-panel">
@@ -80,7 +81,7 @@
   <!-- app.js 가 App 을 정의하고, 아래 파일들이 Object.assign 으로 영역별 메서드를 붙인다 -->
   <script src="app.js"></script>
   <script src="drafts.js"></script>
-  <script src="prompt-history.js"></script>
+  <script src="claude-sessions.js"></script>
   <script src="panel-layout.js"></script>
   <script src="modals.js"></script>
 </body>

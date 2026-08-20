@@ -4472,7 +4472,7 @@ dependencies = [
 
 [[package]]
 name = "terminal-assistance"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "image",
  "portable-pty",

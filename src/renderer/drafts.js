@@ -32,8 +32,8 @@ Object.assign(App, {
       actions.className = 'draft-actions';
       const send = document.createElement('button');
       send.className = 'draft-send';
-      send.textContent = '입력';
-      send.title = '터미널 입력 라인으로 전달 (실행은 터미널에서 Enter)';
+      send.textContent = '실행';
+      send.title = '터미널로 전달하고 즉시 실행 (전송된 초안은 목록에서 제거)';
       send.onclick = () => App.sendDraft(d);
       const del = document.createElement('button');
       del.className = 'draft-del';
@@ -68,11 +68,17 @@ Object.assign(App, {
     }, 600);
   },
 
-  // 초안을 터미널 입력 라인으로 전달 (bracketed paste 로 멀티라인 안전 전달)
+  // 초안을 터미널로 전달하고 즉시 실행 (bracketed paste 로 멀티라인 안전 전달 후 Enter).
+  // 전송한 초안은 목록에서 제거한다 — 보낸 프롬프트가 쌓여 있을 이유가 없음.
   sendDraft(d) {
     const id = App.state.activeId;
     if (!id || !d.text.trim()) return;
     TerminalView.paste(id, d.text);
+    ta.write(id, '\r');
     TerminalView.activate(id);
+    const k = App.draftKey();
+    App.state.drafts[k] = (App.state.drafts[k] || []).filter((x) => x.id !== d.id);
+    ta.setDrafts(k, App.state.drafts[k]).catch((e) => console.warn('초안 저장 실패:', e));
+    App.renderDraftList();
   }
 });

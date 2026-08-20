@@ -31,8 +31,8 @@
     }),
 
     createSession: (projectId) => invoke('create_session', { projectId: projectId || null }),
-    // 프롬프트 히스토리 동기화 — 앱 종료 시 세션 스냅샷에 포함돼 재시작 후 복원됨
-    setSessionPrompts: (id, prompts) => invoke('set_session_prompts', { id, prompts }),
+    // Claude Code 가 저장해 둔 세션 목록 (cwd 기준) — [{ id, mtimeMs, preview }]
+    listClaudeSessions: (cwd) => invoke('list_claude_sessions', { cwd }),
     write: (id, data) => invoke('write_session', { id, data }),
     resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
     closeSession: (id) => invoke('close_session', { id }),
@@ -44,6 +44,10 @@
 
     // 시스템 메모리 현황 { pct, usedGb, totalGb }
     getMemory: () => invoke('get_memory'),
+    // 작업 폴더의 git 브랜치 (없으면 null)
+    gitBranch: (cwd) => invoke('git_branch', { cwd }),
+    // 코덱스 사용량 { windows: [{windowMinutes, usedPercent, resetsAt}], plan, mtimeMs } | null
+    codexUsage: () => invoke('codex_usage'),
     // '다음 프롬프트' 초안 (프로젝트별, 키: projectId 또는 "")
     setDrafts: (key, drafts) => invoke('set_drafts', { key, drafts }),
 

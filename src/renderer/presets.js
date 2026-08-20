@@ -1,7 +1,6 @@
 // 명령 프리셋 바: 전역(파랑, 맨앞 고정) + 현재 프로젝트 프리셋을 칩으로 표시.
-// 클릭 = 실행 확인(빨강 "{이름} 실행")→재클릭 시 실행, Shift+클릭 = 입력만, 우클릭 = 수정.
+// 클릭 = 즉시 실행, Shift+클릭 = 입력만(실행 안 함), 우클릭 = 수정.
 // 포인터 드래그로 같은 그룹 내 순서 변경 (Tauri 에선 HTML5 DnD 불가 → dnd.js 사용).
-// 실행 확인의 무장/해제 상태는 공용 ArmedConfirm(util.js)이 관리한다.
 let presetSortReady = false;
 function initPresetSort() {
   if (presetSortReady) return;
@@ -28,26 +27,14 @@ function renderPresets() {
 
   const makeChip = (p, isGlobal) => {
     const el = document.createElement('button');
-    const armed = ArmedConfirm.isArmed(['preset-run', p.id]);
-    el.className = 'preset-chip' + (isGlobal ? ' global' : '') + (armed ? ' armed' : '');
+    el.className = 'preset-chip' + (isGlobal ? ' global' : '');
     el.dataset.id = p.id;
-    el.title = p.command + '\n(클릭=실행 확인 → 한 번 더 클릭=실행, Shift+클릭=입력만, 우클릭=수정)';
-    el.textContent = armed ? p.label + ' 실행' : p.label;
+    el.title = p.command + '\n(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)';
+    el.textContent = p.label;
 
-    el.onclick = (e) => {
-      if (e.shiftKey) { ArmedConfirm.disarm(); App.runPreset(p, false); return; }
-      if (armed) {
-        // 2차 클릭 = 실제 실행
-        ArmedConfirm.disarm();
-        App.runPreset(p, true);
-      } else {
-        // 1차 클릭 = 실행 확인 상태 (시간 내 재클릭, 지나면 자동 해제)
-        ArmedConfirm.arm(['preset-run', p.id], renderPresets);
-      }
-    };
+    el.onclick = (e) => App.runPreset(p, !e.shiftKey); // Shift = 입력만, 그 외 즉시 실행
     el.oncontextmenu = (e) => {
       e.preventDefault();
-      ArmedConfirm.disarm();
       App.showPresetModal(p);
     };
     return el;

@@ -156,6 +156,20 @@ button:hover { border-color: var(--accent); }
 #mem-indicator.warn { color: var(--caution); background: rgba(240, 136, 62, .15); }
 #mem-indicator.crit { color: var(--exited); background: rgba(248, 81, 73, .18); animation: pulse 1.2s ease-in-out infinite; }
 
+/* 코덱스 사용량 표시 — 메모리 표시기와 동일한 시각 언어 */
+#codex-indicator {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+#codex-indicator.hidden { display: none; }
+#codex-indicator.ok   { color: var(--running); background: rgba(63, 185, 80, .13); }
+#codex-indicator.mid  { color: var(--warn); background: rgba(227, 179, 65, .13); }
+#codex-indicator.warn { color: var(--caution); background: rgba(240, 136, 62, .15); }
+#codex-indicator.crit { color: var(--exited); background: rgba(248, 81, 73, .18); animation: pulse 1.2s ease-in-out infinite; }
+
 #preset-bar {
   display: flex; gap: 6px; flex-wrap: wrap;
   padding: 6px 12px;
@@ -177,13 +191,6 @@ button:hover { border-color: var(--accent); }
 /* 전역 프리셋: 파랑 배경, 목록 맨앞 고정 */
 .preset-chip.global { background: var(--accent-fill); border-color: var(--accent-strong); }
 .preset-chip.global:hover { background: var(--accent-fill-hi); }
-/* 실행 확인 상태: 빨강 "{이름} 실행" — 한 번 더 클릭해야 실행 */
-.preset-chip.armed {
-  background: var(--danger-bg);
-  border-color: var(--exited);
-  color: var(--danger-fg);
-  font-weight: 700;
-}
 /* ── 프리셋 관리 팝업 ── */
 .pm-title {
   display: flex; justify-content: space-between; align-items: center;
@@ -387,7 +394,7 @@ body.sorting * { cursor: grabbing !important; }
   border-left: 2px dashed var(--accent);
 }
 
-/* ── 우측 패널 (프롬프트 히스토리 + 다음 프롬프트) ── */
+/* ── 우측 패널 (Claude 세션 + 다음 프롬프트) ── */
 /* min-width 는 지정하지 않는다 — JS 리사이즈 최소값(200px)이 유효하도록 */
 #prompt-panel {
   width: 260px;
@@ -412,60 +419,21 @@ body.sorting * { cursor: grabbing !important; }
   font-weight: 700; font-size: 12px;
 }
 #prompt-head button { padding: 2px 8px; font-size: 11px; }
-#prompt-list { flex: 1; overflow-y: auto; padding: 6px; }
+#claude-list { flex: 1; overflow-y: auto; padding: 6px; }
 .prompt-empty { color: var(--fg-dim); font-size: 11px; line-height: 1.6; padding: 10px 6px; }
-.prompt-item {
-  display: flex; gap: 7px; align-items: flex-start;
+/* Claude 세션 항목: 상대 시각 + 첫 프롬프트 미리보기 */
+.cs-item {
   padding: 6px 7px;
   border-radius: 6px;
   cursor: pointer;
   margin-bottom: 2px;
 }
-.prompt-item:hover { background: var(--bg-hover); }
-.prompt-item .pn {
-  flex: none;
-  min-width: 18px; text-align: center;
-  background: var(--bg-hover);
-  border-radius: 8px;
-  font-size: 10px; color: var(--fg-dim);
-  padding: 1px 4px; margin-top: 1px;
-}
-.prompt-item .pt {
+.cs-item:hover { background: var(--bg-hover); }
+.cs-time { font-size: 10px; color: var(--fg-dim); margin-bottom: 2px; }
+.cs-text {
   font-size: 11.5px; line-height: 1.45;
   word-break: break-all;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-}
-.prompt-item.gone { opacity: .4; }
-.prompt-item.gone .pt { text-decoration: line-through; }
-/* 히스토리 항목 삭제 버튼: 호버 시 표시, 첫 클릭 후 빨강 "삭제 확인" */
-.prompt-item .px {
-  flex: none;
-  border: none; background: none;
-  color: var(--fg-dim);
-  padding: 0 2px; margin-top: 1px; margin-left: auto;
-  font-size: 10px;
-  cursor: pointer;
-  visibility: hidden;
-}
-.prompt-item:hover .px { visibility: visible; }
-.prompt-item .px:hover { color: var(--fg); }
-.prompt-item .px.confirm {
-  visibility: visible;
-  background: var(--danger-bg);
-  border: 1px solid var(--exited);
-  color: var(--danger-fg);
-  border-radius: 6px;
-  font-weight: 700;
-  padding: 1px 6px;
-  white-space: nowrap;
-}
-
-/* 터미널 버퍼 내 프롬프트 구분선 (xterm 데코레이션) */
-.prompt-divider {
-  border-top: 1px dashed rgba(88, 166, 255, .45);
-  width: 100% !important;
-  background: transparent !important;
-  pointer-events: none;
 }
 
 /* ── 색상 프리셋 칩 (프로젝트 등록/수정) ── */

@@ -29,29 +29,116 @@ const TerminalView = {
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
     term.open(holder);
 
-    // 한글 IME 중복 입력 수정 (xterm 5.5.0 + WebView2):
-    // 조합 커밋 텍스트는 compositionend 경로로 이미 pty 에 전송되는데, WebView2 는 커밋
-    // input(insertText) 이벤트를 keyup 이후에 발생시켜 xterm _inputEvent 의 _keyDownSeen
-    // 가드를 통과 → 같은 텍스트가 한 번 더 전송된다 (xterm.js#5887 의 조합 상태 가드 제안과 동일).
-    // 조합 중이거나 조합 결과 전송 대기 중이면 input 경로를 차단한다. 이모지 피커·받아쓰기처럼
-    // 조합 이벤트 없는 insertText 는 두 플래그가 모두 false 라 영향받지 않는다.
+    // ── 한글 등 IME 조합 입력 보정 (xterm 5.5.0) ──
+    // xterm 은 조합 커밋 텍스트를 "compositionend 후 setTimeout 에 textarea 를 substring"
+    // 하는 방식으로 보내는데, 이 방식은 두 웹뷰 엔진의 이벤트 순서에서 모두 깨진다.
+    //  - WebView2(Windows): 커밋 input(insertText)가 keyup 이후에 지연 도착 → _keyDownSeen
+    //    가드를 통과해 조합 경로와 이중 전송 (v0.5.0 의 중복 증상)
+    //  - WKWebView(macOS): input 이 keydown(229)보다 먼저 오는 역순(xterm#5887 코멘트 트레이스).
+    //    조합 직후 문자(공백 등)의 insertText 가 조합 전송 타이머보다 먼저 전송돼 순서가
+    //    뒤집히고, 빠른 타이핑 시 _keyDownSeen 가드가 IME 직접 커밋 문자를 삼킨다.
+    // 전략: compositionend 의 ev.data(커밋 정본)를 즉시 전송하고 xterm 의 지연 전송을 취소.
+    // 이후 도착하는 같은 텍스트의 지연 insertText(WebView2)는 중복으로 차단하고,
+    // macOS 는 _keyDownSeen 가드를 우회해 insertText 를 직접 전송한다.
     const core = term._core;
-    if (core && typeof core._inputEvent === 'function') {
+    let imeCommit = null; // { text, at } — 직전 조합 커밋 (중복/합성 keypress 판별용)
+    if (core && typeof core._inputEvent === 'function' && term.textarea) {
       const origInputEvent = core._inputEvent.bind(core);
+      const isMac = App.state.platform === 'macos';
+      const taEl = term.textarea;
+
+      // ── macOS WKWebView 한글: 조합 이벤트가 전혀 없다 (실측 트레이스) ──
+      // 새 음절은 insertText, 조합 진행은 insertReplacementText(직전 글자 교체)로만 도착하고
+      // isComposing 은 항상 false 다. xterm 은 insertReplacementText 를 무시하므로 첫 자음만
+      // 전송되고 교체분(모음 결합)이 전부 유실된다 → "테스트" 가 "ㅌ스트" 가 되던 원인.
+      // 해법: beforeinput(변경 전 값)과 input(변경 후 값)을 diff 해 삭제분은 DEL(\x7f),
+      // 삽입분은 그대로 pty 로 보낸다 — IME 의 음절 교체를 터미널 라인 편집으로 재현한다.
+      // (일본어·중국어처럼 조합 이벤트를 쓰는 IME 는 아래 조합 경로가 그대로 처리)
+      let preVal = null;   // beforeinput 시점의 textarea 값
+      let sawInput = false; // 이번 키스트로크에서 input 이 발생했는지 (IME 백스페이스 폴백용)
+      if (isMac) {
+        taEl.addEventListener('beforeinput', (ev) => {
+          const ch = core._compositionHelper;
+          if (ev.isComposing || (ch && ch._isComposing)) { preVal = null; return; }
+          preVal = taEl.value;
+        });
+        taEl.addEventListener('input', (ev) => {
+          sawInput = true;
+          const ch = core._compositionHelper;
+          if (ev.isComposing || (ch && ch._isComposing)) { preVal = null; return; }
+          if (preVal === null) return;
+          const pre = preVal, cur = taEl.value;
+          preVal = null;
+          if (pre === cur || core._keyPressHandled) return;
+          // 공통 접두/접미를 제외한 변경 구간 계산
+          let p = 0;
+          const max = Math.min(pre.length, cur.length);
+          while (p < max && pre[p] === cur[p]) p++;
+          let s = 0;
+          while (s < max - p && pre[pre.length - 1 - s] === cur[cur.length - 1 - s]) s++;
+          const deleted = pre.length - p - s;
+          const inserted = cur.slice(p, cur.length - s);
+          const out = '\x7f'.repeat(deleted) + inserted;
+          if (out) core.coreService.triggerDataEvent(out, true);
+        });
+        // IME 가 소비한 백스페이스(keyCode 229): 자모 분해는 위 diff 가 처리하지만,
+        // IME 텍스트 경계를 넘어 지울 때는 textarea 변화 없이 keydown 만 온다 → DEL 폴백
+        taEl.addEventListener('keydown', (ev) => {
+          if (ev.keyCode !== 229 || ev.key !== 'Backspace') return;
+          sawInput = false;
+          setTimeout(() => {
+            if (!sawInput) core.coreService.triggerDataEvent('\x7f', true);
+          }, 0);
+        });
+        // xterm 의 keydown(229) 기반 textarea diff 전송기는 위 differ 와 이중 전송
+        // (빠른 타이핑 시 replace() 오동작으로 전체 라인 재전송 위험도 있음) → 무력화
+        const ch0 = core._compositionHelper;
+        if (ch0) ch0._handleAnyTextareaChanges = () => {};
+      }
+
+      term.textarea.addEventListener('compositionstart', () => { imeCommit = null; });
+      term.textarea.addEventListener('compositionend', (ev) => {
+        const ch = core._compositionHelper;
+        const data = ev.data || '';
+        // xterm 의 compositionend 리스너(open 시 등록)가 먼저 실행돼 지연 전송을 예약해 둔
+        // 상태다. 키다운 경로(finalize(false))가 이미 보냈다면 플래그가 false — 손대지 않는다.
+        // 취소된 조합(data 없음)도 xterm 기본 동작에 맡긴다.
+        if (!ch || !ch._isSendingComposition || !data) return;
+        ch._isSendingComposition = false; // substring 지연 전송 취소
+        imeCommit = { text: data, at: Date.now() };
+        core.coreService.triggerDataEvent(data, true);
+      });
+
       core._inputEvent = (ev) => {
         const ch = core._compositionHelper;
-        if (ev.isComposing || (ch && (ch._isComposing || ch._isSendingComposition))) return false;
+        // mac 은 위 differ 가 텍스트 입력을 전담 — xterm 의 insertText 경로는 이중 전송
+        if (isMac) return false;
+        // WebView2 가 keyup 뒤에 지연 발생시키는 커밋 insertText — 위에서 이미 보낸 중복
+        if (ev.inputType === 'insertText' && ev.data && imeCommit &&
+            ev.data === imeCommit.text && Date.now() - imeCommit.at < 500) {
+          imeCommit = null;
+          return false;
+        }
+        // 조합 진행 중의 미리보기 input 은 차단 (원본도 무시함 — 동작 동일)
+        if (ev.isComposing || (ch && ch._isComposing)) return false;
         return origInputEvent(ev);
       };
     }
 
     term.onData((d) => {
       ta.write(session.id, d);
-      App.trackInput(session.id, d); // 프롬프트 히스토리용 입력 추적
       App.ackIfDone(session.id); // 입력 = 사용자가 결과를 확인함
     });
 
     term.attachCustomKeyEventHandler((ev) => {
+      // WKWebView 는 조합을 커밋시킨 물리 키에 대해 커밋 문자의 charCode 를 담은
+      // 합성 keypress 를 발생시킨다(xterm#5894) → 그대로 두면 커밋 문자가 한 번 더 전송됨
+      if (ev.type === 'keypress' && ev.charCode && imeCommit &&
+          String.fromCharCode(ev.charCode) === imeCommit.text &&
+          Date.now() - imeCommit.at < 500) {
+        imeCommit = null; // 일회성 — 직후 실제로 같은 문자를 입력하는 경우를 막지 않게
+        return false;
+      }
       // IME 조합(한글 등) 중에는 어떤 키도 가로채지 않는다 — 조합 파괴 방지
       if (ev.isComposing || ev.keyCode === 229) return true;
       if (ev.type !== 'keydown') return true;
@@ -146,53 +233,6 @@ const TerminalView = {
       try { v.webgl.dispose(); } catch (_) {}
       v.webgl = null;
     }
-  },
-
-  // 프롬프트 제출 지점에 마커 등록 + 구분선 데코레이션 (히스토리 점프의 앵커)
-  addPromptMarker(id) {
-    const v = this.views.get(id);
-    if (!v) return null;
-    const marker = v.term.registerMarker(0);
-    if (marker) {
-      try {
-        const deco = v.term.registerDecoration({ marker, width: v.term.cols });
-        if (deco) deco.onRender((el) => el.classList.add('prompt-divider'));
-      } catch (_) { /* 데코레이션 미지원이어도 마커 점프는 동작 */ }
-    }
-    return marker;
-  },
-
-  // 히스토리 클릭 → 해당 프롬프트 위치로 스크롤.
-  // TUI(Claude Code 등)가 화면 클리어(CSI 2J)·alt buffer 전환을 하면 마커가 폐기되므로,
-  // 마커가 죽었으면 버퍼에서 프롬프트 텍스트를 검색해 폴백 점프한다. 둘 다 실패하면 false.
-  scrollToPrompt(id, item) {
-    const v = this.views.get(id);
-    if (!v) return false;
-    const term = v.term;
-    // alt buffer(전체화면 TUI) 표시 중엔 일반 버퍼 스크롤이 보이지 않음
-    if (term.buffer.active.type === 'alternate') return false;
-
-    const m = item.marker;
-    if (m && !m.isDisposed && m.line >= 0) {
-      term.scrollToLine(Math.max(0, m.line - 1)); // 한 줄 위 여백을 두고 표시
-      return true;
-    }
-
-    // 폴백: 프롬프트 앞 30자를 버퍼 전체에서 검색.
-    // 같은 텍스트가 여러 번 있으면 커밋 시점 라인(item.line)에 가장 가까운 매치 선택.
-    const needle = (item.text || '').slice(0, 30).trim();
-    if (needle.length < 2) return false;
-    const buf = term.buffer.active;
-    let best = -1, bestDist = Infinity;
-    for (let i = 0; i < buf.length; i++) {
-      const line = buf.getLine(i);
-      if (!line || !line.translateToString(true).includes(needle)) continue;
-      const dist = item.line >= 0 ? Math.abs(i - item.line) : buf.length - i;
-      if (dist < bestDist) { bestDist = dist; best = i; }
-    }
-    if (best < 0) return false;
-    term.scrollToLine(Math.max(0, best - 1));
-    return true;
   },
 
   activate(id) {
