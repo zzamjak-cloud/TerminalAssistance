@@ -41,9 +41,15 @@
     listClaudeSessions: (cwd) => invoke('list_claude_sessions', { cwd }),
     // 세션 열람 팝업용: 저장된 세션 기록 → 대화 메시지 [{ role, kind, text }]
     claudeSessionMessages: (cwd, id) => invoke('claude_session_messages', { cwd, id }),
-    // 계획 문서 (프로젝트 경로 귀속 영속화) — 목록 [{ id, sessionId, createdMs, title }] / 본문
+    // 계획 문서 (프로젝트 경로 귀속 영속화) — 목록 [{ id, sessionId, createdMs, title, path }] / 본문
     listPlanDocs: (cwd) => invoke('list_plan_docs', { cwd }),
     getPlanDoc: (cwd, id) => invoke('get_plan_doc', { cwd, id }),
+    // 탐색기: 디렉토리 1단계 목록 [{ name, path, isDir }] (지연 로딩)
+    listDir: (path) => invoke('list_dir', { path }),
+    // git 변경 파일 { root, files: { 상대경로: 상태문자 } } | null (저장소 아님)
+    gitStatus: (cwd) => invoke('git_status', { cwd }),
+    // 미리보기용 텍스트 읽기 { content, truncated, size } — 바이너리면 reject
+    readTextFile: (path) => invoke('read_text_file', { path }),
     write: (id, data) => invoke('write_session', { id, data }),
     resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
     closeSession: (id) => invoke('close_session', { id }),

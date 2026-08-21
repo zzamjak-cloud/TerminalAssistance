@@ -1,8 +1,11 @@
 // 모달 공통 골격 + 프로젝트/프리셋/설정 폼 + 업데이트 확인
 Object.assign(App, {
   _modalCleanup: null, // 이전 모달의 keydown(Esc) 리스너 해제 함수
+  _modalClose: null,   // 현재 모달의 close — 탐색기 스페이스 토글이 외부에서 닫을 때 사용
+  _modalIsPreview: false, // 현재 모달이 파일 미리보기인가 (스페이스로 닫기 허용 판별)
 
   // opts.wide: 문서 열람 등 넓은 팝업 (기본 420px → 680px)
+  // opts.xl: 파일 미리보기 등 대형 팝업 (900px)
   modal(html, onOpen, opts) {
     // close() 를 거치지 않고 모달 위에 새 모달을 여는 경로(프리셋 관리 → 수정 등)에서
     // 이전 Esc 리스너가 document 에 남지 않도록 먼저 정리한다
@@ -10,19 +13,33 @@ Object.assign(App, {
     const bd = document.getElementById('modal-backdrop');
     const m = document.getElementById('modal');
     m.classList.toggle('wide', !!(opts && opts.wide));
+    m.classList.toggle('xl', !!(opts && opts.xl));
     m.innerHTML = html;
     bd.classList.remove('hidden');
     // 바깥 클릭으로는 닫지 않는다 — 입력 중 드래그가 배경 클릭으로 판정돼
     // 작성 내용이 날아가는 실수가 잦았음. 닫기는 버튼 또는 Esc 로만.
     bd.onclick = null;
-    const esc = (e) => { if (e.key === 'Escape') close(); };
+    const esc = (e) => {
+      if (e.key === 'Escape') { close(); return; }
+      // 미리보기 모달은 스페이스로도 닫기 (탐색기 스페이스 열기와 짝을 이루는 토글).
+      // 버튼/입력에 포커스가 있으면 스페이스의 본래 동작을 존중한다.
+      if ((e.key === ' ' || e.code === 'Space') && App._modalIsPreview
+        && !/^(BUTTON|INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
+        e.preventDefault();
+        close();
+      }
+    };
     const close = () => {
       bd.classList.add('hidden');
       document.removeEventListener('keydown', esc);
       App._modalCleanup = null;
+      App._modalClose = null;
+      App._modalIsPreview = false;
     };
     document.addEventListener('keydown', esc);
     App._modalCleanup = () => document.removeEventListener('keydown', esc);
+    App._modalClose = close;
+    App._modalIsPreview = false; // 미리보기 모달만 onOpen 에서 켠다 (preview.js)
     onOpen(m, close);
   },
 

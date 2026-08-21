@@ -1,5 +1,6 @@
-// 패널 레이아웃: 좌측 사이드바·우측 프롬프트/작업 패널의 폴딩과 드래그 리사이즈.
-// 저장 키: ta-left-w / ta-right-w / ta-left-fold / ta-prompt-panel / ta-sec-fold
+// 패널 레이아웃: 좌측 사이드바·탐색기·우측 프롬프트/작업 패널의 폴딩과 드래그 리사이즈.
+// 저장 키: ta-left-w / ta-explorer-w / ta-right-w / ta-left-fold / ta-explorer-fold /
+//          ta-prompt-panel / ta-sec-fold
 Object.assign(App, {
   togglePromptPanel() {
     const p = document.getElementById('prompt-panel');
@@ -19,23 +20,42 @@ Object.assign(App, {
     setTimeout(() => TerminalView.fitActive(), PANEL_ANIM_MS);
   },
 
+  // 탐색기 폴딩 — 사이드바와 같은 슬림 레일 방식
+  toggleExplorer() {
+    const ex = document.getElementById('explorer');
+    const collapsed = ex.classList.toggle('collapsed');
+    document.getElementById('resize-explorer').style.display = collapsed ? 'none' : '';
+    localStorage.setItem('ta-explorer-fold', collapsed ? '1' : '0');
+    if (!collapsed) App.renderExplorer(); // 접힌 동안의 프로젝트 전환 반영
+    setTimeout(() => TerminalView.fitActive(), PANEL_ANIM_MS);
+  },
+
   // 패널 UI 초기화: 저장된 너비/폴딩 복원 + 리사이즈 핸들 배선
   initPanelUI() {
     const sb = document.getElementById('sidebar');
+    const ex = document.getElementById('explorer');
     const pp = document.getElementById('prompt-panel');
     const lw = Number(localStorage.getItem('ta-left-w'));
+    const ew = Number(localStorage.getItem('ta-explorer-w'));
     const rw = Number(localStorage.getItem('ta-right-w'));
     if (lw >= 180) sb.style.width = lw + 'px';
+    if (ew >= 160) ex.style.width = ew + 'px';
     if (rw >= 200) pp.style.width = rw + 'px';
     if (localStorage.getItem('ta-left-fold') === '1') {
       sb.classList.add('collapsed');
       document.getElementById('resize-left').style.display = 'none';
     }
+    if (localStorage.getItem('ta-explorer-fold') === '1') {
+      ex.classList.add('collapsed');
+      document.getElementById('resize-explorer').style.display = 'none';
+    }
     document.getElementById('resize-right').style.display = pp.classList.contains('hidden') ? 'none' : '';
 
     document.getElementById('btn-fold-left').onclick = (e) => { e.stopPropagation(); App.toggleLeftSidebar(); };
+    document.getElementById('btn-fold-explorer').onclick = (e) => { e.stopPropagation(); App.toggleExplorer(); };
     document.getElementById('btn-fold-right').onclick = () => App.togglePromptPanel();
     sb.onclick = () => { if (sb.classList.contains('collapsed')) App.toggleLeftSidebar(); }; // 슬림 레일 클릭 = 펼치기
+    ex.onclick = () => { if (ex.classList.contains('collapsed')) App.toggleExplorer(); };
 
     // 드래그로 너비 조절 (드래그 중엔 트랜지션 끔)
     const wireResize = (handleId, panel, key, min, max, fromLeft) => {
@@ -65,6 +85,7 @@ Object.assign(App, {
       };
     };
     wireResize('resize-left', sb, 'ta-left-w', 180, 420, true);
+    wireResize('resize-explorer', ex, 'ta-explorer-w', 160, 420, true);
     wireResize('resize-right', pp, 'ta-right-w', 200, 460, false);
 
     App.initSectionFolds();

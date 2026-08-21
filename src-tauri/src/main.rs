@@ -3,6 +3,7 @@
 
 mod claude;
 mod codex;
+mod explorer;
 mod hooks;
 mod plans;
 mod pty;
@@ -456,6 +457,9 @@ fn main() {
             claude::claude_session_messages,
             plans::list_plan_docs,
             plans::get_plan_doc,
+            explorer::list_dir,
+            explorer::git_status,
+            explorer::read_text_file,
             codex::codex_usage,
             hooks::hooks_status,
             hooks::claude_session_of,

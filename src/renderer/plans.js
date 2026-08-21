@@ -29,7 +29,7 @@ Object.assign(App, {
     if (!cached.items.length) {
       const e = document.createElement('div');
       e.className = 'prompt-empty';
-      e.textContent = '아직 추출된 계획 문서가 없습니다. (플랜 모드 승인·plan .md 작성 시 자동 수집)';
+      e.textContent = '아직 추출된 계획 문서가 없습니다. (플랜 모드 승인, plan/spec .md 작성, .omc/plans·docs/superpowers/specs 등 계획 폴더의 파일을 자동 수집)';
       el.appendChild(e);
       return;
     }
@@ -42,7 +42,9 @@ Object.assign(App, {
       const text = document.createElement('div');
       text.className = 'cs-text';
       text.textContent = it.title;
-      row.title = it.title + '\n' + new Date(it.createdMs).toLocaleString() + '\n클릭하면 계획 내용을 보여줍니다.';
+      // 파일 기반 계획(.omc/plans, docs/superpowers/specs 등)은 출처 경로를 함께 표시
+      const src = it.path ? '파일: ' + it.path : '세션 추출';
+      row.title = it.title + '\n' + src + '\n' + new Date(it.createdMs).toLocaleString() + '\n클릭하면 계획 내용을 보여줍니다.';
       row.onclick = () => App.showPlanDoc(cwd, it);
       row.append(time, text);
       el.appendChild(row);
@@ -62,7 +64,8 @@ Object.assign(App, {
       (m, close) => {
         m.querySelector('h3').textContent = doc.title;
         m.querySelector('.modal-sub').textContent =
-          new Date(doc.createdMs).toLocaleString() + ' · 세션 ' + doc.sessionId.slice(0, 8);
+          new Date(doc.createdMs).toLocaleString() +
+          (doc.path ? ' · ' + doc.path : ' · 세션 ' + doc.sessionId.slice(0, 8));
         m.querySelector('.doc-view').textContent = doc.text;
         m.querySelector('#m-close').onclick = close;
       }, { wide: true });

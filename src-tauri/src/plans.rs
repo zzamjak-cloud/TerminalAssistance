@@ -1,5 +1,7 @@
 // 계획 문서: Claude Code 세션 기록(jsonl)에서 계획을 추출해 프로젝트(경로) 귀속으로 영속화.
-//  - 추출 대상: ExitPlanMode 의 plan, 그리고 plan 성격의 .md Write 내용
+//  - 추출 대상: ExitPlanMode 의 plan, 그리고 plan/spec 성격의 .md Write 내용
+//  - 추가로 프로젝트 안의 관례적 계획 디렉토리(.omc/plans, docs/superpowers/specs 등)를
+//    직접 스캔한다 — 플랜 모드를 거치지 않고(Auto 모드) 파일로만 남는 계획도 잡기 위함.
 //  - Claude Code 가 오래된 jsonl 을 정리해도, 한 번 추출된 계획은 앱 데이터
 //    (plans/<경로 변환>.json)에 남아 이후에도 열람·이어서 진행의 근거가 된다.
 //  - 스캔은 파일별 오프셋 기반 증분 — 첫 호출 이후에는 새로 추가된 기록만 읽는다.
@@ -8,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 const SCAN_CHUNK: u64 = 8 * 1024 * 1024; // 호출당 파일 1개 스캔 상한 (초대형 세션 방어)
@@ -17,15 +19,30 @@ const MIN_TEXT_LEN: usize = 40; // 이보다 짧으면 실질 내용 없는 계�
 const MAX_PLANS: usize = 200; // 프로젝트당 보관 상한 — 초과 시 오래된 것부터 제거
 const TITLE_CAP: usize = 80;
 
+/// 계획 문서가 파일로 저장되는 관례적 위치 (cwd 상대) — 도구별 대응:
+/// OMC(.omc/plans), superpowers(docs/superpowers/specs), 일반 관례(docs/plans 등)
+const PLAN_DIRS: &[&str] = &[
+    ".omc/plans",
+    ".claude/plans",
+    "docs/plans",
+    "docs/specs",
+    "docs/superpowers/specs",
+    "plans",
+];
+const PLAN_DIR_DEPTH: usize = 2; // 계획 디렉토리 하위 재귀 깊이 상한
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct PlanDoc {
-    pub id: String, // 본문 해시 — 같은 계획의 중복 수집 방지
+    pub id: String, // 본문 해시(세션 추출) 또는 경로 해시(파일 스캔) — 중복 수집 방지
     #[serde(rename = "sessionId")]
     pub session_id: String,
     #[serde(rename = "createdMs")]
     pub created_ms: u64,
     pub title: String,
     pub text: String,
+    /// 파일 스캔으로 수집된 계획의 cwd 상대 경로 (세션 추출이면 빈 문자열)
+    #[serde(default)]
+    pub path: String,
 }
 
 /// 목록 IPC 용 — 본문은 제외해 페이로드를 가볍게 유지 (본문은 get_plan_doc 으로)
@@ -37,6 +54,7 @@ pub struct PlanMeta {
     #[serde(rename = "createdMs")]
     pub created_ms: u64,
     pub title: String,
+    pub path: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -44,6 +62,9 @@ struct PlanStore {
     /// 세션 파일 스템 → 스캔 완료 바이트 오프셋
     #[serde(default)]
     files: HashMap<String, u64>,
+    /// 계획 파일 상대 경로 → (mtime ms, 크기) — 변경 없으면 재읽기 생략
+    #[serde(default)]
+    disk: HashMap<String, (u64, u64)>,
     #[serde(default)]
     plans: Vec<PlanDoc>,
 }
@@ -122,11 +143,14 @@ fn extract_plans(v: &serde_json::Value, session_id: &str, plans: &mut Vec<PlanDo
         let text = match b.get("name").and_then(|x| x.as_str()) {
             // 플랜 모드 승인 요청 — 계획 본문의 정본
             Some("ExitPlanMode") => input.and_then(|i| i.get("plan")).and_then(|x| x.as_str()),
-            // 계획 성격의 마크다운 파일 작성 (예: docs/plan-*.md, .omc/plans/*.md)
+            // 계획 성격의 마크다운 파일 작성
+            // (예: docs/plan-*.md, .omc/plans/*.md, docs/superpowers/specs/*-design.md)
             Some("Write") => {
                 let fp = input.and_then(|i| i.get("file_path")).and_then(|x| x.as_str()).unwrap_or("");
-                let lower = fp.to_lowercase();
-                if lower.ends_with(".md") && (lower.contains("plan") || fp.contains("계획")) {
+                let lower = fp.to_lowercase().replace('\\', "/");
+                if lower.ends_with(".md")
+                    && (lower.contains("plan") || fp.contains("계획") || lower.contains("/specs/"))
+                {
                     input.and_then(|i| i.get("content")).and_then(|x| x.as_str())
                 } else {
                     None
@@ -154,10 +178,76 @@ fn extract_plans(v: &serde_json::Value, session_id: &str, plans: &mut Vec<PlanDo
             created_ms: created,
             title: plan_title(&capped),
             text: capped,
+            path: String::new(),
         });
         added = true;
     }
     added
+}
+
+/// 파일 mtime → unix ms
+fn mtime_ms(md: &fs::Metadata) -> u64 {
+    md.modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 계획 디렉토리 하나를 재귀 스캔해 .md 파일을 계획으로 수집/갱신.
+/// 파일 기반 계획은 경로 해시 id 로 1파일=1항목을 유지하고, 내용이 바뀌면 제자리 갱신한다.
+fn scan_plan_dir(dir: &Path, cwd: &Path, depth: usize, store: &mut PlanStore, known: &mut HashSet<String>) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else { return false };
+    let mut dirty = false;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if depth < PLAN_DIR_DEPTH {
+                dirty |= scan_plan_dir(&p, cwd, depth + 1, store, known);
+            }
+            continue;
+        }
+        if p.extension().and_then(|x| x.to_str()).map(str::to_lowercase) != Some("md".into()) {
+            continue;
+        }
+        let Ok(md) = e.metadata() else { continue };
+        let rel = p
+            .strip_prefix(cwd)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| p.to_string_lossy().into_owned());
+        let sig = (mtime_ms(&md), md.len());
+        if store.disk.get(&rel) == Some(&sig) {
+            continue; // 변경 없음 — 재읽기 생략
+        }
+        store.disk.insert(rel.clone(), sig);
+        dirty = true;
+        let Ok(raw) = fs::read_to_string(&p) else { continue };
+        let text = raw.trim();
+        if text.chars().count() < MIN_TEXT_LEN {
+            continue;
+        }
+        let capped: String = text.chars().take(TEXT_CAP).collect();
+        // 세션 추출본과 내용이 같으면 중복 등록하지 않는다 (Write 로 이미 수집된 계획)
+        if known.contains(&content_hash(&capped)) {
+            continue;
+        }
+        let id = format!("f{}", content_hash(&rel)); // 경로 기반 id — 파일 수정 시 갱신 대상
+        known.insert(id.clone());
+        let doc = PlanDoc {
+            id: id.clone(),
+            session_id: String::new(),
+            created_ms: sig.0,
+            title: plan_title(&capped),
+            text: capped,
+            path: rel,
+        };
+        if let Some(existing) = store.plans.iter_mut().find(|x| x.id == id) {
+            *existing = doc;
+        } else {
+            store.plans.push(doc);
+        }
+    }
+    dirty
 }
 
 /// cwd 의 계획 문서 목록 (최신순). 호출 시 세션 기록의 새 구간을 증분 스캔해 저장소에 반영.
@@ -214,6 +304,13 @@ pub async fn list_plan_docs(app: tauri::AppHandle, cwd: String) -> Vec<PlanMeta>
         }
     }
 
+    // 세션 기록과 별개로, 프로젝트 안의 관례적 계획 디렉토리도 직접 스캔
+    // (Auto 모드 등 플랜 모드를 거치지 않고 파일로만 남는 계획 대응)
+    let cwd_path = PathBuf::from(&cwd);
+    for rel in PLAN_DIRS {
+        dirty |= scan_plan_dir(&cwd_path.join(rel), &cwd_path, 0, &mut store, &mut known);
+    }
+
     store.plans.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
     if store.plans.len() > MAX_PLANS {
         store.plans.truncate(MAX_PLANS);
@@ -235,6 +332,7 @@ pub async fn list_plan_docs(app: tauri::AppHandle, cwd: String) -> Vec<PlanMeta>
             session_id: p.session_id.clone(),
             created_ms: p.created_ms,
             title: p.title.clone(),
+            path: p.path.clone(),
         })
         .collect()
 }
@@ -280,5 +378,55 @@ mod tests {
         assert_eq!(plans[0].created_ms, 1_767_225_600_000);
         // 일반 코드 Write 는 수집되지 않고, 같은 계획의 재기록도 중복 제외
         assert!(!extract_plans(&line, "sess1", &mut plans, &mut known));
+    }
+
+    #[test]
+    fn extracts_specs_dir_write() {
+        // superpowers 스펙처럼 파일명에 plan 이 없어도 /specs/ 경로면 수집
+        let long = "# 설계 문서\n\n구성 요소와 데이터 흐름을 정의한다 — 충분히 긴 본문이어야 수집된다";
+        let line = serde_json::json!({
+            "type": "assistant",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": { "content": [
+                { "type": "tool_use", "name": "Write",
+                  "input": { "file_path": "docs/superpowers/specs/2026-01-01-topic-design.md", "content": long } }
+            ]}
+        });
+        let mut plans = Vec::new();
+        let mut known = HashSet::new();
+        assert!(extract_plans(&line, "sess1", &mut plans, &mut known));
+        assert_eq!(plans[0].title, "설계 문서");
+    }
+
+    #[test]
+    fn disk_scan_collects_and_updates() {
+        // 임시 프로젝트: .omc/plans/a.md 를 수집하고, 내용 변경 시 같은 항목을 제자리 갱신
+        let tmp = std::env::temp_dir().join(format!("ta-plans-test-{}", std::process::id()));
+        let dir = tmp.join(".omc").join("plans");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.md");
+        fs::write(&file, "# 첫 계획\n\n1단계와 2단계를 수행한다 — 충분히 긴 본문이어야 수집된다").unwrap();
+
+        let mut store = PlanStore::default();
+        let mut known = HashSet::new();
+        assert!(scan_plan_dir(&dir, &tmp, 0, &mut store, &mut known));
+        assert_eq!(store.plans.len(), 1);
+        assert_eq!(store.plans[0].title, "첫 계획");
+        assert_eq!(store.plans[0].path, ".omc/plans/a.md");
+
+        // 변경 없으면 재읽기 없음 (dirty=false)
+        let mut known2: HashSet<String> = store.plans.iter().map(|p| p.id.clone()).collect();
+        assert!(!scan_plan_dir(&dir, &tmp, 0, &mut store, &mut known2));
+
+        // 내용 변경 → 같은 id 항목이 갱신되어 개수는 그대로
+        fs::write(&file, "# 수정된 계획\n\n3단계를 추가로 수행한다 — 충분히 긴 본문이어야 수집된다").unwrap();
+        // mtime 해상도 문제를 피하기 위해 크기가 달라진 것으로 변경을 감지한다
+        let mut known3: HashSet<String> = store.plans.iter().map(|p| p.id.clone()).collect();
+        known3.remove(&store.plans[0].id);
+        scan_plan_dir(&dir, &tmp, 0, &mut store, &mut known3);
+        assert_eq!(store.plans.len(), 1);
+        assert_eq!(store.plans[0].title, "수정된 계획");
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

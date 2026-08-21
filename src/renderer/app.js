@@ -81,6 +81,7 @@ const App = {
       document.getElementById('prompt-panel').classList.remove('hidden');
     }
     App.initPanelUI();
+    App.initExplorer();
 
     // 터미널 밖에 포커스가 있을 때의 단축키
     window.addEventListener('keydown', (ev) => {
@@ -113,6 +114,7 @@ const App = {
 
   renderAll() {
     renderSidebar();
+    App.renderExplorer();
     renderPresets();
     App.renderTopbar();
     App.renderImageStrip();
