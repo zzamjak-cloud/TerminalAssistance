@@ -24,6 +24,16 @@
     removePreset: (id) => invoke('remove_preset', { id }),
     reorderPresets: (ids) => invoke('reorder_presets', { ids }),
 
+    addRecipe: (r) => invoke('add_recipe', { label: r.label, commands: r.commands, projectId: r.projectId || null }),
+    updateRecipe: (id, patch) => invoke('update_recipe', {
+      id,
+      label: patch.label ?? null,
+      commands: patch.commands ?? null,
+      projectId: patch.projectId ?? null,
+      clearProject: patch.clearProject ?? null
+    }),
+    removeRecipe: (id) => invoke('remove_recipe', { id }),
+
     updateSettings: (patch) => invoke('update_settings', {
       fontSize: patch.fontSize ?? null,
       shell: patch.shell ?? null,
@@ -44,6 +54,7 @@
     // 계획 문서 (프로젝트 경로 귀속 영속화) — 목록 [{ id, sessionId, createdMs, title, path }] / 본문
     listPlanDocs: (cwd) => invoke('list_plan_docs', { cwd }),
     getPlanDoc: (cwd, id) => invoke('get_plan_doc', { cwd, id }),
+    addPlanDoc: (cwd, sessionId, text) => invoke('add_plan_doc', { cwd, sessionId, text }),
     // 탐색기: 디렉토리 1단계 목록 [{ name, path, isDir }] (지연 로딩)
     listDir: (path) => invoke('list_dir', { path }),
     // git 변경 파일 { root, files: { 상대경로: 상태문자 } } | null (저장소 아님)

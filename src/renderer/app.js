@@ -6,6 +6,7 @@ const App = {
   state: {
     projects: [],
     presets: [],
+    recipes: [],
     settings: { fontSize: 13, shell: '', notifyOnDone: true, notifyOnWaiting: true },
     sessions: [],   // { id, projectId, title, status, cwd }
     activeId: null,
@@ -22,7 +23,7 @@ const App = {
     App._emptyDefault = document.getElementById('empty-state').innerHTML;
     const st = await ta.getState();
     Object.assign(App.state, {
-      projects: st.projects, presets: st.presets, settings: st.settings, sessions: st.sessions,
+      projects: st.projects, presets: st.presets, recipes: st.recipes || [], settings: st.settings, sessions: st.sessions,
       drafts: st.drafts || {}, platform: st.platform || ''
     });
     // 사이드바 제목 우측 버전 표기
@@ -67,9 +68,13 @@ const App = {
     document.getElementById('btn-home-session').onclick = () => App.createSession(null);
     document.getElementById('btn-add-preset').onclick = () => App.showPresetManager();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
+    document.getElementById('btn-command-palette').onclick = () => App.openCommandPalette();
+    document.getElementById('btn-term-search').onclick = () => App.openTerminalSearch();
+    App.bindPlanCaptureButton('btn-plan-capture-top');
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
     document.getElementById('btn-draft-add').onclick = () => App.addDraft();
     document.getElementById('btn-claude-refresh').onclick = () => App.renderClaudeList(true);
+    App.bindPlanCaptureButton('btn-plan-capture');
     document.getElementById('btn-plan-refresh').onclick = () => App.renderPlanList(true);
     // 시스템 메모리 폴링 (2초)
     setInterval(() => App.pollStatus(), 2000);
@@ -82,12 +87,12 @@ const App = {
     }
     App.initPanelUI();
     App.initExplorer();
+    App.initCommandPaletteUI();
+    App.initTerminalSearchUI();
 
     // 터미널 밖에 포커스가 있을 때의 단축키
     window.addEventListener('keydown', (ev) => {
-      const mod = ev.metaKey || ev.ctrlKey;
-      if (mod && ev.key >= '1' && ev.key <= '9') { ev.preventDefault(); App.activateByIndex(Number(ev.key) - 1); }
-      if (mod && ev.key.toLowerCase() === 't') { ev.preventDefault(); App.newSessionInActiveProject(); }
+      App.handleAppShortcut(ev);
     });
 
     // 세션 내용 복원: 스냅샷을 병렬 조회하고 도착 즉시 주입 (세션 간 순서 의존성 없음)
@@ -122,6 +127,57 @@ const App = {
     App.renderPlanList();
     App.renderDraftList();
     App.renderEmptyState();
+  },
+
+  isOverlayOpen(id) {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains('hidden');
+  },
+
+  isShortcutBlocked(ev, opts) {
+    if (ev.isComposing || ev.keyCode === 229) return true;
+    if (App.isOverlayOpen('modal-backdrop')) return true;
+    if (App.isOverlayOpen('command-palette')) return true;
+    if (opts && opts.fromTerminal) return false;
+    const t = ev.target;
+    return !!(t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)));
+  },
+
+  handleAppShortcut(ev, opts) {
+    const mod = App.state.platform === 'macos' ? ev.metaKey : ev.ctrlKey;
+    if (!mod || ev.altKey || ev.shiftKey) return false;
+    if (App.isShortcutBlocked(ev, opts)) return false;
+    const key = ev.key.toLowerCase();
+    if (key === 'k') {
+      ev.preventDefault();
+      App.openCommandPalette();
+      return true;
+    }
+    if (key === 'f') {
+      ev.preventDefault();
+      App.openTerminalSearch();
+      return true;
+    }
+    if (ev.key >= '1' && ev.key <= '9') {
+      ev.preventDefault();
+      App.activateByIndex(Number(ev.key) - 1);
+      return true;
+    }
+    if (key === 't') {
+      ev.preventDefault();
+      App.newSessionInActiveProject();
+      return true;
+    }
+    return false;
+  },
+
+  bindPlanCaptureButton(id) {
+    const btn = document.getElementById(id);
+    btn.onmousedown = (ev) => ev.preventDefault(); // xterm 선택 영역 유지
+    btn.onclick = (ev) => {
+      ev.preventDefault();
+      App.captureSelectionAsPlan();
+    };
   },
 
   // ── 메인 영역 빈 화면 ──
@@ -314,6 +370,7 @@ const App = {
     App.checkDoneViewed(id); // 즉시 해제 대신 열람 카운트다운 — 무엇이 끝났는지 볼 시간을 준다
     App.renderAll();
     App.refreshBranch(); // 전환 즉시 브랜치 표시 (다음 폴링까지 기다리지 않게)
+    if (App.isOverlayOpen && App.isOverlayOpen('term-search')) App.updateTerminalSearch();
   },
 
   activateByIndex(i) {
@@ -421,12 +478,87 @@ const App = {
     }
   },
 
-  runPreset(preset, execute) {
+  async expandPresetCommand(command, slotValues) {
+    const s = App.state.sessions.find((x) => x.id === App.state.activeId);
+    const project = s && App.state.projects.find((p) => p.id === s.projectId);
+    const clipboard = command.includes('{clipboard}') ? (await ta.clipboardText().catch(() => '') || '') : '';
+    let out = command.replace(/\{(branch|projectPath|projectName|session|clipboard)\}/g, (_, name) => {
+      if (name === 'branch') return s ? (App.state.branches[s.id] || '') : '';
+      if (name === 'projectPath') return s ? s.cwd : '';
+      if (name === 'projectName') return project ? project.name : '';
+      if (name === 'session') return s ? App.sessionLabel(s) : '';
+      if (name === 'clipboard') return clipboard;
+      return '';
+    });
+    const labels = [...new Set([...out.matchAll(/\{input:([^{}]+)\}/g)].map((m) => m[1].trim()).filter(Boolean))];
+    for (const label of labels) {
+      const value = slotValues && Object.prototype.hasOwnProperty.call(slotValues, label)
+        ? slotValues[label]
+        : await App.promptPresetSlot(label);
+      if (value === null) return null;
+      if (slotValues) slotValues[label] = value;
+      out = out.replaceAll('{input:' + label + '}', value);
+    }
+    return out;
+  },
+
+  promptPresetSlot(label) {
+    return new Promise((resolve) => {
+      let done = false;
+      App.modal(`
+        <h3>프리셋 입력값</h3>
+        <label>${escapeHtml(label)}</label><input type="text" id="m-slot-value">
+        <div class="modal-actions"><button id="m-cancel">취소</button><button id="m-save">계속</button></div>`,
+        (m, close) => {
+          const input = m.querySelector('#m-slot-value');
+          const finish = (value) => {
+            if (done) return;
+            done = true;
+            document.removeEventListener('keydown', esc);
+            close();
+            resolve(value);
+          };
+          const esc = (ev) => { if (ev.key === 'Escape') finish(null); };
+          document.addEventListener('keydown', esc);
+          m.querySelector('#m-cancel').onclick = () => finish(null);
+          m.querySelector('#m-save').onclick = () => finish(input.value);
+          input.onkeydown = (ev) => {
+            if (ev.key === 'Enter') {
+              ev.preventDefault();
+              finish(input.value);
+            }
+          };
+          input.focus();
+        });
+    });
+  },
+
+  async runPreset(preset, execute) {
     const id = App.state.activeId;
     if (!id) return;
-    TerminalView.paste(id, preset.command);
+    const command = await App.expandPresetCommand(preset.command);
+    if (command === null) return;
+    TerminalView.paste(id, command);
     if (execute) ta.write(id, '\r');
     TerminalView.activate(id);
+  },
+
+  async runRecipe(recipe) {
+    const commands = (recipe.commands || []).map((c) => c.trim()).filter(Boolean);
+    if (!commands.length) return;
+    const active = App.state.sessions.find((s) => s.id === App.state.activeId);
+    const projectId = recipe.projectId || (active ? active.projectId : null);
+    const slotValues = {};
+    for (const raw of commands) {
+      const info = await App.createSession(projectId);
+      if (!info) continue;
+      const command = await App.expandPresetCommand(raw, slotValues);
+      if (command === null) return;
+      setTimeout(() => {
+        TerminalView.paste(info.id, command);
+        ta.write(info.id, '\r');
+      }, 600);
+    }
   }
 };
 

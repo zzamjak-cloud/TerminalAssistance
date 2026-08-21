@@ -128,6 +128,121 @@ Object.assign(App, {
       });
   },
 
+  // ── 런치 레시피: 여러 세션을 만들고 각 줄의 명령을 실행하는 작업 묶음 ──
+  showRecipeManager() {
+    const active = App.state.sessions.find((s) => s.id === App.state.activeId);
+    const projectId = active ? active.projectId : null;
+    const proj = App.state.projects.find((p) => p.id === projectId);
+
+    App.modal(`
+      <h3>런치 레시피 관리</h3>
+      <div class="pm-title">◆ 전역 레시피 <button id="rc-add-g">+ 추가</button></div>
+      <div class="pm-list" id="rc-globals"></div>
+      <div class="pm-title">▸ ${proj ? escapeHtml(proj.name) + ' 전용' : '프로젝트 전용'} <button id="rc-add-p" ${proj ? '' : 'disabled'}>+ 추가</button></div>
+      <div class="pm-list" id="rc-projs"></div>
+      <div class="modal-actions"><button id="m-close">닫기</button></div>`,
+      (m, close) => {
+        const back = () => App.showRecipeManager();
+        const row = (r) => {
+          const commands = (r.commands || []).filter((c) => c.trim());
+          const first = commands[0] || '';
+          const el = document.createElement('div');
+          el.className = 'pm-row';
+          const lb = document.createElement('b');
+          lb.textContent = r.label;
+          const cmd = document.createElement('span');
+          cmd.textContent = `${commands.length}개 세션` + (first ? ' · ' + first : '');
+          cmd.title = commands.join('\n');
+          const run = document.createElement('button');
+          run.textContent = '실행';
+          run.onclick = () => { close(); App.runRecipe(r); };
+          const edit = document.createElement('button');
+          edit.textContent = '수정';
+          edit.onclick = () => App.showRecipeModal(r, { back });
+          const del = document.createElement('button');
+          del.textContent = '삭제';
+          del.className = 'pm-del';
+          del.onclick = async () => {
+            if (!confirm(`레시피 "${r.label}" 을 삭제할까요?`)) return;
+            try { await ta.removeRecipe(r.id); }
+            catch (e) { alert('삭제 실패: ' + e); return; }
+            App.state.recipes = App.state.recipes.filter((x) => x.id !== r.id);
+            back();
+          };
+          el.append(lb, cmd, run, edit, del);
+          return el;
+        };
+        const gl = m.querySelector('#rc-globals');
+        const pl = m.querySelector('#rc-projs');
+        const globals = (App.state.recipes || []).filter((r) => !r.projectId);
+        const projs = (App.state.recipes || []).filter((r) => r.projectId === projectId && projectId);
+        if (!globals.length) gl.innerHTML = '<div class="pm-empty">등록된 전역 레시피가 없습니다.</div>';
+        else for (const r of globals) gl.appendChild(row(r));
+        if (!proj) pl.innerHTML = '<div class="pm-empty">프로젝트 세션을 열면 전용 레시피를 관리할 수 있습니다.</div>';
+        else if (!projs.length) pl.innerHTML = '<div class="pm-empty">이 프로젝트 전용 레시피가 없습니다.</div>';
+        else for (const r of projs) pl.appendChild(row(r));
+
+        m.querySelector('#rc-add-g').onclick = () => App.showRecipeModal(null, { scope: '', back });
+        if (proj) m.querySelector('#rc-add-p').onclick = () => App.showRecipeModal(null, { scope: proj.id, back });
+        m.querySelector('#m-close').onclick = close;
+      });
+  },
+
+  showRecipeModal(existing, mgrOpts) {
+    const opts = App.state.projects
+      .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} 전용</option>`).join('');
+    App.modal(`
+      <h3>${existing ? '런치 레시피 수정' : '런치 레시피 추가'}</h3>
+      <label>이름</label><input type="text" id="m-label" placeholder="예: 개발 서버 + AI">
+      <label>명령 (한 줄 = 새 세션 하나)</label><textarea id="m-commands" placeholder="npm run dev&#10;claude&#10;cargo test"></textarea>
+      <div class="form-help">각 줄마다 새 터미널 세션을 만들고 즉시 실행합니다. 변수: {branch}, {projectPath}, {projectName}, {session}, {clipboard}, {input:작업명}</div>
+      <label>범위</label><select id="m-scope"><option value="">전역 (현재 프로젝트에서 실행)</option>${opts}</select>
+      <div class="modal-actions">
+        ${existing ? '<button id="m-del" class="danger">삭제</button>' : ''}
+        <button id="m-cancel">취소</button><button id="m-save">저장</button>
+      </div>`,
+      (m, close) => {
+        const finish = () => { close(); if (mgrOpts && mgrOpts.back) mgrOpts.back(); };
+        const label = m.querySelector('#m-label');
+        const commands = m.querySelector('#m-commands');
+        const scope = m.querySelector('#m-scope');
+        if (existing) {
+          label.value = existing.label;
+          commands.value = (existing.commands || []).join('\n');
+          scope.value = existing.projectId || '';
+        } else if (mgrOpts && mgrOpts.scope !== undefined) {
+          scope.value = mgrOpts.scope;
+        } else {
+          const s = App.state.sessions.find((x) => x.id === App.state.activeId);
+          if (s && s.projectId) scope.value = s.projectId;
+        }
+        m.querySelector('#m-cancel').onclick = finish;
+        if (existing) m.querySelector('#m-del').onclick = async () => {
+          try { await ta.removeRecipe(existing.id); }
+          catch (e) { alert('삭제 실패: ' + e); return; }
+          App.state.recipes = App.state.recipes.filter((r) => r.id !== existing.id);
+          finish();
+        };
+        m.querySelector('#m-save').onclick = async () => {
+          const list = commands.value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+          if (!label.value.trim() || !list.length) return alert('이름과 하나 이상의 명령을 입력하세요.');
+          try {
+            if (existing) {
+              const patch = { label: label.value.trim(), commands: list };
+              if (scope.value) patch.projectId = scope.value; else patch.clearProject = true;
+              await ta.updateRecipe(existing.id, patch);
+              Object.assign(existing, { label: patch.label, commands: list, projectId: scope.value || null });
+            } else {
+              const r = await ta.addRecipe({ label: label.value.trim(), commands: list, projectId: scope.value || null });
+              App.state.recipes.push(r);
+            }
+          } catch (e) { alert('저장 실패: ' + e); return; }
+          finish();
+        };
+        label.focus();
+      });
+  },
+
   // 프로젝트 색상 프리셋 12종 (다크 테마에서 서로 구분되는 계열)
   PRESET_COLORS: [
     '#4f8cc9', '#58a6ff', '#39c5cf', '#2dd4bf',
@@ -202,6 +317,7 @@ Object.assign(App, {
           catch (e) { alert('삭제 실패: ' + e); return; }
           App.state.projects = App.state.projects.filter((p) => p.id !== existing.id);
           App.state.presets = App.state.presets.filter((p) => p.projectId !== existing.id);
+          App.state.recipes = App.state.recipes.filter((r) => r.projectId !== existing.id);
           close(); App.renderAll();
         };
         m.querySelector('#m-save').onclick = async () => {
@@ -230,6 +346,7 @@ Object.assign(App, {
       <h3>${existing ? '프리셋 수정' : '명령 프리셋 추가'}</h3>
       <label>이름(칩에 표시)</label><input type="text" id="m-label" placeholder="예: 빌드 & 테스트">
       <label>명령</label><input type="text" id="m-cmd" placeholder="예: npm run build && npm test">
+      <div class="form-help">변수: {branch}, {projectPath}, {projectName}, {session}, {clipboard}, {input:작업명}</div>
       <label>범위</label><select id="m-scope"><option value="">전역 (모든 세션)</option>${opts}</select>
       <div class="modal-actions">
         ${existing ? '<button id="m-del" class="danger">삭제</button>' : ''}

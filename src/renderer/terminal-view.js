@@ -50,6 +50,8 @@ const TerminalView = {
     let mirrorTrimChar = () => {};
     let mirrorTrimWord = () => {};
     let mirrorClear = () => {};
+    let mirrorInvalidate = () => {};
+    let mirrorMarkDeleteHandled = () => {};
     if (core && typeof core._inputEvent === 'function' && term.textarea) {
       const origInputEvent = core._inputEvent.bind(core);
       const isMac = App.state.platform === 'macos';
@@ -65,6 +67,22 @@ const TerminalView = {
       let preVal = null;   // beforeinput 시점의 textarea 값
       let sawInput = false; // 이번 키스트로크에서 input 이 발생했는지 (IME 백스페이스 폴백용)
       if (isMac) {
+        let pendingKeyDeleteMirror = null; // keydown 에서 이미 처리한 삭제 뒤 textarea 목표값
+        const MIRROR_TAIL_LIMIT = 16; // IME 교체 기준으로만 쓰므로 긴 터미널 라인을 보관하지 않는다
+        const trimMirrorTail = (value) => {
+          const chars = Array.from(value);
+          return chars.length > MIRROR_TAIL_LIMIT ? chars.slice(-MIRROR_TAIL_LIMIT).join('') : value;
+        };
+        const setMirrorValue = (value) => {
+          taEl.value = trimMirrorTail(value);
+          try { taEl.setSelectionRange(taEl.value.length, taEl.value.length); } catch (_) {}
+        };
+        mirrorInvalidate = () => {
+          preVal = null;
+          pendingKeyDeleteMirror = null;
+          setMirrorValue('');
+        };
+        mirrorMarkDeleteHandled = () => { pendingKeyDeleteMirror = taEl.value; };
         taEl.addEventListener('beforeinput', (ev) => {
           const ch = core._compositionHelper;
           if (ev.isComposing || (ch && ch._isComposing)) { preVal = null; return; }
@@ -74,34 +92,63 @@ const TerminalView = {
           sawInput = true;
           const ch = core._compositionHelper;
           if (ev.isComposing || (ch && ch._isComposing)) { preVal = null; return; }
+          if (pendingKeyDeleteMirror !== null && ev.inputType && ev.inputType.startsWith('deleteContent')) {
+            preVal = null;
+            setMirrorValue(pendingKeyDeleteMirror);
+            pendingKeyDeleteMirror = null;
+            return;
+          }
+          if (pendingKeyDeleteMirror !== null) pendingKeyDeleteMirror = null;
           if (preVal === null) return;
           const pre = preVal, cur = taEl.value;
           preVal = null;
-          if (pre === cur || core._keyPressHandled) return;
+          if (pre === cur || core._keyPressHandled) { setMirrorValue(cur); return; }
           // 공통 접두/접미를 제외한 변경 구간 계산
           let p = 0;
           const max = Math.min(pre.length, cur.length);
           while (p < max && pre[p] === cur[p]) p++;
           let s = 0;
           while (s < max - p && pre[pre.length - 1 - s] === cur[cur.length - 1 - s]) s++;
-          const deleted = pre.length - p - s;
+          const deletedText = pre.slice(p, pre.length - s);
+          const deleted = Array.from(deletedText).length;
           const inserted = cur.slice(p, cur.length - s);
-          const out = '\x7f'.repeat(deleted) + inserted;
+          const inputType = ev.inputType || '';
+          const isInsertInput = inputType.startsWith('insert') || !!inserted;
+          const isDeleteInput = inputType.startsWith('deleteContent');
+          let deleteCount = deleted;
+          let nextMirror = cur;
+          if (deleted > 1 && isInsertInput) {
+            // hidden textarea 가 전체 선택/중간 선택 상태로 오염되면 다음 insert 가
+            // 긴 replace 로 보인다. 터미널에는 새 글자만 보내고 미러는 끝 삽입 기준으로 복구한다.
+            deleteCount = 0;
+            nextMirror = pre + inserted;
+          } else if (deleted > 1 && isDeleteInput) {
+            // 일반/IME Backspace 는 한 번에 한 글자만 지워야 한다. 여러 글자 삭제는
+            // textarea selection 오염으로 보고 과삭제를 차단한다.
+            deleteCount = 1;
+          }
+          const out = '\x7f'.repeat(deleteCount) + inserted;
           if (out) core.coreService.triggerDataEvent(out, true);
+          // Codex TUI처럼 화면을 자주 다시 그리는 앱에서는 textarea selection 이
+          // 전체 선택/중간 위치로 남는 경우가 있다. 다음 IME 교체가 기존 줄 전체
+          // 삭제로 해석되지 않도록 미러 커서를 항상 끝에 둔다.
+          setMirrorValue(nextMirror);
         });
         // 미러 보정 구현 (서로게이트 쌍 안전하게 문자 단위로)
         mirrorTrimChar = () => {
           const chars = Array.from(taEl.value);
-          if (chars.length) { chars.pop(); taEl.value = chars.join(''); }
+          if (chars.length) { chars.pop(); setMirrorValue(chars.join('')); }
         };
-        mirrorTrimWord = () => { taEl.value = taEl.value.replace(/\S+\s*$/, ''); };
-        mirrorClear = () => { taEl.value = ''; };
+        mirrorTrimWord = () => setMirrorValue(taEl.value.replace(/\S+\s*$/, ''));
+        mirrorClear = () => setMirrorValue('');
 
         taEl.addEventListener('keydown', (ev) => {
           // 일반 백스페이스(keyCode 8): xterm 이 \x7f 전송 후 이벤트를 취소해
           // textarea 에는 글자가 남는다 → 미러에서도 한 글자 지워 desync 를 막는다
           if (ev.key === 'Backspace' && ev.keyCode !== 229 && !ev.metaKey && !ev.altKey && !ev.ctrlKey) {
+            ev.preventDefault(); // 기본 textarea 삭제/input 이 뒤늦게 한 번 더 들어오는 경로 차단
             mirrorTrimChar();
+            mirrorMarkDeleteHandled();
             return;
           }
           // IME 가 소비한 백스페이스(keyCode 229): 자모 분해는 위 diff 가 처리하지만,
@@ -113,7 +160,7 @@ const TerminalView = {
               core.coreService.triggerDataEvent('\x7f', true);
               mirrorTrimChar(); // 전송한 삭제를 미러에도 반영 — 남겨두면 diff 이중 삭제
             }
-          }, 0);
+          }, 32);
         });
         // xterm 의 keydown(229) 기반 textarea diff 전송기는 위 differ 와 이중 전송
         // (빠른 타이핑 시 replace() 오동작으로 전체 라인 재전송 위험도 있음) → 무력화
@@ -168,6 +215,7 @@ const TerminalView = {
       if (ev.isComposing || ev.keyCode === 229) return true;
       if (ev.type !== 'keydown') return true;
       const mod = ev.metaKey || ev.ctrlKey;
+      if (App.handleAppShortcut(ev, { fromTerminal: true })) return false;
       // ── 맥북(Home/End 키 없음) 텍스트 이동 — macOS 에디터 관행을 터미널 시퀀스로 재현 ──
       // Cmd+←/→ = 줄 시작/끝(Home/End 키와 동일 시퀀스), Option+←/→ = 단어 이동(ESC b/f),
       // Cmd+⌫ = 줄 시작까지 삭제(^U), Option+⌫ = 단어 삭제(^W)
@@ -175,6 +223,7 @@ const TerminalView = {
         const horiz = ev.key === 'ArrowLeft' || ev.key === 'ArrowRight';
         if (ev.metaKey && !ev.altKey && horiz) {
           ev.preventDefault(); // 웹뷰의 히스토리 뒤로/앞으로 내비게이션 차단
+          mirrorInvalidate();
           const appMode = term.modes && term.modes.applicationCursorKeysMode;
           ta.write(session.id, ev.key === 'ArrowLeft'
             ? (appMode ? '\x1bOH' : '\x1b[H')
@@ -183,6 +232,7 @@ const TerminalView = {
         }
         if (ev.altKey && !ev.metaKey && horiz) {
           ev.preventDefault(); // textarea 의 단어 단위 캐럿 이동 차단 — IME 삽입 위치 desync 방지
+          mirrorInvalidate();
           ta.write(session.id, ev.key === 'ArrowLeft' ? '\x1bb' : '\x1bf');
           return false;
         }
@@ -190,9 +240,16 @@ const TerminalView = {
           // preventDefault 필수: 기본 동작이 textarea 의 단어/줄을 지우면 input diff 가
           // 같은 삭제를 한 번 더 전송해 이중 삭제가 된다
           ev.preventDefault();
-          if (ev.metaKey) mirrorClear(); else mirrorTrimWord(); // 전송분을 미러에도 반영
+          mirrorClear(); // 단어/줄 삭제 뒤에는 터미널 커서 상태를 정확히 알 수 없으므로 새 기준으로 시작
+          mirrorMarkDeleteHandled();
           ta.write(session.id, ev.metaKey ? '\x15' : '\x17');
           return false;
+        }
+      }
+      if (App.state.platform === 'macos') {
+        const navKeys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
+        if (ev.ctrlKey || navKeys.includes(ev.key) || ev.key === 'Enter' || ev.key === 'Tab' || ev.key === 'Delete') {
+          mirrorInvalidate();
         }
       }
       // Cmd/Ctrl+V: 클립보드에 이미지가 있으면 경로 첨부로 대체, 아니면 텍스트 붙여넣기
@@ -223,7 +280,8 @@ const TerminalView = {
       queue: [],     // frozen 동안 도착한 ta:data 페이로드
       queueBytes: 0, // 큐 누적 바이트 (상한 관리용)
       lastCols: 0,   // PTY 에 마지막으로 보낸 치수 — 변했을 때만 리사이즈 IPC
-      lastRows: 0
+      lastRows: 0,
+      resetInputMirror: mirrorInvalidate
     });
     return term;
   },
@@ -337,10 +395,24 @@ const TerminalView = {
     if (v) v.term.write(data, onDone);
   },
 
+  getSelection(id) {
+    const v = this.views.get(id);
+    if (!v || typeof v.term.getSelection !== 'function') return '';
+    return v.term.getSelection();
+  },
+
+  clearSelection(id) {
+    const v = this.views.get(id);
+    if (v && typeof v.term.clearSelection === 'function') v.term.clearSelection();
+  },
+
   // xterm 의 paste 경로 사용 (bracketed paste 처리 포함) → onData → pty
   paste(id, text) {
     const v = this.views.get(id);
-    if (v) v.term.paste(text);
+    if (v) {
+      v.term.paste(text);
+      v.resetInputMirror();
+    }
   },
 
   setFontSize(n) {

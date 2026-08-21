@@ -36,6 +36,17 @@ pub struct Preset {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct LaunchRecipe {
+    pub id: String,
+    pub label: String,
+    /// 각 줄/항목마다 새 세션을 만들고 해당 명령을 즉시 실행한다
+    pub commands: Vec<String>,
+    /// None 이면 전역 레시피, Some(id) 면 해당 프로젝트 전용
+    #[serde(rename = "projectId")]
+    pub project_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     #[serde(rename = "fontSize", default = "default_font_size")]
     pub font_size: u32,
@@ -50,12 +61,21 @@ pub struct Settings {
     pub notify_on_waiting: bool,
 }
 
-fn default_font_size() -> u32 { 13 }
-fn default_true() -> bool { true }
+fn default_font_size() -> u32 {
+    13
+}
+fn default_true() -> bool {
+    true
+}
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { font_size: 13, shell: String::new(), notify_on_done: true, notify_on_waiting: true }
+        Settings {
+            font_size: 13,
+            shell: String::new(),
+            notify_on_done: true,
+            notify_on_waiting: true,
+        }
     }
 }
 
@@ -72,6 +92,8 @@ pub struct StoreData {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub presets: Vec<Preset>,
+    #[serde(default)]
+    pub recipes: Vec<LaunchRecipe>,
     #[serde(default)]
     pub settings: Settings,
     #[serde(default)]

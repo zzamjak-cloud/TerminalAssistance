@@ -15,7 +15,7 @@ use serde_json::json;
 use std::fs;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{new_id, Preset, Project, Store};
+use store::{new_id, LaunchRecipe, Preset, Project, Store};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
@@ -33,6 +33,7 @@ fn get_state(store: StoreState, ptys: State<PtyManager>) -> serde_json::Value {
     json!({
         "projects": s.data.projects,
         "presets": s.data.presets,
+        "recipes": s.data.recipes,
         "settings": s.data.settings,
         "drafts": s.data.drafts,
         "sessions": ptys.list(),
@@ -50,7 +51,11 @@ fn get_memory(mem: State<MemState>) -> serde_json::Value {
     s.refresh_memory();
     let total = s.total_memory();
     let used = s.used_memory();
-    let pct = if total > 0 { (used as f64 / total as f64 * 100.0).round() as u32 } else { 0 };
+    let pct = if total > 0 {
+        (used as f64 / total as f64 * 100.0).round() as u32
+    } else {
+        0
+    };
     json!({
         "pct": pct,
         "usedGb": (used as f64 / GIB * 10.0).round() / 10.0,
@@ -72,8 +77,18 @@ fn set_drafts(store: StoreState, key: String, drafts: Vec<store::Draft>) -> Resu
 
 // ── 프로젝트 ──
 #[tauri::command]
-fn add_project(store: StoreState, name: String, path: String, color: Option<String>) -> Result<Project, String> {
-    let p = Project { id: new_id(), name, path, color: color.unwrap_or_else(|| "#4f8cc9".into()) };
+fn add_project(
+    store: StoreState,
+    name: String,
+    path: String,
+    color: Option<String>,
+) -> Result<Project, String> {
+    let p = Project {
+        id: new_id(),
+        name,
+        path,
+        color: color.unwrap_or_else(|| "#4f8cc9".into()),
+    };
     let mut s = plock(&store);
     s.data.projects.push(p.clone());
     s.save()?;
@@ -81,14 +96,26 @@ fn add_project(store: StoreState, name: String, path: String, color: Option<Stri
 }
 
 #[tauri::command]
-fn update_project(store: StoreState, id: String, name: Option<String>, path: Option<String>, color: Option<String>) -> Result<(), String> {
+fn update_project(
+    store: StoreState,
+    id: String,
+    name: Option<String>,
+    path: Option<String>,
+    color: Option<String>,
+) -> Result<(), String> {
     let mut s = plock(&store);
     let Some(p) = s.data.projects.iter_mut().find(|p| p.id == id) else {
         return Err("프로젝트를 찾을 수 없습니다".into());
     };
-    if let Some(v) = name { p.name = v; }
-    if let Some(v) = path { p.path = v; }
-    if let Some(v) = color { p.color = v; }
+    if let Some(v) = name {
+        p.name = v;
+    }
+    if let Some(v) = path {
+        p.path = v;
+    }
+    if let Some(v) = color {
+        p.color = v;
+    }
     s.save()
 }
 
@@ -104,20 +131,38 @@ fn reorder_projects(store: StoreState, ids: Vec<String>) -> Result<(), String> {
 fn remove_project(store: StoreState, id: String) -> Result<(), String> {
     let mut s = plock(&store);
     s.data.projects.retain(|p| p.id != id);
-    s.data.presets.retain(|p| p.project_id.as_deref() != Some(id.as_str()));
+    s.data
+        .presets
+        .retain(|p| p.project_id.as_deref() != Some(id.as_str()));
+    s.data
+        .recipes
+        .retain(|r| r.project_id.as_deref() != Some(id.as_str()));
     s.save()
 }
 
 #[tauri::command]
 async fn pick_folder(app: AppHandle) -> Option<String> {
     // blocking 다이얼로그는 async 커맨드(워커 스레드)에서 호출해 UI 를 막지 않는다
-    app.dialog().file().blocking_pick_folder().map(|p| p.to_string())
+    app.dialog()
+        .file()
+        .blocking_pick_folder()
+        .map(|p| p.to_string())
 }
 
 // ── 프리셋 ──
 #[tauri::command]
-fn add_preset(store: StoreState, label: String, command: String, project_id: Option<String>) -> Result<Preset, String> {
-    let p = Preset { id: new_id(), label, command, project_id };
+fn add_preset(
+    store: StoreState,
+    label: String,
+    command: String,
+    project_id: Option<String>,
+) -> Result<Preset, String> {
+    let p = Preset {
+        id: new_id(),
+        label,
+        command,
+        project_id,
+    };
     let mut s = plock(&store);
     s.data.presets.push(p.clone());
     s.save()?;
@@ -125,15 +170,29 @@ fn add_preset(store: StoreState, label: String, command: String, project_id: Opt
 }
 
 #[tauri::command]
-fn update_preset(store: StoreState, id: String, label: Option<String>, command: Option<String>, project_id: Option<String>, clear_project: Option<bool>) -> Result<(), String> {
+fn update_preset(
+    store: StoreState,
+    id: String,
+    label: Option<String>,
+    command: Option<String>,
+    project_id: Option<String>,
+    clear_project: Option<bool>,
+) -> Result<(), String> {
     let mut s = plock(&store);
     let Some(p) = s.data.presets.iter_mut().find(|p| p.id == id) else {
         return Err("프리셋을 찾을 수 없습니다".into());
     };
-    if let Some(v) = label { p.label = v; }
-    if let Some(v) = command { p.command = v; }
-    if clear_project == Some(true) { p.project_id = None; }
-    else if project_id.is_some() { p.project_id = project_id; }
+    if let Some(v) = label {
+        p.label = v;
+    }
+    if let Some(v) = command {
+        p.command = v;
+    }
+    if clear_project == Some(true) {
+        p.project_id = None;
+    } else if project_id.is_some() {
+        p.project_id = project_id;
+    }
     s.save()
 }
 
@@ -152,24 +211,99 @@ fn remove_preset(store: StoreState, id: String) -> Result<(), String> {
     s.save()
 }
 
+// ── 런치 레시피 ──
+#[tauri::command]
+fn add_recipe(
+    store: StoreState,
+    label: String,
+    commands: Vec<String>,
+    project_id: Option<String>,
+) -> Result<LaunchRecipe, String> {
+    let r = LaunchRecipe {
+        id: new_id(),
+        label,
+        commands,
+        project_id,
+    };
+    let mut s = plock(&store);
+    s.data.recipes.push(r.clone());
+    s.save()?;
+    Ok(r)
+}
+
+#[tauri::command]
+fn update_recipe(
+    store: StoreState,
+    id: String,
+    label: Option<String>,
+    commands: Option<Vec<String>>,
+    project_id: Option<String>,
+    clear_project: Option<bool>,
+) -> Result<(), String> {
+    let mut s = plock(&store);
+    let Some(r) = s.data.recipes.iter_mut().find(|r| r.id == id) else {
+        return Err("런치 레시피를 찾을 수 없습니다".into());
+    };
+    if let Some(v) = label {
+        r.label = v;
+    }
+    if let Some(v) = commands {
+        r.commands = v;
+    }
+    if clear_project == Some(true) {
+        r.project_id = None;
+    } else if project_id.is_some() {
+        r.project_id = project_id;
+    }
+    s.save()
+}
+
+#[tauri::command]
+fn remove_recipe(store: StoreState, id: String) -> Result<(), String> {
+    let mut s = plock(&store);
+    s.data.recipes.retain(|r| r.id != id);
+    s.save()
+}
+
 // ── 설정 ──
 #[tauri::command]
-fn update_settings(store: StoreState, font_size: Option<u32>, shell: Option<String>, notify_on_done: Option<bool>, notify_on_waiting: Option<bool>) -> Result<store::Settings, String> {
+fn update_settings(
+    store: StoreState,
+    font_size: Option<u32>,
+    shell: Option<String>,
+    notify_on_done: Option<bool>,
+    notify_on_waiting: Option<bool>,
+) -> Result<store::Settings, String> {
     let mut s = plock(&store);
-    if let Some(v) = font_size { s.data.settings.font_size = v; }
-    if let Some(v) = shell { s.data.settings.shell = v; }
-    if let Some(v) = notify_on_done { s.data.settings.notify_on_done = v; }
-    if let Some(v) = notify_on_waiting { s.data.settings.notify_on_waiting = v; }
+    if let Some(v) = font_size {
+        s.data.settings.font_size = v;
+    }
+    if let Some(v) = shell {
+        s.data.settings.shell = v;
+    }
+    if let Some(v) = notify_on_done {
+        s.data.settings.notify_on_done = v;
+    }
+    if let Some(v) = notify_on_waiting {
+        s.data.settings.notify_on_waiting = v;
+    }
     s.save()?;
     Ok(s.data.settings.clone())
 }
 
 // ── 세션 ──
 #[tauri::command]
-fn create_session(app: AppHandle, store: StoreState, ptys: State<PtyManager>, project_id: Option<String>) -> Result<pty::SessionInfo, String> {
+fn create_session(
+    app: AppHandle,
+    store: StoreState,
+    ptys: State<PtyManager>,
+    project_id: Option<String>,
+) -> Result<pty::SessionInfo, String> {
     let (cwd, shell) = {
         let s = plock(&store);
-        let proj = project_id.as_ref().and_then(|pid| s.data.projects.iter().find(|p| &p.id == pid));
+        let proj = project_id
+            .as_ref()
+            .and_then(|pid| s.data.projects.iter().find(|p| &p.id == pid));
         (proj.map(|p| p.path.clone()), s.data.settings.shell.clone())
     };
     // 세션 제목: 같은 그룹(프로젝트 또는 홈) 안의 순번 — S1, S2…
@@ -178,7 +312,11 @@ fn create_session(app: AppHandle, store: StoreState, ptys: State<PtyManager>, pr
         .list()
         .iter()
         .filter(|s| s.project_id == project_id)
-        .filter_map(|s| s.title.strip_prefix('S').and_then(|r| r.parse::<u32>().ok()))
+        .filter_map(|s| {
+            s.title
+                .strip_prefix('S')
+                .and_then(|r| r.parse::<u32>().ok())
+        })
         .max()
         .unwrap_or(0)
         + 1;
@@ -239,7 +377,10 @@ fn clipboard_image(app: AppHandle) -> Option<String> {
 
     let dir = app.path().app_data_dir().ok()?.join("images");
     fs::create_dir_all(&dir).ok()?;
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
     let path = dir.join(format!("img_{}.png", ts));
     buf.save(&path).ok()?;
 
@@ -289,7 +430,11 @@ fn git_branch(cwd: String) -> Option<String> {
             let s = fs::read_to_string(&dotgit).ok()?;
             let p = s.trim().strip_prefix("gitdir:")?.trim();
             let gd = std::path::Path::new(p);
-            let gd = if gd.is_absolute() { gd.to_path_buf() } else { dir.join(gd) };
+            let gd = if gd.is_absolute() {
+                gd.to_path_buf()
+            } else {
+                dir.join(gd)
+            };
             return read_git_head(&gd);
         }
         if !dir.pop() {
@@ -319,12 +464,18 @@ struct UpdateInfo {
 }
 
 #[tauri::command]
-async fn check_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Result<Option<UpdateInfo>, String> {
+async fn check_update(
+    app: AppHandle,
+    pending: State<'_, PendingUpdate>,
+) -> Result<Option<UpdateInfo>, String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
     match updater.check().await {
         Ok(Some(update)) => {
-            let info = UpdateInfo { version: update.version.clone(), notes: update.body.clone() };
+            let info = UpdateInfo {
+                version: update.version.clone(),
+                notes: update.body.clone(),
+            };
             *plock(&pending) = Some(update);
             Ok(Some(info))
         }
@@ -335,7 +486,9 @@ async fn check_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Resu
 #[tauri::command]
 async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Result<(), String> {
     let update = plock(&pending).take();
-    let Some(update) = update else { return Err("보류 중인 업데이트가 없습니다".into()) };
+    let Some(update) = update else {
+        return Err("보류 중인 업데이트가 없습니다".into());
+    };
     update
         .download_and_install(|_, _| {}, || {})
         .await
@@ -361,9 +514,12 @@ fn install_crash_recovery(window: &tauri::WebviewWindow) {
     use webview2_com::ProcessFailedEventHandler;
 
     let _ = window.with_webview(|webview| unsafe {
-        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
         let handler = ProcessFailedEventHandler::create(Box::new(
-            move |sender: Option<ICoreWebView2>, args: Option<ICoreWebView2ProcessFailedEventArgs>| {
+            move |sender: Option<ICoreWebView2>,
+                  args: Option<ICoreWebView2ProcessFailedEventArgs>| {
                 let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
                 if let Some(a) = &args {
                     let _ = a.ProcessFailedKind(&mut kind);
@@ -434,6 +590,9 @@ fn main() {
             update_preset,
             reorder_presets,
             remove_preset,
+            add_recipe,
+            update_recipe,
+            remove_recipe,
             update_settings,
             create_session,
             write_session,
@@ -457,6 +616,7 @@ fn main() {
             claude::claude_session_messages,
             plans::list_plan_docs,
             plans::get_plan_doc,
+            plans::add_plan_doc,
             explorer::list_dir,
             explorer::git_status,
             explorer::read_text_file,

@@ -5,6 +5,74 @@ const PLAN_LIST_TTL_MS = 15000; // 목록 호출은 증분 스캔이라 가볍�
 Object.assign(App, {
   _planCache: {}, // cwd → { at, items }
 
+  normalizePlanSelection(text) {
+    return (text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .split('\n')
+      .map((line) => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .trim();
+  },
+
+  revealPlanPanel() {
+    const panel = document.getElementById('prompt-panel');
+    if (panel.classList.contains('hidden')) App.togglePromptPanel();
+    const sec = document.getElementById('plan-panel');
+    if (!sec.classList.contains('folded')) return;
+    let folded = {};
+    try { folded = JSON.parse(localStorage.getItem('ta-sec-fold') || '{}'); } catch (_) {}
+    folded.plans = false;
+    localStorage.setItem('ta-sec-fold', JSON.stringify(folded));
+    sec.classList.remove('folded');
+    const arrow = sec.querySelector('.chevron');
+    if (arrow) {
+      arrow.classList.remove('folded');
+      arrow.classList.add('open');
+    }
+  },
+
+  async captureSelectionAsPlan() {
+    const s = App.state.sessions.find((x) => x.id === App.state.activeId);
+    if (!s || !s.cwd) {
+      alert('계획으로 저장할 활성 세션이 없습니다.');
+      return;
+    }
+    const text = App.normalizePlanSelection(TerminalView.getSelection(s.id));
+    if (!text) {
+      alert('터미널에서 계획으로 저장할 부분을 드래그로 선택하세요.');
+      TerminalView.activate(s.id);
+      return;
+    }
+    const buttons = ['btn-plan-capture', 'btn-plan-capture-top']
+      .map((id) => document.getElementById(id))
+      .filter(Boolean);
+    const prev = new Map(buttons.map((btn) => [btn, btn.textContent]));
+    for (const btn of buttons) {
+      btn.disabled = true;
+      btn.textContent = '저장 중';
+    }
+    try {
+      await ta.addPlanDoc(s.cwd, s.id, text);
+      delete App._planCache[s.cwd];
+      App.revealPlanPanel();
+      await App.renderPlanList(true);
+      TerminalView.clearSelection(s.id);
+      for (const btn of buttons) {
+        btn.textContent = '저장됨';
+        setTimeout(() => {
+          if (btn.textContent === '저장됨') btn.textContent = prev.get(btn);
+        }, 1200);
+      }
+    } catch (e) {
+      alert('계획 저장 실패: ' + e);
+      for (const btn of buttons) btn.textContent = prev.get(btn);
+    } finally {
+      for (const btn of buttons) btn.disabled = false;
+    }
+  },
+
   async renderPlanList(force) {
     // 패널이 닫혀 있으면 렌더 생략 — 열 때 togglePromptPanel 이 다시 채운다
     if (document.getElementById('prompt-panel').classList.contains('hidden')) return;
@@ -43,7 +111,7 @@ Object.assign(App, {
       text.className = 'cs-text';
       text.textContent = it.title;
       // 파일 기반 계획(.omc/plans, docs/superpowers/specs 등)은 출처 경로를 함께 표시
-      const src = it.path ? '파일: ' + it.path : '세션 추출';
+      const src = it.path ? '파일: ' + it.path : (it.id && it.id.startsWith('m') ? '선택 저장' : '세션 추출');
       row.title = it.title + '\n' + src + '\n' + new Date(it.createdMs).toLocaleString() + '\n클릭하면 계획 내용을 보여줍니다.';
       row.onclick = () => App.showPlanDoc(cwd, it);
       row.append(time, text);
@@ -65,7 +133,7 @@ Object.assign(App, {
         m.querySelector('h3').textContent = doc.title;
         m.querySelector('.modal-sub').textContent =
           new Date(doc.createdMs).toLocaleString() +
-          (doc.path ? ' · ' + doc.path : ' · 세션 ' + doc.sessionId.slice(0, 8));
+          (doc.path ? ' · ' + doc.path : (doc.id && doc.id.startsWith('m') ? ' · 선택 저장' : ' · 세션 ' + doc.sessionId.slice(0, 8)));
         m.querySelector('.doc-view').textContent = doc.text;
         m.querySelector('#m-close').onclick = close;
       }, { wide: true });

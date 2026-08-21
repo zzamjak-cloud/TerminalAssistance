@@ -4,7 +4,6 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
 use std::process::Command;
 
 const PREVIEW_CAP: u64 = 2 * 1024 * 1024; // 미리보기 텍스트 읽기 상한 (2MB)
@@ -71,7 +70,10 @@ pub async fn git_status(cwd: String) -> Option<GitStatus> {
         .trim()
         .to_string();
     // -z: 경로에 개행·공백이 있어도 안전, --untracked-files=all: 새 폴더도 파일 단위로 나열
-    let out = git_cmd(&cwd, &["status", "--porcelain", "-z", "--untracked-files=all"])?;
+    let out = git_cmd(
+        &cwd,
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    )?;
     let mut files = HashMap::new();
     let mut it = out.split(|&b| b == 0).filter(|s| !s.is_empty());
     while let Some(entry) = it.next() {
@@ -88,7 +90,13 @@ pub async fn git_status(cwd: String) -> Option<GitStatus> {
             ('?', '?') => 'U',
             ('!', '!') => continue, // ignored 는 표시하지 않는다
             // 워크트리 상태(Y) 우선, 스테이지만 된 경우 인덱스 상태(X)
-            _ => if y != ' ' { y } else { x },
+            _ => {
+                if y != ' ' {
+                    y
+                } else {
+                    x
+                }
+            }
         };
         files.insert(path, status.to_string());
     }
@@ -133,7 +141,13 @@ mod tests {
         // ('?','?')→U, 워크트리 우선, 스테이지 전용은 인덱스 문자
         let pick = |x: char, y: char| match (x, y) {
             ('?', '?') => 'U',
-            _ => if y != ' ' { y } else { x },
+            _ => {
+                if y != ' ' {
+                    y
+                } else {
+                    x
+                }
+            }
         };
         assert_eq!(pick('?', '?'), 'U');
         assert_eq!(pick(' ', 'M'), 'M');
