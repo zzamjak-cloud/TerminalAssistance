@@ -22,7 +22,10 @@ Object.assign(App, {
   setComposerText(text) {
     const id = App.state.activeId;
     if (id) App._composerTexts.set(id, text);
-    if (TerminalView.promptInput) TerminalView.promptInput.value = text;
+    if (TerminalView.promptInput) {
+      TerminalView.promptInput.value = text;
+      TerminalView.resizePromptInput();
+    }
   },
 
   composerText() {
@@ -119,7 +122,7 @@ Object.assign(App, {
     }
   },
 
-  // Enter/전송 버튼은 상태와 관계없이 활성 세션에 즉시 실행한다.
+  // Cmd/Ctrl+Enter 또는 전송 버튼은 상태와 관계없이 활성 세션에 즉시 실행한다.
   sendComposerPrompt() {
     const id = App.state.activeId;
     const text = App.composerText();

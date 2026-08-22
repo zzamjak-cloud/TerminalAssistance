@@ -303,8 +303,8 @@ button:disabled:hover { border-color: var(--border); }
 }
 #terminal-prompt-compose { display: flex; align-items: stretch; gap: 8px; }
 #terminal-prompt-input {
-  flex: 1; min-width: 0; resize: vertical;
-  max-height: 120px; padding: 7px 9px;
+  flex: 1; min-width: 0; resize: none;
+  max-height: 50vh; overflow-y: hidden; padding: 7px 9px;
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--fg);
   font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -312,8 +312,11 @@ button:disabled:hover { border-color: var(--border); }
 }
 #terminal-prompt-input:focus { border-color: var(--accent); }
 #terminal-prompt-input:disabled { opacity: .55; cursor: not-allowed; }
-#terminal-prompt-actions { display: flex; align-items: stretch; gap: 6px; }
-#terminal-prompt-actions button { flex: none; padding: 0 12px; }
+#terminal-prompt-actions {
+  display: flex; flex: none; flex-direction: column; align-self: flex-start; align-items: stretch;
+  width: 54px; gap: 3px;
+}
+#terminal-prompt-actions button { flex: none; min-height: 0; padding: 0 8px; font-size: 11px; }
 #terminal-prompt-send { background: var(--accent-fill); border-color: var(--accent-strong); font-weight: 700; }
 #terminal-prompt-schedule { color: var(--waiting); border-color: var(--waiting); }
 #terminal-prompt-list {

@@ -22,18 +22,41 @@ const TerminalView = {
     this.promptInput.addEventListener('keydown', (ev) => {
       ev.stopPropagation();
       if (ev.isComposing || ev.keyCode === 229) return;
-      if (ev.key === 'Enter' && !ev.shiftKey) {
+      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
         ev.preventDefault();
         sendPrompt();
       }
     });
     this.promptInput.addEventListener('keypress', (ev) => ev.stopPropagation());
     this.promptInput.addEventListener('keyup', (ev) => ev.stopPropagation());
-    this.promptInput.addEventListener('input', () => App.rememberComposerText(this.promptInput.value));
+    this.promptInput.addEventListener('input', () => {
+      App.rememberComposerText(this.promptInput.value);
+      this.resizePromptInput();
+    });
     this.promptSend.addEventListener('click', sendPrompt);
     this.promptSchedule.addEventListener('click', () => App.scheduleComposerPrompt());
     this.promptFanout.addEventListener('click', () => App.showComposerFanout());
-    window.addEventListener('resize', () => this.fitActive());
+    window.addEventListener('resize', () => {
+      this.resizePromptInput();
+      this.fitActive();
+    });
+    requestAnimationFrame(() => this.resizePromptInput());
+  },
+
+  resizePromptInput() {
+    const input = this.promptInput;
+    if (!input) return;
+
+    const previousHeight = input.offsetHeight;
+    input.style.height = 'auto';
+    const style = getComputedStyle(input);
+    const borderHeight = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    const contentHeight = input.scrollHeight + borderHeight;
+    const maxHeight = Math.floor(window.innerHeight * 0.5);
+    input.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+    input.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+
+    if (input.offsetHeight !== previousHeight) this.fitActive();
   },
 
   ansiColor(index) {
