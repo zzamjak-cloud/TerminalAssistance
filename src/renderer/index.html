@@ -38,9 +38,8 @@
           <div id="waiting-indicator" class="hidden" title="클릭 시 허가 대기 중인 세션으로 이동"></div>
           <button id="btn-command-palette" title="커맨드 팔레트 (Cmd/Ctrl+K)">⌘K</button>
           <button id="btn-term-search" title="터미널 검색 (Cmd/Ctrl+F)">검색</button>
-          <button id="btn-plan-capture-top" title="터미널에서 드래그한 선택 영역을 계획 문서로 저장">계획+</button>
           <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
-          <button id="btn-toggle-prompts" title="세션·다음 프롬프트 패널 토글">☰ 패널</button>
+          <button id="btn-toggle-prompts" title="세션 기록·계획 문서·메모 패널 토글">☰ 패널</button>
         </div>
       </div>
       <div id="preset-bar"></div>
@@ -58,6 +57,17 @@
             <p>좌측 하단 <b>+ 프로젝트 등록</b> → 프로젝트 클릭 한 번으로 해당 경로의 터미널이 열립니다.<br>
             이미지는 <b>Cmd/Ctrl+V</b> 붙여넣기 또는 <b>드래그앤드롭</b>으로 첨부됩니다.<br>
             <b>Cmd/Ctrl+1~9</b> 세션 전환 · <b>Cmd/Ctrl+T</b> 새 세션</p>
+          </div>
+        </div>
+        <div id="terminal-prompt">
+          <div id="terminal-prompt-list" class="hidden"></div>
+          <div id="terminal-prompt-compose">
+            <textarea id="terminal-prompt-input" rows="2" placeholder="프롬프트 입력 (Enter 전송 · Shift+Enter 줄바꿈)" aria-label="터미널 프롬프트 입력" spellcheck="false" disabled></textarea>
+            <div id="terminal-prompt-actions">
+              <button id="terminal-prompt-send" type="button" title="활성 세션에 즉시 전송" disabled>전송</button>
+              <button id="terminal-prompt-schedule" type="button" title="진행 중이면 완료 후 전송" disabled>예약</button>
+              <button id="terminal-prompt-fanout" type="button" title="선택한 여러 세션에 즉시 전송" disabled>일괄</button>
+            </div>
           </div>
         </div>
       </div>
@@ -81,18 +91,12 @@
       </section>
       <section id="plan-panel" class="panel-sec" data-sec="plans">
         <div class="sec-head">
-          <span class="chevron open">❯</span><span class="sec-title">계획 문서</span>
-          <button id="btn-plan-capture" title="터미널에서 드래그한 선택 영역을 계획 문서로 저장">+ 선택</button>
+          <span class="chevron open">❯</span><span class="sec-title">문서</span>
+          <button id="btn-memo-add" title="현재 프로젝트에 Markdown 메모 추가">+ 메모</button>
           <button id="btn-plan-refresh" title="목록 새로고침">↻</button>
         </div>
+        <div id="plan-drop-feedback" class="plan-drop-feedback" role="status" aria-live="polite" hidden></div>
         <div id="plan-list" class="sec-body"></div>
-      </section>
-      <section id="draft-panel" class="panel-sec" data-sec="drafts">
-        <div class="sec-head">
-          <span class="chevron open">❯</span><span class="sec-title">다음 프롬프트</span>
-          <button id="btn-draft-add">+ 초안</button>
-        </div>
-        <div id="draft-list" class="sec-body"></div>
       </section>
     </aside>
   </div>
@@ -126,6 +130,7 @@
   <script src="explorer.js"></script>
   <script src="preview.js"></script>
   <script src="drafts.js"></script>
+  <script src="memo.js"></script>
   <script src="claude-sessions.js"></script>
   <script src="plans.js"></script>
   <script src="panel-layout.js"></script>

@@ -5,10 +5,181 @@
 const TerminalView = {
   views: new Map(), // sessionId → { term, fit, holder, webgl, frozen, queue }
   area: null,
+  promptInput: null,
+  promptSend: null,
+  promptSchedule: null,
+  promptFanout: null,
 
   init() {
     this.area = document.getElementById('term-area');
+    this.promptInput = document.getElementById('terminal-prompt-input');
+    this.promptSend = document.getElementById('terminal-prompt-send');
+    this.promptSchedule = document.getElementById('terminal-prompt-schedule');
+    this.promptFanout = document.getElementById('terminal-prompt-fanout');
+
+    const sendPrompt = () => App.sendComposerPrompt();
+    // xterm의 키/IME 보정과 완전히 분리해 일반 textarea의 편집 감각을 유지한다.
+    this.promptInput.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();
+      if (ev.isComposing || ev.keyCode === 229) return;
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        sendPrompt();
+      }
+    });
+    this.promptInput.addEventListener('keypress', (ev) => ev.stopPropagation());
+    this.promptInput.addEventListener('keyup', (ev) => ev.stopPropagation());
+    this.promptInput.addEventListener('input', () => App.rememberComposerText(this.promptInput.value));
+    this.promptSend.addEventListener('click', sendPrompt);
+    this.promptSchedule.addEventListener('click', () => App.scheduleComposerPrompt());
+    this.promptFanout.addEventListener('click', () => App.showComposerFanout());
     window.addEventListener('resize', () => this.fitActive());
+  },
+
+  ansiColor(index) {
+    const basic = [
+      '#2e3436', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', '#06989a', '#d3d7cf',
+      '#555753', '#ef2929', '#8ae234', '#fce94f', '#729fcf', '#ad7fa8', '#34e2e2', '#eeeeec'
+    ];
+    if (index >= 0 && index < 16) return basic[index];
+    if (index >= 16 && index <= 231) {
+      const n = index - 16;
+      const level = [0, 95, 135, 175, 215, 255];
+      const r = level[Math.floor(n / 36)];
+      const g = level[Math.floor((n % 36) / 6)];
+      const b = level[n % 6];
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    if (index >= 232 && index <= 255) {
+      const gray = 8 + (index - 232) * 10;
+      return `rgb(${gray}, ${gray}, ${gray})`;
+    }
+    return null;
+  },
+
+  _rgbColor(value) {
+    const n = Number(value) >>> 0;
+    return '#' + (n & 0xffffff).toString(16).padStart(6, '0');
+  },
+
+  _cellColor(cell, kind, term, bold) {
+    const cap = kind === 'fg' ? 'Fg' : 'Bg';
+    const theme = (term.options && term.options.theme) || {};
+    const fallback = kind === 'fg' ? (theme.foreground || '#d5d9e4') : (theme.background || '#14161c');
+    try {
+      if (typeof cell[`is${cap}RGB`] === 'function' && cell[`is${cap}RGB`]()) {
+        return this._rgbColor(cell[`get${cap}Color`]());
+      }
+      if (typeof cell[`is${cap}Palette`] === 'function' && cell[`is${cap}Palette`]()) {
+        let index = cell[`get${cap}Color`]();
+        if (kind === 'fg' && bold && index < 8 && term.options.drawBoldTextInBrightColors !== false) index += 8;
+        return this.ansiColor(index) || fallback;
+      }
+    } catch (_) {}
+    return fallback;
+  },
+
+  _cellStyle(cell, term) {
+    const bold = !!(cell.isBold && cell.isBold());
+    let fg = this._cellColor(cell, 'fg', term, bold);
+    let bg = this._cellColor(cell, 'bg', term, false);
+    if (cell.isInverse && cell.isInverse()) [fg, bg] = [bg, fg];
+    const styles = [`color: ${fg}`, `background-color: ${bg}`];
+    if (bold) styles.push('font-weight: 700');
+    if (cell.isItalic && cell.isItalic()) styles.push('font-style: italic');
+    if (cell.isDim && cell.isDim()) styles.push('opacity: 0.6');
+    const decorations = [];
+    if (cell.isUnderline && cell.isUnderline()) decorations.push('underline');
+    if (cell.isStrikethrough && cell.isStrikethrough()) decorations.push('line-through');
+    if (decorations.length) styles.push(`text-decoration: ${decorations.join(' ')}`);
+    return styles.join('; ');
+  },
+
+  _escapeSelectionHtml(text) {
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  },
+
+  _selectionTokensToHtml(lines) {
+    return lines.map((tokens) => {
+      let html = '', style = null, text = '';
+      const flush = () => {
+        if (!text) return;
+        const escaped = this._escapeSelectionHtml(text);
+        html += style ? `<span style="${style}">${escaped}</span>` : escaped;
+        text = '';
+      };
+      for (const token of tokens) {
+        if (token.style !== style) {
+          flush();
+          style = token.style;
+        }
+        text += token.text;
+      }
+      flush();
+      return html;
+    }).join('\n');
+  },
+
+  _selectionCandidate(term, position, coordinateOffset) {
+    const buffer = term.buffer && term.buffer.active;
+    if (!buffer || !position) return null;
+    const sx = Math.max(0, position.start.x + coordinateOffset);
+    const sy = Math.max(0, position.start.y + coordinateOffset);
+    const ex = Math.max(0, position.end.x + coordinateOffset);
+    const ey = Math.max(0, position.end.y + coordinateOffset);
+    if (ey < sy) return null;
+    const logicalLines = [];
+    for (let y = sy; y <= ey; y++) {
+      const line = buffer.getLine(y);
+      if (!line) return null;
+      const from = y === sy ? sx : 0;
+      const to = y === ey ? ex : term.cols;
+      const tokens = [];
+      for (let x = from; x < to; x++) {
+        const cell = line.getCell(x);
+        if (!cell) continue;
+        const width = typeof cell.getWidth === 'function' ? cell.getWidth() : 1;
+        if (width === 0) continue; // 와이드문자 후속 셀은 첫 셀에서 이미 포함된다
+        const chars = (cell.getChars && cell.getChars()) || ' ';
+        tokens.push({ text: chars.replace(/\u00a0/g, ' '), style: this._cellStyle(cell, term) });
+      }
+      // xterm getSelection()과 같이 각 물리 줄 끝의 빈 셀은 제거한다.
+      while (tokens.length && /^[ ]+$/.test(tokens[tokens.length - 1].text)) tokens.pop();
+      if (y === sy || !line.isWrapped || !logicalLines.length) logicalLines.push(tokens);
+      else logicalLines[logicalLines.length - 1].push(...tokens);
+    }
+    return {
+      text: logicalLines.map((tokens) => tokens.map((token) => token.text).join('')).join('\n'),
+      html: this._selectionTokensToHtml(logicalLines)
+    };
+  },
+
+  serializeSelectionHtml(term, plainText) {
+    const plain = String(plainText || '').replace(/\r\n/g, '\n');
+    if (!plain || typeof term.getSelectionPosition !== 'function') return '';
+    const position = term.getSelectionPosition();
+    // 공개 좌표는 1-based이므로 먼저 -1 변환한다. 엔진 차이는 plain 정합성 검사로 폴백한다.
+    const candidates = [this._selectionCandidate(term, position, -1), this._selectionCandidate(term, position, 0)];
+    const matched = candidates.find((candidate) => candidate && candidate.text === plain);
+    const content = matched ? matched.html : this._escapeSelectionHtml(plain);
+    return `<pre style="margin: 0; white-space: pre-wrap">${content}</pre>`;
+  },
+
+  copySelectionAsHtml(term, ev) {
+    if (!ev.clipboardData || typeof term.getSelection !== 'function') return false;
+    const plain = term.getSelection();
+    if (!plain) return false;
+    try {
+      const html = this.serializeSelectionHtml(term, plain);
+      if (!html) return false;
+      ev.clipboardData.setData('text/plain', plain);
+      ev.clipboardData.setData('text/html', html);
+      ev.preventDefault();
+      return true;
+    } catch (_) {
+      // 기본 xterm plain copy가 계속 동작하도록 실패 시 이벤트를 취소하지 않는다.
+      return false;
+    }
   },
 
   // opts.frozen: 복구(스크롤백 주입) 완료 전까지 라이브 출력을 큐에 보관
@@ -30,6 +201,8 @@ const TerminalView = {
       ta.openUrl(url).catch((err) => console.warn('링크 열기 실패:', err));
     }));
     term.open(holder);
+    const richCopyHandler = (ev) => this.copySelectionAsHtml(term, ev);
+    holder.addEventListener('copy', richCopyHandler, true);
     let pointerDownInTerminal = false;
     let pointerMovedInTerminal = false;
     const markSelectionStart = () => {
@@ -369,6 +542,8 @@ const TerminalView = {
       lastRows: 0,
       resetInputMirror: mirrorInvalidate,
       scrollQueued: false,
+      followOutput: true,
+      scrollDisposable: null,
       lastSelection: '',
       lastSelectionAt: 0,
       lastSelectionAttemptAt: 0,
@@ -376,9 +551,16 @@ const TerminalView = {
       selectionStartHandler: markSelectionStart,
       selectionMoveHandler: markSelectionMove,
       selectionHandler: rememberFinishedSelection,
-      selectionFinishHandler: rememberFinishedSelection
+      selectionFinishHandler: rememberFinishedSelection,
+      richCopyHandler
     };
     this.views.set(session.id, view);
+    if (typeof term.onScroll === 'function') {
+      view.scrollDisposable = term.onScroll((viewportY) => {
+        const buffer = term.buffer && term.buffer.active;
+        if (buffer) view.followOutput = viewportY >= buffer.baseY;
+      });
+    }
     if (typeof term.onSelectionChange === 'function') {
       view.selectionDisposable = term.onSelectionChange(rememberSelectionChange);
     }
@@ -432,7 +614,7 @@ const TerminalView = {
     v.queue = [];
     v.queueBytes = 0;
     v.frozen = false;
-    if (this.isActive(id)) this.scrollToBottom(id);
+    if (this.isActive(id)) this.scrollToBottom(id, true);
   },
 
   // WebGL 렌더러 부착/해제 — 실패(WebGL 미지원·컨텍스트 소실) 시 DOM 렌더러로 자동 폴백
@@ -470,8 +652,14 @@ const TerminalView = {
         try { v.fit.fit(); } catch (_) {}
         this._attachWebgl(v);
         this._syncPtySize(id, v);
-        this.scrollToBottom(id);
-        v.term.focus();
+        this.scrollToBottom(id, true);
+        if (this.promptInput) {
+          this.promptInput.disabled = false;
+          this.promptSend.disabled = false;
+          this.promptSchedule.disabled = false;
+          this.promptFanout.disabled = false;
+          this.promptInput.focus();
+        }
       });
     }
   },
@@ -481,15 +669,19 @@ const TerminalView = {
     return !!(v && v.holder.classList.contains('active'));
   },
 
-  scrollToBottom(id) {
+  scrollToBottom(id, force) {
     const v = this.views.get(id);
     if (!v || typeof v.term.scrollToBottom !== 'function') return;
+    if (force) v.followOutput = true;
+    if (!v.followOutput) return;
     if (v.scrollQueued) return;
     v.scrollQueued = true;
     requestAnimationFrame(() => {
       v.scrollQueued = false;
+      if (!v.followOutput) return;
       try { v.term.scrollToBottom(); } catch (_) {}
       requestAnimationFrame(() => {
+        if (!v.followOutput) return;
         try { v.term.scrollToBottom(); } catch (_) {}
       });
     });
@@ -597,6 +789,9 @@ const TerminalView = {
   dispose(id) {
     const v = this.views.get(id);
     if (v) {
+      if (v.scrollDisposable) {
+        try { v.scrollDisposable.dispose(); } catch (_) {}
+      }
       if (v.selectionDisposable) {
         try { v.selectionDisposable.dispose(); } catch (_) {}
       }
@@ -610,10 +805,17 @@ const TerminalView = {
         window.removeEventListener('pointerup', v.selectionFinishHandler, true);
         window.removeEventListener('mouseup', v.selectionFinishHandler, true);
       }
+      if (v.richCopyHandler) v.holder.removeEventListener('copy', v.richCopyHandler, true);
       this._detachWebgl(v);
       v.term.dispose();
       v.holder.remove();
       this.views.delete(id);
+      if (this.views.size === 0 && this.promptInput) {
+        this.promptInput.disabled = true;
+        this.promptSend.disabled = true;
+        this.promptSchedule.disabled = true;
+        this.promptFanout.disabled = true;
+      }
     }
   }
 };

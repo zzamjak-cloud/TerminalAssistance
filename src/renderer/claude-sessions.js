@@ -2,14 +2,6 @@
 // 합쳐 나열한다. 앱은 기록을 읽기만 하고 자체 저장은 하지 않는다.
 const SESSION_HISTORY_TTL_MS = 10000; // 세션 전환마다 파일 파싱을 반복하지 않기 위한 캐시 수명
 
-function sessionRelTime(ms) {
-  const d = Date.now() - ms;
-  if (d < 60000) return '방금';
-  if (d < 3600000) return Math.floor(d / 60000) + '분 전';
-  if (d < 86400000) return Math.floor(d / 3600000) + '시간 전';
-  return Math.floor(d / 86400000) + '일 전';
-}
-
 function sessionSourceLabel(source) {
   return source === 'codex' ? 'Codex' : 'Claude';
 }
@@ -77,7 +69,7 @@ Object.assign(App, {
       row.className = 'cs-item ' + it.source;
       const time = document.createElement('div');
       time.className = 'cs-time';
-      time.textContent = sessionRelTime(it.mtimeMs) + ' · ' + sessionSourceLabel(it.source);
+      time.textContent = formatRelativeTime(it.mtimeMs) + ' · ' + sessionSourceLabel(it.source);
       const text = document.createElement('div');
       text.className = 'cs-text';
       text.textContent = it.preview;

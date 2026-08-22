@@ -55,10 +55,16 @@
     listCodexSessions: (cwd) => invoke('list_codex_sessions', { cwd }),
     // 세션 열람 팝업용: 저장된 Codex 기록 → 대화 메시지 [{ role, kind, text }]
     codexSessionMessages: (cwd, id) => invoke('codex_session_messages', { cwd, id }),
-    // 계획 문서 (프로젝트 경로 귀속 영속화) — 목록 [{ id, sessionId, createdMs, title, path }] / 본문
+    // 통합 문서 (계획 + 프로젝트 내부 Markdown 메모)
     listPlanDocs: (cwd) => invoke('list_plan_docs', { cwd }),
     getPlanDoc: (cwd, id) => invoke('get_plan_doc', { cwd, id }),
     addPlanDoc: (cwd, sessionId, text) => invoke('add_plan_doc', { cwd, sessionId, text }),
+    registerPlanFile: (cwd, path) => invoke('register_plan_file', { cwd, path }),
+    dismissPlanDoc: (cwd, id) => invoke('dismiss_plan_doc', { cwd, id }),
+    createMemoDoc: (cwd, title, markdown, legacyId) => invoke('create_memo_doc', {
+      cwd, title, markdown, legacyId: legacyId || null
+    }),
+    deleteMemoDoc: (cwd, id) => invoke('delete_memo_doc', { cwd, id }),
     // 탐색기: 디렉토리 1단계 목록 [{ name, path, isDir }] (지연 로딩)
     listDir: (path) => invoke('list_dir', { path }),
     // git 변경 파일 { root, files: { 상대경로: 상태문자 } } | null (저장소 아님)
@@ -81,7 +87,7 @@
     gitBranch: (cwd) => invoke('git_branch', { cwd }),
     // 코덱스 사용량 { windows: [{windowMinutes, usedPercent, resetsAt}], plan, mtimeMs } | null
     codexUsage: () => invoke('codex_usage'),
-    // '다음 프롬프트' 초안 (프로젝트별, 키: projectId 또는 "")
+    // 초안·예약 저장소. memo:<projectId>는 실제 Markdown 파일로 이전할 구버전 데이터다.
     setDrafts: (key, drafts) => invoke('set_drafts', { key, drafts }),
 
     checkUpdate: () => invoke('check_update'),

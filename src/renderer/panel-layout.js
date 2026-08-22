@@ -8,7 +8,7 @@ Object.assign(App, {
     document.getElementById('resize-right').style.display = hidden ? 'none' : '';
     localStorage.setItem('ta-prompt-panel', hidden ? '0' : '1');
     // 닫혀 있는 동안의 변경 반영
-    if (!hidden) { App.renderClaudeList(); App.renderPlanList(); App.renderDraftList(); }
+    if (!hidden) { App.renderClaudeList(); App.renderPlanList(); }
     setTimeout(() => TerminalView.fitActive(), PANEL_ANIM_MS); // 슬라이딩 종료 후 리핏
   },
 
@@ -91,7 +91,7 @@ Object.assign(App, {
     App.initSectionFolds();
   },
 
-  // 우측 패널 섹션(세션 기록·계획 문서·다음 프롬프트) 접기/펼치기 — 상태는 localStorage
+  // 우측 패널 섹션(세션 기록·문서) 접기/펼치기 — 상태는 localStorage
   initSectionFolds() {
     let folded = {};
     try { folded = JSON.parse(localStorage.getItem('ta-sec-fold') || '{}'); } catch (_) {}
@@ -111,7 +111,7 @@ Object.assign(App, {
         localStorage.setItem('ta-sec-fold', JSON.stringify(folded));
         apply();
       };
-      // 헤더 안의 버튼(새로고침·+ 초안) 클릭이 폴딩 토글로 새지 않게
+      // 헤더 안의 버튼 클릭이 폴딩 토글로 새지 않게
       head.querySelectorAll('button').forEach((b) =>
         b.addEventListener('click', (e) => e.stopPropagation()));
     });

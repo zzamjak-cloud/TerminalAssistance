@@ -109,7 +109,7 @@ Object.assign(App, {
   // 트리 항목 → 터미널/초안으로 경로 드래그.
   // Tauri 네이티브 파일드롭 핸들러가 HTML5 DnD 를 가로채므로(dnd.js 와 같은 이유)
   // mousedown/mousemove/mouseup 포인터 추적으로 직접 구현한다.
-  _wireTreeDrag(row, absPath, name) {
+  _wireTreeDrag(row, absPath, name, isDir) {
     row.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault(); // 드래그 중 텍스트 선택 방지 — click/dblclick 에는 영향 없음
@@ -122,12 +122,17 @@ Object.assign(App, {
         hover = el;
         if (hover) hover.classList.add('drop-hover');
       };
-      // 포인터 아래의 드롭 대상: 초안 textarea 또는 터미널 영역
+      // 포인터 아래의 드롭 대상: 메모·하단 프롬프트 입력창 또는 터미널 영역
       const findTarget = (ev) => {
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
         if (!el) return null;
-        const card = el.closest('#draft-list .draft-card');
-        if (card) return card.querySelector('textarea');
+        const memo = el.closest('.memo-modal-editor');
+        if (memo) return memo;
+        const prompt = el.closest('#terminal-prompt-input');
+        if (prompt) return prompt;
+        // 헤더·빈 목록·문서 행 어디에 올려도 패널 전체를 하나의 드롭 지점으로 취급한다.
+        const planPanel = el.closest('#plan-panel');
+        if (planPanel) return planPanel;
         return el.closest('#term-area');
       };
 
@@ -155,8 +160,20 @@ Object.assign(App, {
         setHover(null);
         const target = findTarget(ev);
         const quoted = quotePath(absPath);
-        if (target && target.tagName === 'TEXTAREA') {
-          // 초안 카드에 드롭 — 끝에 경로를 덧붙이고 input 이벤트로 기존 저장 경로를 태운다
+        if (target && target.id === 'plan-panel') {
+          // 문서 패널에서 처리한 드롭은 유효성 오류여도 터미널 paste로 절대 흘리지 않는다.
+          if (isDir) {
+            App.showPlanDropFeedback('폴더는 계획 문서로 등록할 수 없습니다.', 'error');
+          } else if (!/\.md$/i.test(name)) {
+            App.showPlanDropFeedback('Markdown(.md) 파일만 계획 문서로 등록할 수 있습니다.', 'error');
+          } else {
+            void App.registerPlanFile(absPath);
+          }
+        } else if (target && target.classList.contains('memo-modal-editor')) {
+          App.insertMemoPlainText(target, quoted + ' ');
+          target.dispatchEvent(new Event('input', { bubbles: true }));
+        } else if (target && target.tagName === 'TEXTAREA') {
+          // 하단 프롬프트에 드롭 — 끝에 경로를 덧붙인다
           target.value = target.value + (target.value && !/\s$/.test(target.value) ? ' ' : '') + quoted + ' ';
           target.dispatchEvent(new Event('input'));
         } else if (target && App.state.activeId) {
@@ -351,7 +368,7 @@ Object.assign(App, {
       row.style.paddingLeft = 8 + depth * 14 + 'px';
       row.title = e.path;
       // 드래그로 경로 전달 (초안 카드·터미널) — 포인터 추적 방식
-      App._wireTreeDrag(row, e.path, e.name);
+      App._wireTreeDrag(row, e.path, e.name, e.isDir);
 
       const chev = document.createElement('span');
       if (e.isDir) {

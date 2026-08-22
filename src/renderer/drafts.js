@@ -1,108 +1,230 @@
-// 다음 프롬프트 초안: 프롬프트 히스토리 패널 하단 섹션.
-// 프로젝트별로 영속화(ta-config.json)되며 [입력] 으로 터미널 입력 라인에 전달한다.
+// 하단 프롬프트 작성기: 즉시 전송, 세션별 예약 FIFO, 기존 프로젝트 초안을 함께 관리한다.
+// 예약은 기존 drafts 맵의 queued:<sessionId> 키를 사용해 백엔드 형식 변경 없이 영속화한다.
 Object.assign(App, {
-  _draftSaveTimer: null,
+  _draftSaveChains: new Map(), // 같은 키의 저장 순서를 보장해 늦은 응답이 최신 큐를 덮지 않게 한다
+  _queueDispatching: new Set(),
+  _composerTexts: new Map(), // 세션 전환 중 작성하던 텍스트의 오전송 방지
 
-  draftKey() {
-    const s = App.state.sessions.find((x) => x.id === App.state.activeId);
+  draftKeyForSession(sessionId) {
+    const s = App.state.sessions.find((x) => x.id === sessionId);
     return s && s.projectId ? s.projectId : '';
   },
 
-  renderDraftList() {
-    // 패널이 닫혀 있으면 렌더 생략 — 열 때 togglePromptPanel 이 다시 채운다
-    if (document.getElementById('prompt-panel').classList.contains('hidden')) return;
-    const el = document.getElementById('draft-list');
+  queueKey(sessionId) {
+    return `queued:${sessionId}`;
+  },
+
+  rememberComposerText(text) {
+    const id = App.state.activeId;
+    if (id) App._composerTexts.set(id, text);
+  },
+
+  setComposerText(text) {
+    const id = App.state.activeId;
+    if (id) App._composerTexts.set(id, text);
+    if (TerminalView.promptInput) TerminalView.promptInput.value = text;
+  },
+
+  composerText() {
+    return TerminalView.promptInput ? TerminalView.promptInput.value : '';
+  },
+
+  clearComposerText() {
+    App.setComposerText('');
+  },
+
+  // 키별 IPC 저장을 직렬화한다. 호출 시점의 배열을 복사해 이후 로컬 변경과 분리한다.
+  persistDraftList(key, drafts) {
+    const snapshot = drafts.map((d) => ({ id: d.id, text: d.text }));
+    const previous = App._draftSaveChains.get(key) || Promise.resolve();
+    const task = previous.catch(() => {}).then(() => ta.setDrafts(key, snapshot));
+    App._draftSaveChains.set(key, task);
+    const cleanup = () => {
+      if (App._draftSaveChains.get(key) === task) App._draftSaveChains.delete(key);
+    };
+    task.then(cleanup, cleanup);
+    return task;
+  },
+
+  renderComposerQueue() {
+    const el = document.getElementById('terminal-prompt-list');
+    if (!el) return;
     el.textContent = '';
-    const list = App.state.drafts[App.draftKey()] || [];
-    if (!list.length) {
-      const e = document.createElement('div');
-      e.className = 'draft-empty';
-      e.textContent = '다음에 보낼 프롬프트를 미리 작성해 두세요. [입력] 을 누르면 터미널 입력 라인으로 전달됩니다. (멀티라인 지원)';
-      el.appendChild(e);
+    const id = App.state.activeId;
+    if (!id) {
+      el.classList.add('hidden');
       return;
     }
-    for (const d of list) {
-      const card = document.createElement('div');
-      card.className = 'draft-card';
-      const tx = document.createElement('textarea');
-      tx.value = d.text;
-      tx.placeholder = '프롬프트 작성…';
-      tx.oninput = () => { d.text = tx.value; App.saveDraftsDebounced(); };
-      const actions = document.createElement('div');
-      actions.className = 'draft-actions';
-      const send = document.createElement('button');
-      send.className = 'draft-send';
-      send.textContent = '실행';
-      send.title = '터미널로 전달하고 즉시 실행 (전송된 초안은 목록에서 제거)';
-      send.onclick = () => App.sendDraft(d);
-      const fan = document.createElement('button');
-      fan.className = 'draft-fanout';
-      fan.textContent = '일괄';
-      fan.title = '선택한 여러 세션에 전달하고 즉시 실행 (팬아웃)';
-      fan.onclick = () => App.showFanoutModal(d);
-      const del = document.createElement('button');
-      del.className = 'draft-del';
-      del.textContent = '✕';
-      del.onclick = () => {
-        const k = App.draftKey();
-        App.state.drafts[k] = (App.state.drafts[k] || []).filter((x) => x.id !== d.id);
-        ta.setDrafts(k, App.state.drafts[k]).catch((e) => console.warn('초안 저장 실패:', e));
-        App.renderDraftList();
+
+    const input = TerminalView.promptInput;
+    const remembered = App._composerTexts.get(id) || '';
+    if (input && input.value !== remembered) input.value = remembered;
+
+    const queueKey = App.queueKey(id);
+    const queued = App.state.drafts[queueKey] || [];
+    const legacyKey = App.draftKeyForSession(id);
+    const legacy = App.state.drafts[legacyKey] || [];
+
+    const appendItem = (d, label, className, actions) => {
+      const row = document.createElement('div');
+      row.className = `composer-item ${className}`;
+      const kind = document.createElement('span');
+      kind.className = 'composer-kind';
+      kind.textContent = label;
+      const text = document.createElement('span');
+      text.className = 'composer-text';
+      text.textContent = d.text;
+      text.title = d.text;
+      row.append(kind, text, ...actions);
+      el.appendChild(row);
+    };
+
+    queued.forEach((d, index) => {
+      const cancel = document.createElement('button');
+      cancel.className = 'composer-remove';
+      cancel.textContent = '취소';
+      cancel.onclick = () => App.removeStoredDraft(queueKey, d.id);
+      appendItem(d, `예약 ${index + 1}`, 'queued', [cancel]);
+    });
+
+    legacy.forEach((d) => {
+      const load = document.createElement('button');
+      load.textContent = '불러오기';
+      load.onclick = () => {
+        App.setComposerText(d.text);
+        if (TerminalView.promptInput) TerminalView.promptInput.focus();
       };
-      actions.append(send, fan, del);
-      card.append(tx, actions);
-      el.appendChild(card);
+      const remove = document.createElement('button');
+      remove.className = 'composer-remove';
+      remove.textContent = '삭제';
+      remove.onclick = () => App.removeStoredDraft(legacyKey, d.id);
+      appendItem(d, '기존 초안', 'legacy', [load, remove]);
+    });
+
+    el.classList.toggle('hidden', !queued.length && !legacy.length);
+  },
+
+  async removeStoredDraft(key, draftId) {
+    const before = App.state.drafts[key] || [];
+    const next = before.filter((d) => d.id !== draftId);
+    App.state.drafts[key] = next;
+    App.renderComposerQueue();
+    try {
+      await App.persistDraftList(key, next);
+    } catch (e) {
+      // 저장 대기 중 더 최신 변경이 생겼다면 그 상태를 롤백으로 덮지 않는다.
+      if (App.state.drafts[key] === next) App.state.drafts[key] = before;
+      App.renderComposerQueue();
+      console.warn('프롬프트 저장 실패:', e);
     }
   },
 
-  addDraft() {
-    const k = App.draftKey();
-    const list = App.state.drafts[k] || (App.state.drafts[k] = []);
-    list.push({ id: newLocalId(), text: '' });
-    App.renderDraftList();
-    App.saveDraftsDebounced();
-    const areas = document.querySelectorAll('#draft-list textarea');
-    if (areas.length) areas[areas.length - 1].focus();
-  },
-
-  saveDraftsDebounced() {
-    clearTimeout(App._draftSaveTimer);
-    App._draftSaveTimer = setTimeout(() => {
-      const k = App.draftKey();
-      ta.setDrafts(k, App.state.drafts[k] || []).catch((e) => console.warn('초안 저장 실패:', e));
-    }, 600);
-  },
-
-  // 초안을 터미널로 전달하고 즉시 실행 (bracketed paste 로 멀티라인 안전 전달 후 Enter).
-  // 전송한 초안은 목록에서 제거한다 — 보낸 프롬프트가 쌓여 있을 이유가 없음.
-  sendDraft(d) {
+  // Enter/전송 버튼은 상태와 관계없이 활성 세션에 즉시 실행한다.
+  sendComposerPrompt() {
     const id = App.state.activeId;
-    if (!id || !d.text.trim()) return;
-    App.deliverDraft(id, d.text);
-    TerminalView.activate(id);
-    App.consumeDraft(d);
+    const text = App.composerText();
+    if (!id || !text.trim() || !TerminalView.views.has(id)) return;
+    App.deliverDraft(id, text);
+    App.clearComposerText();
+    App.renderComposerQueue();
   },
 
-  // 세션 하나에 프롬프트 전달 + 즉시 실행. 세션별 xterm 의 paste 경로를 쓰므로
-  // 각 세션의 bracketed paste 모드가 올바르게 적용되고 포커스도 필요 없다
+  // 진행중·허가 대기 상태만 예약한다. 이미 쉬는 세션은 기다릴 작업이 없으므로 즉시 전송한다.
+  async scheduleComposerPrompt() {
+    const id = App.state.activeId;
+    const text = App.composerText();
+    const session = App.state.sessions.find((s) => s.id === id);
+    if (!session || !text.trim() || !TerminalView.views.has(id)) return;
+    if (session.status === 'idle' || session.status === 'done') {
+      App.sendComposerPrompt();
+      return;
+    }
+    if (session.status !== 'running' && session.status !== 'waiting') return;
+
+    const key = App.queueKey(id);
+    const before = App.state.drafts[key] || [];
+    const next = [...before, { id: newLocalId(), text }];
+    App.state.drafts[key] = next;
+    App.clearComposerText();
+    App.renderComposerQueue();
+    try {
+      await App.persistDraftList(key, next);
+    } catch (e) {
+      // 같은 큐에 후속 예약이 추가된 경우 최신 배열을 보존한다.
+      if (App.state.drafts[key] === next) {
+        App.state.drafts[key] = before;
+        if (!App.composerText()) App.setComposerText(text);
+      }
+      App.renderComposerQueue();
+      console.warn('예약 저장 실패:', e);
+    }
+  },
+
+  // 영속 저장소에서 선두 항목 제거가 성공한 뒤에만 PTY로 보낸다(at-most-once).
+  async dispatchNextQueued(sessionId) {
+    if (App._queueDispatching.has(sessionId)) return;
+    const key = App.queueKey(sessionId);
+    const before = App.state.drafts[key] || [];
+    const nextDraft = before[0];
+    if (!nextDraft || !nextDraft.text.trim()) return;
+    App._queueDispatching.add(sessionId);
+    const rest = before.slice(1);
+    App.state.drafts[key] = rest;
+    App.renderComposerQueue();
+    try {
+      await App.persistDraftList(key, rest);
+      App.deliverDraft(sessionId, nextDraft.text);
+    } catch (e) {
+      const current = App.state.drafts[key] || [];
+      if (!current.some((d) => d.id === nextDraft.id)) {
+        App.state.drafts[key] = [nextDraft, ...current];
+      }
+      App.renderComposerQueue();
+      console.warn('예약 전송 준비 실패:', e);
+    } finally {
+      App._queueDispatching.delete(sessionId);
+    }
+  },
+
+  handleQueuedDone(sessionId) {
+    App.dispatchNextQueued(sessionId);
+  },
+
+  async clearQueuedPrompts(sessionId) {
+    const key = App.queueKey(sessionId);
+    if (!Object.prototype.hasOwnProperty.call(App.state.drafts, key)) return;
+    delete App.state.drafts[key];
+    try { await App.persistDraftList(key, []); }
+    catch (e) { console.warn('예약 정리 실패:', e); }
+  },
+
+  async cleanupDeadQueuedPrompts() {
+    const alive = new Set(App.state.sessions.map((s) => s.id));
+    const stale = Object.keys(App.state.drafts)
+      .filter((key) => key.startsWith('queued:') && !alive.has(key.slice(7)));
+    await Promise.all(stale.map((key) => App.clearQueuedPrompts(key.slice(7))));
+  },
+
+  // 세션 하나에 프롬프트 전달 + 즉시 실행. paste 경로로 bracketed paste를 유지한다.
   deliverDraft(sessionId, text) {
+    if (!text.trim() || !TerminalView.views.has(sessionId)) return;
     TerminalView.paste(sessionId, text);
     ta.write(sessionId, '\r');
   },
 
-  consumeDraft(d) {
-    const k = App.draftKey();
-    App.state.drafts[k] = (App.state.drafts[k] || []).filter((x) => x.id !== d.id);
-    ta.setDrafts(k, App.state.drafts[k]).catch((e) => console.warn('초안 저장 실패:', e));
-    App.renderDraftList();
+  showComposerFanout() {
+    const text = App.composerText();
+    if (!text.trim()) return;
+    App.showFanoutModal(text, () => {
+      App.clearComposerText();
+      App.renderComposerQueue();
+    });
   },
 
-  // ── 팬아웃: 선택한 여러 세션에 같은 초안을 일괄 실행 ──
-  // PTY 에 직접 쓰므로 클립보드를 건드리지 않고, 세션이 화면에 없어도 안전하게 들어간다
-  showFanoutModal(d) {
-    if (!d.text.trim()) return;
+  // 기존 일괄 모달을 현재 하단 입력 텍스트 대상으로 사용한다.
+  showFanoutModal(text, onSuccess) {
     const alive = App.state.sessions.filter((s) => s.status !== 'exited');
-    if (!alive.length) return;
+    if (!text.trim() || !alive.length) return;
     const statusName = { idle: '대기중', running: '진행중', waiting: '허가 대기', done: '완료' };
     const rows = alive.map((s) => {
       const label = App.sessionLabel(s) + (s.id === App.state.activeId ? ' (현재)' : '');
@@ -113,7 +235,7 @@ Object.assign(App, {
     App.modal(`
       <h3>여러 세션에 실행</h3>
       <p style="color:var(--fg-dim);line-height:1.6;margin-bottom:6px">
-        체크한 모든 세션에 프롬프트를 전달하고 즉시 실행합니다.
+        체크한 모든 세션에 프롬프트를 즉시 실행합니다.
         셸 프롬프트 상태의 세션에서는 셸 명령으로 실행되니 대상을 확인하세요.</p>
       ${rows}
       <div class="modal-actions"><button id="m-cancel">취소</button><button id="m-fanout">실행</button></div>`,
@@ -122,8 +244,8 @@ Object.assign(App, {
         m.querySelector('#m-fanout').onclick = () => {
           const ids = [...m.querySelectorAll('input[data-sid]:checked')].map((c) => c.dataset.sid);
           if (!ids.length) return;
-          for (const sid of ids) App.deliverDraft(sid, d.text);
-          App.consumeDraft(d);
+          for (const sid of ids) App.deliverDraft(sid, text);
+          if (onSuccess) onSuccess();
           close();
         };
       });

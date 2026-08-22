@@ -38,11 +38,10 @@ Object.assign(App, {
     add('action', '홈 디렉토리 터미널 열기', '새 홈 세션을 시작합니다.', () => App.createSession(null), 'new terminal home');
     add('action', '현재 프로젝트 새 세션', '활성 세션의 프로젝트에 새 터미널을 엽니다.', () => App.newSessionInActiveProject(), 'new session');
     add('action', '터미널 검색', '활성 터미널 스크롤백에서 검색합니다.', () => App.openTerminalSearch(), 'find search');
-    add('action', '선택 영역을 계획 문서로 저장', '터미널에서 드래그한 텍스트를 현재 프로젝트 계획에 등록합니다.', () => App.captureSelectionAsPlan(), 'plan capture selection save');
     add('action', '프리셋 관리', '전역/프로젝트 프리셋을 추가하거나 수정합니다.', () => App.showPresetManager(), 'preset');
     add('action', '런치 레시피 관리', '여러 세션을 한 번에 여는 작업 묶음을 관리합니다.', () => App.showRecipeManager(), 'recipe launch workspace');
     add('action', '설정', '글꼴, 셸, 알림, AI 도구 연동을 설정합니다.', () => App.showSettingsModal(), 'settings');
-    add('action', '우측 패널 토글', '세션 기록, 계획 문서, 다음 프롬프트 패널을 열고 닫습니다.', () => App.togglePromptPanel(), 'panel');
+    add('action', '우측 패널 토글', '세션 기록, 계획 문서와 메모 패널을 열고 닫습니다.', () => App.togglePromptPanel(), 'panel');
     add('action', '업데이트 확인', '새 릴리즈가 있는지 확인합니다.', () => App.checkUpdate(), 'update');
 
     for (const p of App.state.projects) {

@@ -13,7 +13,7 @@ const App = {
     platform: '',   // 백엔드가 알려주는 OS (windows | macos | linux)
     images: {},     // sessionId → [{ path, src }] 최근 첨부 이미지
     branches: {},   // sessionId → git 브랜치명 (헤더 표시용, 2초 폴링)
-    drafts: {},     // projectId(또는 '') → [{ id, text }] 다음 프롬프트 초안 (영속화)
+    drafts: {},     // projectId/queued:<sessionId>, memo:<projectId>는 Markdown 이전 전 구버전 데이터
     projectEmptyId: null // 세션 없는 프로젝트 선택 시 '새 세션 시작' 화면 대상
   },
 
@@ -26,6 +26,7 @@ const App = {
       projects: st.projects, presets: st.presets, recipes: st.recipes || [], settings: st.settings, sessions: st.sessions,
       drafts: st.drafts || {}, platform: st.platform || ''
     });
+    await App.cleanupDeadQueuedPrompts();
     // 사이드바 제목 우측 버전 표기
     document.getElementById('app-version').textContent = st.version ? 'v' + st.version : '';
 
@@ -40,12 +41,19 @@ const App = {
     ta.onStatus(({ sessionId, status, busyMs }) => {
       const s = App.state.sessions.find((x) => x.id === sessionId);
       if (!s) return;
+      const prevStatus = s.status;
       s.status = status;
-      if (status === 'done') App.onDone(s, busyMs);
-      else App.clearDoneTimers(sessionId); // 새 작업 시작/입력 등으로 done 이탈 → 확인 추적 취소
+      if (status === 'done') {
+        App.onDone(s, busyMs);
+        // 반복 done 이벤트가 다음 예약까지 소진하지 않도록 실제 실행 완료 전이만 처리한다.
+        if (prevStatus === 'running') App.handleQueuedDone(sessionId);
+      } else {
+        App.clearDoneTimers(sessionId); // 새 작업 시작/입력 등으로 done 이탈 → 확인 추적 취소
+      }
       if (status === 'waiting') App.onWaiting(s);
       updateSessionStatus(s); // 전체 재구축 대신 해당 행만 갱신 (호버·드래그 유지)
       App.renderTopbar();
+      if (sessionId === App.state.activeId) App.renderComposerQueue();
     });
     ta.onExit(({ sessionId }) => {
       TerminalView.write(sessionId, '\r\n\x1b[31m[세션 종료됨 — 닫기(✕)로 정리]\x1b[0m\r\n');
@@ -70,12 +78,10 @@ const App = {
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
     document.getElementById('btn-command-palette').onclick = () => App.openCommandPalette();
     document.getElementById('btn-term-search').onclick = () => App.openTerminalSearch();
-    App.bindPlanCaptureButton('btn-plan-capture-top');
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
-    document.getElementById('btn-draft-add').onclick = () => App.addDraft();
     document.getElementById('btn-claude-refresh').onclick = () => App.renderClaudeList(true);
-    App.bindPlanCaptureButton('btn-plan-capture');
     document.getElementById('btn-plan-refresh').onclick = () => App.renderPlanList(true);
+    document.getElementById('btn-memo-add').onclick = () => App.showMemoModal();
     // 시스템 메모리 폴링 (2초)
     setInterval(() => App.pollStatus(), 2000);
     App.pollStatus();
@@ -125,7 +131,8 @@ const App = {
     App.renderImageStrip();
     App.renderClaudeList();
     App.renderPlanList();
-    App.renderDraftList();
+    void App.migrateLegacyMemos();
+    App.renderComposerQueue();
     App.renderEmptyState();
   },
 
@@ -391,6 +398,8 @@ const App = {
 
   async closeSession(id) {
     await ta.closeSession(id);
+    await App.clearQueuedPrompts(id);
+    App._composerTexts.delete(id);
     App.state.sessions = App.state.sessions.filter((s) => s.id !== id);
     delete App.state.images[id];
     delete App.state.branches[id];
@@ -428,7 +437,8 @@ const App = {
     const watching = s.id === App.state.activeId && document.hasFocus();
     if (!watching && App.state.settings.notifyOnDone) {
       const secs = Math.round((busyMs || 0) / 1000);
-      ta.notify('작업 완료 — ' + App.sessionLabel(s), secs + '초 동안 실행되던 작업이 끝났습니다.');
+      void ta.notify('작업 완료 — ' + App.sessionLabel(s), secs + '초 동안 실행되던 작업이 끝났습니다.')
+        .catch((error) => console.warn('완료 알림 전송 실패:', error));
     }
   },
 
@@ -455,7 +465,8 @@ const App = {
   onWaiting(s) {
     const watching = s.id === App.state.activeId && document.hasFocus();
     if (!watching && App.state.settings.notifyOnWaiting) {
-      ta.notify('허가 대기 — ' + App.sessionLabel(s), 'AI 도구가 실행 허가를 기다리고 있습니다.');
+      void ta.notify('허가 대기 — ' + App.sessionLabel(s), 'AI 도구가 실행 허가를 기다리고 있습니다.')
+        .catch((error) => console.warn('허가 대기 알림 전송 실패:', error));
     }
   },
 

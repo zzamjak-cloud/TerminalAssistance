@@ -39,6 +39,17 @@ function newLocalId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+// 목록 전반에서 쓰는 상대 시간. 잘못된 값이나 미래 시각은 음수 단위 대신 방금으로 표시한다.
+function formatRelativeTime(ms) {
+  const timestamp = Number(ms);
+  if (!Number.isFinite(timestamp)) return '방금';
+  const elapsed = Math.max(0, Date.now() - timestamp);
+  if (elapsed < 60000) return '방금';
+  if (elapsed < 3600000) return Math.floor(elapsed / 60000) + '분 전';
+  if (elapsed < 86400000) return Math.floor(elapsed / 3600000) + '시간 전';
+  return Math.floor(elapsed / 86400000) + '일 전';
+}
+
 // 공백 포함 경로만 따옴표 (Claude Code 가 경로를 이미지 칩으로 인식)
 function quotePath(p) {
   return /\s/.test(p) ? '"' + p + '"' : p;

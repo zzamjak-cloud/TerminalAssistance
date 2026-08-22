@@ -502,8 +502,13 @@ async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Re
 
 // ── 데스크톱 알림 — 종류별(완료/허가 대기) 게이트는 프론트가 각 설정으로 판단한다 ──
 #[tauri::command]
-fn notify(app: AppHandle, title: String, body: String) {
-    let _ = app.notification().builder().title(title).body(body).show();
+fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
 }
 
 // WebView2 렌더러 프로세스가 죽으면(메모리 부족 등) 자동 리로드해 화면을 복구한다.
@@ -621,6 +626,10 @@ fn main() {
             plans::list_plan_docs,
             plans::get_plan_doc,
             plans::add_plan_doc,
+            plans::register_plan_file,
+            plans::dismiss_plan_doc,
+            plans::create_memo_doc,
+            plans::delete_memo_doc,
             explorer::list_dir,
             explorer::git_status,
             explorer::read_text_file,
