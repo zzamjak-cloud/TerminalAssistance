@@ -181,7 +181,7 @@ pub async fn claude_session_messages(cwd: String, id: String) -> Vec<ChatMsg> {
 
 /// tool_use 입력에서 사람이 알아볼 대표값 하나 (파일 경로·명령 등)
 pub(crate) fn tool_hint(input: &serde_json::Value) -> String {
-    for k in ["file_path", "command", "pattern", "url", "path", "query", "description", "prompt"] {
+    for k in ["file_path", "command", "cmd", "pattern", "url", "path", "query", "description", "prompt"] {
         if let Some(s) = input.get(k).and_then(|x| x.as_str()) {
             return s.trim().replace('\n', " ").chars().take(TOOL_HINT_CAP).collect();
         }

@@ -459,7 +459,7 @@ button:disabled:hover { border-color: var(--border); }
 .md-view hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
 .md-view img { max-width: 100%; }
 
-/* 세션 기록 열람 (Claude 세션 팝업) 말풍선 */
+/* 세션 기록 열람 팝업 말풍선 */
 .cv-log {
   max-height: 62vh; overflow-y: auto; user-select: text;
   display: flex; flex-direction: column; gap: 8px;
@@ -660,7 +660,7 @@ body.sorting * { cursor: grabbing !important; }
   border-left: 2px dashed var(--accent);
 }
 
-/* ── 우측 패널 (사용량 헤더 + Claude 세션 + 계획 문서 + 다음 프롬프트) ── */
+/* ── 우측 패널 (사용량 헤더 + 세션 기록 + 계획 문서 + 다음 프롬프트) ── */
 /* min-width 는 지정하지 않는다 — JS 리사이즈 최소값(200px)이 유효하도록 */
 #prompt-panel {
   width: 260px;
@@ -706,7 +706,7 @@ body.sorting * { cursor: grabbing !important; }
 .sec-body { flex: 1; overflow-y: auto; min-height: 0; }
 #claude-list, #plan-list { padding: 6px; }
 .prompt-empty { color: var(--fg-dim); font-size: 11px; line-height: 1.6; padding: 10px 6px; }
-/* Claude 세션 항목: 상대 시각 + 첫 프롬프트 미리보기 */
+/* AI 세션 기록 항목: 상대 시각 + 첫 프롬프트 미리보기 */
 .cs-item {
   padding: 6px 7px;
   border-radius: 6px;
@@ -715,6 +715,7 @@ body.sorting * { cursor: grabbing !important; }
 }
 .cs-item:hover { background: var(--bg-hover); }
 .cs-time { font-size: 10px; color: var(--fg-dim); margin-bottom: 2px; }
+.cs-item.codex .cs-time { color: var(--done); }
 .cs-text {
   font-size: 11.5px; line-height: 1.45;
   word-break: break-all;

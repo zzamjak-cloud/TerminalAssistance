@@ -68,6 +68,10 @@ const TerminalView = {
       let sawInput = false; // 이번 키스트로크에서 input 이 발생했는지 (IME 백스페이스 폴백용)
       if (isMac) {
         let pendingKeyDeleteMirror = null; // keydown 에서 이미 처리한 삭제 뒤 textarea 목표값
+        let imeBackspaceFallbackTimer = null;
+        let lastImeDeleteInputAt = 0;
+        let lastImeFallbackDeleteAt = 0;
+        let fallbackDeleteMirror = null;
         const MIRROR_TAIL_LIMIT = 16; // IME 교체 기준으로만 쓰므로 긴 터미널 라인을 보관하지 않는다
         const trimMirrorTail = (value) => {
           const chars = Array.from(value);
@@ -77,21 +81,47 @@ const TerminalView = {
           taEl.value = trimMirrorTail(value);
           try { taEl.setSelectionRange(taEl.value.length, taEl.value.length); } catch (_) {}
         };
+        const clearImeBackspaceFallback = () => {
+          if (imeBackspaceFallbackTimer !== null) {
+            clearTimeout(imeBackspaceFallbackTimer);
+            imeBackspaceFallbackTimer = null;
+          }
+        };
         mirrorInvalidate = () => {
+          clearImeBackspaceFallback();
           preVal = null;
           pendingKeyDeleteMirror = null;
+          fallbackDeleteMirror = null;
           setMirrorValue('');
         };
         mirrorMarkDeleteHandled = () => { pendingKeyDeleteMirror = taEl.value; };
         taEl.addEventListener('beforeinput', (ev) => {
+          const inputType = ev.inputType || '';
+          if (inputType.startsWith('deleteContent')) {
+            lastImeDeleteInputAt = Date.now();
+            sawInput = true; // delete input 이 곧 처리될 예정이면 폴백 DEL 을 막는다
+          }
           const ch = core._compositionHelper;
           if (ev.isComposing || (ch && ch._isComposing)) { preVal = null; return; }
           preVal = taEl.value;
         });
         taEl.addEventListener('input', (ev) => {
           sawInput = true;
+          const inputType = ev.inputType || '';
+          if (inputType.startsWith('deleteContent')) lastImeDeleteInputAt = Date.now();
+          clearImeBackspaceFallback();
           const ch = core._compositionHelper;
           if (ev.isComposing || (ch && ch._isComposing)) { preVal = null; return; }
+          if (fallbackDeleteMirror !== null && inputType.startsWith('deleteContent') &&
+              Date.now() - lastImeFallbackDeleteAt < 300) {
+            preVal = null;
+            setMirrorValue(fallbackDeleteMirror);
+            fallbackDeleteMirror = null;
+            return;
+          }
+          if (fallbackDeleteMirror !== null && Date.now() - lastImeFallbackDeleteAt >= 300) {
+            fallbackDeleteMirror = null;
+          }
           if (pendingKeyDeleteMirror !== null && ev.inputType && ev.inputType.startsWith('deleteContent')) {
             preVal = null;
             setMirrorValue(pendingKeyDeleteMirror);
@@ -112,7 +142,6 @@ const TerminalView = {
           const deletedText = pre.slice(p, pre.length - s);
           const deleted = Array.from(deletedText).length;
           const inserted = cur.slice(p, cur.length - s);
-          const inputType = ev.inputType || '';
           const isInsertInput = inputType.startsWith('insert') || !!inserted;
           const isDeleteInput = inputType.startsWith('deleteContent');
           let deleteCount = deleted;
@@ -126,6 +155,9 @@ const TerminalView = {
             // 일반/IME Backspace 는 한 번에 한 글자만 지워야 한다. 여러 글자 삭제는
             // textarea selection 오염으로 보고 과삭제를 차단한다.
             deleteCount = 1;
+            const keptDeleted = Array.from(deletedText);
+            keptDeleted.pop();
+            nextMirror = pre.slice(0, p) + keptDeleted.join('') + pre.slice(pre.length - s);
           }
           const out = '\x7f'.repeat(deleteCount) + inserted;
           if (out) core.coreService.triggerDataEvent(out, true);
@@ -154,13 +186,18 @@ const TerminalView = {
           // IME 가 소비한 백스페이스(keyCode 229): 자모 분해는 위 diff 가 처리하지만,
           // IME 텍스트 경계를 넘어 지울 때는 textarea 변화 없이 keydown 만 온다 → DEL 폴백
           if (ev.keyCode !== 229 || ev.key !== 'Backspace') return;
+          clearImeBackspaceFallback();
+          if (Date.now() - lastImeDeleteInputAt < 80) return;
           sawInput = false;
-          setTimeout(() => {
-            if (!sawInput) {
+          imeBackspaceFallbackTimer = setTimeout(() => {
+            imeBackspaceFallbackTimer = null;
+            if (!sawInput && Date.now() - lastImeDeleteInputAt >= 80) {
               core.coreService.triggerDataEvent('\x7f', true);
               mirrorTrimChar(); // 전송한 삭제를 미러에도 반영 — 남겨두면 diff 이중 삭제
+              fallbackDeleteMirror = taEl.value;
+              lastImeFallbackDeleteAt = Date.now();
             }
-          }, 32);
+          }, 120);
         });
         // xterm 의 keydown(229) 기반 textarea diff 전송기는 위 differ 와 이중 전송
         // (빠른 타이핑 시 replace() 오동작으로 전체 라인 재전송 위험도 있음) → 무력화

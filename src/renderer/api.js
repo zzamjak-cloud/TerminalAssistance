@@ -51,6 +51,10 @@
     listClaudeSessions: (cwd) => invoke('list_claude_sessions', { cwd }),
     // 세션 열람 팝업용: 저장된 세션 기록 → 대화 메시지 [{ role, kind, text }]
     claudeSessionMessages: (cwd, id) => invoke('claude_session_messages', { cwd, id }),
+    // Codex 가 저장해 둔 세션 목록 (cwd 기준) — [{ id, mtimeMs, preview }]
+    listCodexSessions: (cwd) => invoke('list_codex_sessions', { cwd }),
+    // 세션 열람 팝업용: 저장된 Codex 기록 → 대화 메시지 [{ role, kind, text }]
+    codexSessionMessages: (cwd, id) => invoke('codex_session_messages', { cwd, id }),
     // 계획 문서 (프로젝트 경로 귀속 영속화) — 목록 [{ id, sessionId, createdMs, title, path }] / 본문
     listPlanDocs: (cwd) => invoke('list_plan_docs', { cwd }),
     getPlanDoc: (cwd, id) => invoke('get_plan_doc', { cwd, id }),

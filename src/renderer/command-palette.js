@@ -1,7 +1,9 @@
-// 전역 커맨드 팔레트: 프로젝트, 세션, 프리셋, Claude 세션, 계획 문서를 한 곳에서 실행한다.
+// 전역 커맨드 팔레트: 프로젝트, 세션, 프리셋, AI 세션 기록, 계획 문서를 한 곳에서 실행한다.
 Object.assign(App, {
   _cpItems: [],
   _cpSelected: 0,
+  _cpPointerX: null,
+  _cpPointerY: null,
   _cpLoadToken: 0,
 
   openCommandPalette() {
@@ -10,6 +12,8 @@ Object.assign(App, {
     root.classList.remove('hidden');
     input.value = '';
     App._cpSelected = 0;
+    App._cpPointerX = null;
+    App._cpPointerY = null;
     App._cpItems = App.commandPaletteBaseItems();
     App.renderCommandPalette();
     App.loadCommandPaletteContext(++App._cpLoadToken);
@@ -38,7 +42,7 @@ Object.assign(App, {
     add('action', '프리셋 관리', '전역/프로젝트 프리셋을 추가하거나 수정합니다.', () => App.showPresetManager(), 'preset');
     add('action', '런치 레시피 관리', '여러 세션을 한 번에 여는 작업 묶음을 관리합니다.', () => App.showRecipeManager(), 'recipe launch workspace');
     add('action', '설정', '글꼴, 셸, 알림, AI 도구 연동을 설정합니다.', () => App.showSettingsModal(), 'settings');
-    add('action', '우측 패널 토글', 'Claude 세션, 계획 문서, 다음 프롬프트 패널을 열고 닫습니다.', () => App.togglePromptPanel(), 'panel');
+    add('action', '우측 패널 토글', '세션 기록, 계획 문서, 다음 프롬프트 패널을 열고 닫습니다.', () => App.togglePromptPanel(), 'panel');
     add('action', '업데이트 확인', '새 릴리즈가 있는지 확인합니다.', () => App.checkUpdate(), 'update');
 
     for (const p of App.state.projects) {
@@ -80,18 +84,23 @@ Object.assign(App, {
     if (!s) return;
     const cwd = s.cwd;
     try {
-      const [claude, plans] = await Promise.all([
+      const [claude, codex, plans] = await Promise.all([
         ta.listClaudeSessions(cwd).catch(() => []),
+        ta.listCodexSessions(cwd).catch(() => []),
         ta.listPlanDocs(cwd).catch(() => [])
       ]);
       if (token !== App._cpLoadToken) return;
-      for (const it of claude) {
+      const history = [
+        ...claude.map((it) => ({ ...it, source: 'claude', label: 'Claude' })),
+        ...codex.map((it) => ({ ...it, source: 'codex', label: 'Codex' }))
+      ].sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (const it of history) {
         App._cpItems.push({
-          kind: 'claude',
-          title: 'Claude 세션: ' + it.preview,
+          kind: it.source,
+          title: it.label + ' 세션: ' + it.preview,
           subtitle: new Date(it.mtimeMs).toLocaleString() + ' · ' + it.id.slice(0, 8),
-          keywords: it.id + ' claude resume history',
-          run: () => App.showClaudeSessionPopup(it)
+          keywords: it.id + ' ' + it.source + ' resume history',
+          run: () => App.showSessionHistoryPopup({ ...it, cwd })
         });
       }
       for (const it of plans) {
@@ -137,7 +146,14 @@ Object.assign(App, {
       const row = document.createElement('button');
       row.className = 'cp-item' + (idx === App._cpSelected ? ' selected' : '');
       row.type = 'button';
-      row.onmouseenter = () => { App._cpSelected = idx; App.renderCommandPalette(); };
+      row.onpointermove = (ev) => {
+        if (App._cpPointerX === ev.clientX && App._cpPointerY === ev.clientY) return;
+        App._cpPointerX = ev.clientX;
+        App._cpPointerY = ev.clientY;
+        if (App._cpSelected === idx) return;
+        App._cpSelected = idx;
+        App.renderCommandPalette();
+      };
       row.onclick = () => App.runCommandPaletteItem(it);
       const kind = document.createElement('span');
       kind.className = 'cp-kind';
@@ -157,7 +173,7 @@ Object.assign(App, {
   },
 
   commandPaletteKindLabel(kind) {
-    return ({ action: '동작', project: '프로젝트', session: '세션', preset: '프리셋', recipe: '레시피', claude: 'Claude', plan: '계획' })[kind] || kind;
+    return ({ action: '동작', project: '프로젝트', session: '세션', preset: '프리셋', recipe: '레시피', claude: 'Claude', codex: 'Codex', plan: '계획' })[kind] || kind;
   },
 
   async runCommandPaletteItem(item) {

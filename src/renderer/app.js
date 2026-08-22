@@ -1,5 +1,5 @@
 // 앱 상태·부트스트랩·세션 수명주기.
-// 나머지 책임은 파일로 분리: 초안 drafts.js / Claude 세션 열람 claude-sessions.js /
+// 나머지 책임은 파일로 분리: 초안 drafts.js / AI 세션 기록 열람 claude-sessions.js /
 // 패널 레이아웃 panel-layout.js / 모달 modals.js / 사이드바·프리셋 렌더 sidebar.js·presets.js /
 // 터미널 terminal-view.js. 각 파일이 Object.assign(App, ...) 으로 메서드를 붙인다.
 const App = {
@@ -356,7 +356,7 @@ const App = {
       App.state.sessions.push(info);
       TerminalView.create(info, App.state.settings.fontSize);
       App.activateSession(info.id);
-      return info; // Claude 세션 재개 등 후속 입력용
+      return info; // AI 세션 재개 등 후속 입력용
     } catch (e) {
       alert('세션 생성 실패: ' + e);
     }

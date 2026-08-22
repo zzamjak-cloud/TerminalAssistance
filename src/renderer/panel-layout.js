@@ -91,7 +91,7 @@ Object.assign(App, {
     App.initSectionFolds();
   },
 
-  // 우측 패널 섹션(Claude 세션·계획 문서·다음 프롬프트) 접기/펼치기 — 상태는 localStorage
+  // 우측 패널 섹션(세션 기록·계획 문서·다음 프롬프트) 접기/펼치기 — 상태는 localStorage
   initSectionFolds() {
     let folded = {};
     try { folded = JSON.parse(localStorage.getItem('ta-sec-fold') || '{}'); } catch (_) {}

@@ -620,6 +620,8 @@ fn main() {
             explorer::list_dir,
             explorer::git_status,
             explorer::read_text_file,
+            codex::list_codex_sessions,
+            codex::codex_session_messages,
             codex::codex_usage,
             hooks::hooks_status,
             hooks::claude_session_of,

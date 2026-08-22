@@ -4,9 +4,21 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
+use std::path::Path;
 use std::process::Command;
 
 const PREVIEW_CAP: u64 = 2 * 1024 * 1024; // 미리보기 텍스트 읽기 상한 (2MB)
+
+fn is_unity_meta_file_name(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with(".meta")
+}
+
+fn is_unity_meta_path(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(is_unity_meta_file_name)
+}
 
 #[derive(Serialize)]
 pub struct DirEntry {
@@ -24,8 +36,12 @@ pub async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     let mut out: Vec<DirEntry> = Vec::new();
     for e in rd.flatten() {
         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !is_dir && is_unity_meta_file_name(&name) {
+            continue;
+        }
         out.push(DirEntry {
-            name: e.file_name().to_string_lossy().into_owned(),
+            name,
             path: e.path().to_string_lossy().into_owned(),
             is_dir,
         });
@@ -85,6 +101,9 @@ pub async fn git_status(cwd: String) -> Option<GitStatus> {
         // 이름변경/복사는 다음 토큰이 원본 경로 — 소비만 하고 버린다
         if x == 'R' || x == 'C' {
             let _ = it.next();
+        }
+        if is_unity_meta_path(&path) {
+            continue;
         }
         let status = match (x, y) {
             ('?', '?') => 'U',
@@ -154,5 +173,13 @@ mod tests {
         assert_eq!(pick('M', ' '), 'M');
         assert_eq!(pick('A', ' '), 'A');
         assert_eq!(pick('A', 'M'), 'M');
+    }
+
+    #[test]
+    fn unity_meta_file_detection() {
+        assert!(super::is_unity_meta_file_name("Player.prefab.meta"));
+        assert!(super::is_unity_meta_path("Assets/Scenes/Main.unity.meta"));
+        assert!(!super::is_unity_meta_file_name("metadata.json"));
+        assert!(!super::is_unity_meta_path("Assets/MetaFolder/Scene.unity"));
     }
 }
