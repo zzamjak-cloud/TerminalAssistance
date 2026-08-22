@@ -444,13 +444,17 @@ fn git_branch(cwd: String) -> Option<String> {
 }
 
 #[tauri::command]
-fn open_path(app: AppHandle, path: String) {
-    let _ = app.opener().open_path(path, None::<String>);
+fn open_path(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .open_path(path, None::<String>)
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-fn open_url(app: AppHandle, url: String) {
-    let _ = app.opener().open_url(url, None::<String>);
+fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    app.opener()
+        .open_url(url, None::<String>)
+        .map_err(|err| err.to_string())
 }
 
 // ── 자동 업데이트 ──

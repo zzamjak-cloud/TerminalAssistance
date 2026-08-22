@@ -39,7 +39,7 @@ Object.assign(App, {
       alert('계획으로 저장할 활성 세션이 없습니다.');
       return;
     }
-    const text = App.normalizePlanSelection(TerminalView.getSelection(s.id));
+    const text = App.normalizePlanSelection(TerminalView.getSelection(s.id, { allowCached: true }));
     if (!text) {
       alert('터미널에서 계획으로 저장할 부분을 드래그로 선택하세요.');
       TerminalView.activate(s.id);
@@ -54,9 +54,14 @@ Object.assign(App, {
       btn.textContent = '저장 중';
     }
     try {
-      await ta.addPlanDoc(s.cwd, s.id, text);
-      delete App._planCache[s.cwd];
+      const saved = await ta.addPlanDoc(s.cwd, s.id, text);
+      const existing = App._planCache[s.cwd] ? App._planCache[s.cwd].items : [];
+      App._planCache[s.cwd] = {
+        at: Date.now(),
+        items: [saved, ...existing.filter((it) => it.id !== saved.id)]
+      };
       App.revealPlanPanel();
+      await App.renderPlanList(false);
       await App.renderPlanList(true);
       TerminalView.clearSelection(s.id);
       for (const btn of buttons) {
@@ -88,8 +93,12 @@ Object.assign(App, {
     }
     let cached = App._planCache[cwd];
     if (force || !cached || Date.now() - cached.at > PLAN_LIST_TTL_MS) {
-      let items = [];
-      try { items = await ta.listPlanDocs(cwd); } catch (_) { /* 목록 실패 = 빈 목록 */ }
+      let items = cached ? cached.items : [];
+      try {
+        items = await ta.listPlanDocs(cwd);
+      } catch (e) {
+        console.warn('계획 문서 목록 새로고침 실패:', e);
+      }
       cached = App._planCache[cwd] = { at: Date.now(), items };
       if (App.claudeCwd() !== cwd) return; // await 사이에 세션이 바뀌었으면 그 쪽 렌더에 맡긴다
     }

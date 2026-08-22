@@ -26,8 +26,15 @@ const TerminalView = {
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+    term.loadAddon(new WebLinksAddon.WebLinksAddon((_, url) => {
+      ta.openUrl(url).catch((err) => console.warn('링크 열기 실패:', err));
+    }));
     term.open(holder);
+    const rememberCurrentSelection = () => {
+      requestAnimationFrame(() => this.rememberSelection(session.id));
+    };
+    holder.addEventListener('pointerup', rememberCurrentSelection);
+    holder.addEventListener('mouseup', rememberCurrentSelection);
 
     // ── 한글 등 IME 조합 입력 보정 (xterm 5.5.0) ──
     // xterm 은 조합 커밋 텍스트를 "compositionend 후 setTimeout 에 textarea 를 substring"
@@ -69,7 +76,11 @@ const TerminalView = {
       if (isMac) {
         let pendingKeyDeleteMirror = null; // keydown 에서 이미 처리한 삭제 뒤 textarea 목표값
         let imeBackspaceFallbackTimer = null;
-        let lastImeDeleteInputAt = 0;
+        // WKWebView 는 IME 삭제 input 과 keydown(229, Backspace) 순서를 뒤집어 보낼 수 있다.
+        // 이미 diff 경로에서 삭제를 보낸 input 은 serial 로 기록해 폴백 DEL 중복을 막는다.
+        let deleteInputSerial = 0;
+        let handledDeleteInputSerial = 0;
+        let lastDeleteInputAt = 0;
         let lastImeFallbackDeleteAt = 0;
         let fallbackDeleteMirror = null;
         const MIRROR_TAIL_LIMIT = 16; // IME 교체 기준으로만 쓰므로 긴 터미널 라인을 보관하지 않는다
@@ -98,7 +109,6 @@ const TerminalView = {
         taEl.addEventListener('beforeinput', (ev) => {
           const inputType = ev.inputType || '';
           if (inputType.startsWith('deleteContent')) {
-            lastImeDeleteInputAt = Date.now();
             sawInput = true; // delete input 이 곧 처리될 예정이면 폴백 DEL 을 막는다
           }
           const ch = core._compositionHelper;
@@ -108,7 +118,16 @@ const TerminalView = {
         taEl.addEventListener('input', (ev) => {
           sawInput = true;
           const inputType = ev.inputType || '';
-          if (inputType.startsWith('deleteContent')) lastImeDeleteInputAt = Date.now();
+          const hadPendingImeBackspaceFallback = imeBackspaceFallbackTimer !== null;
+          let countedDeleteInput = false;
+          const markDeleteInput = () => {
+            if (countedDeleteInput) return;
+            countedDeleteInput = true;
+            deleteInputSerial += 1;
+            lastDeleteInputAt = Date.now();
+            if (hadPendingImeBackspaceFallback) handledDeleteInputSerial = deleteInputSerial;
+          };
+          if (inputType.startsWith('deleteContent')) markDeleteInput();
           clearImeBackspaceFallback();
           const ch = core._compositionHelper;
           if (ev.isComposing || (ch && ch._isComposing)) { preVal = null; return; }
@@ -122,13 +141,13 @@ const TerminalView = {
           if (fallbackDeleteMirror !== null && Date.now() - lastImeFallbackDeleteAt >= 300) {
             fallbackDeleteMirror = null;
           }
-          if (pendingKeyDeleteMirror !== null && ev.inputType && ev.inputType.startsWith('deleteContent')) {
+          if (pendingKeyDeleteMirror !== null &&
+              (inputType.startsWith('deleteContent') || inputType === 'insertReplacementText')) {
             preVal = null;
             setMirrorValue(pendingKeyDeleteMirror);
             pendingKeyDeleteMirror = null;
             return;
           }
-          if (pendingKeyDeleteMirror !== null) pendingKeyDeleteMirror = null;
           if (preVal === null) return;
           const pre = preVal, cur = taEl.value;
           preVal = null;
@@ -142,6 +161,13 @@ const TerminalView = {
           const deletedText = pre.slice(p, pre.length - s);
           const deleted = Array.from(deletedText).length;
           const inserted = cur.slice(p, cur.length - s);
+          if (deleted > 0) markDeleteInput();
+          if (pendingKeyDeleteMirror !== null && deleted > 0) {
+            setMirrorValue(pendingKeyDeleteMirror);
+            pendingKeyDeleteMirror = null;
+            return;
+          }
+          if (pendingKeyDeleteMirror !== null) pendingKeyDeleteMirror = null;
           const isInsertInput = inputType.startsWith('insert') || !!inserted;
           const isDeleteInput = inputType.startsWith('deleteContent');
           let deleteCount = deleted;
@@ -187,11 +213,16 @@ const TerminalView = {
           // IME 텍스트 경계를 넘어 지울 때는 textarea 변화 없이 keydown 만 온다 → DEL 폴백
           if (ev.keyCode !== 229 || ev.key !== 'Backspace') return;
           clearImeBackspaceFallback();
-          if (Date.now() - lastImeDeleteInputAt < 80) return;
+          if (deleteInputSerial !== handledDeleteInputSerial) {
+            const deleteInputAge = Date.now() - lastDeleteInputAt;
+            handledDeleteInputSerial = deleteInputSerial;
+            if (deleteInputAge < 500) return;
+          }
           sawInput = false;
+          const fallbackBaseDeleteSerial = deleteInputSerial;
           imeBackspaceFallbackTimer = setTimeout(() => {
             imeBackspaceFallbackTimer = null;
-            if (!sawInput && Date.now() - lastImeDeleteInputAt >= 80) {
+            if (!sawInput && deleteInputSerial === fallbackBaseDeleteSerial) {
               core.coreService.triggerDataEvent('\x7f', true);
               mirrorTrimChar(); // 전송한 삭제를 미러에도 반영 — 남겨두면 diff 이중 삭제
               fallbackDeleteMirror = taEl.value;
@@ -310,7 +341,7 @@ const TerminalView = {
       return true;
     });
 
-    this.views.set(session.id, {
+    const view = {
       term, fit, holder,
       webgl: null,
       frozen: !!(opts && opts.frozen),
@@ -318,8 +349,17 @@ const TerminalView = {
       queueBytes: 0, // 큐 누적 바이트 (상한 관리용)
       lastCols: 0,   // PTY 에 마지막으로 보낸 치수 — 변했을 때만 리사이즈 IPC
       lastRows: 0,
-      resetInputMirror: mirrorInvalidate
-    });
+      resetInputMirror: mirrorInvalidate,
+      scrollQueued: false,
+      lastSelection: '',
+      lastSelectionAt: 0,
+      selectionDisposable: null,
+      selectionHandler: rememberCurrentSelection
+    };
+    this.views.set(session.id, view);
+    if (typeof term.onSelectionChange === 'function') {
+      view.selectionDisposable = term.onSelectionChange(() => this.rememberSelection(session.id));
+    }
     return term;
   },
 
@@ -343,23 +383,34 @@ const TerminalView = {
       }
       return;
     }
-    v.term.write(p.data, () => ta.ackData(p.sessionId, p.bytes));
+    v.term.write(p.data, () => {
+      if (this.isActive(p.sessionId)) this.scrollToBottom(p.sessionId);
+      ta.ackData(p.sessionId, p.bytes);
+    });
   },
 
   // 복구: 백엔드 스크롤백 스냅샷 주입 후, 스냅샷 이후(off 기준) 도착분만 이어붙인다
   restore(id, snap) {
     const v = this.views.get(id);
     if (!v) return;
-    if (snap && snap.data) v.term.write(snap.data);
+    if (snap && snap.data) {
+      v.term.write(snap.data, () => {
+        if (this.isActive(id)) this.scrollToBottom(id);
+      });
+    }
     for (const p of v.queue) {
       if (!snap || p.off >= snap.off) {
-        v.term.write(p.data, () => ta.ackData(id, p.bytes));
+        v.term.write(p.data, () => {
+          if (this.isActive(id)) this.scrollToBottom(id);
+          ta.ackData(id, p.bytes);
+        });
       }
       // off < snap.off 인 이벤트는 스냅샷에 이미 포함된 중복 → 버림 (ack 도 하지 않음)
     }
     v.queue = [];
     v.queueBytes = 0;
     v.frozen = false;
+    if (this.isActive(id)) this.scrollToBottom(id);
   },
 
   // WebGL 렌더러 부착/해제 — 실패(WebGL 미지원·컨텍스트 소실) 시 DOM 렌더러로 자동 폴백
@@ -397,9 +448,29 @@ const TerminalView = {
         try { v.fit.fit(); } catch (_) {}
         this._attachWebgl(v);
         this._syncPtySize(id, v);
+        this.scrollToBottom(id);
         v.term.focus();
       });
     }
+  },
+
+  isActive(id) {
+    const v = this.views.get(id);
+    return !!(v && v.holder.classList.contains('active'));
+  },
+
+  scrollToBottom(id) {
+    const v = this.views.get(id);
+    if (!v || typeof v.term.scrollToBottom !== 'function') return;
+    if (v.scrollQueued) return;
+    v.scrollQueued = true;
+    requestAnimationFrame(() => {
+      v.scrollQueued = false;
+      try { v.term.scrollToBottom(); } catch (_) {}
+      requestAnimationFrame(() => {
+        try { v.term.scrollToBottom(); } catch (_) {}
+      });
+    });
   },
 
   // 치수가 실제로 변했을 때만 PTY 리사이즈 IPC 전송
@@ -424,23 +495,51 @@ const TerminalView = {
       if (!v || !v.holder.classList.contains('active')) return;
       try { v.fit.fit(); } catch (_) {}
       this._syncPtySize(id, v);
+      this.scrollToBottom(id);
     });
   },
 
   write(id, data, onDone) {
     const v = this.views.get(id);
-    if (v) v.term.write(data, onDone);
+    if (!v) return;
+    v.term.write(data, () => {
+      if (this.isActive(id)) this.scrollToBottom(id);
+      if (onDone) onDone();
+    });
   },
 
-  getSelection(id) {
+  rememberSelection(id) {
     const v = this.views.get(id);
     if (!v || typeof v.term.getSelection !== 'function') return '';
-    return v.term.getSelection();
+    const text = v.term.getSelection();
+    if (text) {
+      v.lastSelection = text;
+      v.lastSelectionAt = Date.now();
+    }
+    return text;
+  },
+
+  getSelection(id, opts) {
+    const v = this.views.get(id);
+    if (!v || typeof v.term.getSelection !== 'function') return '';
+    const text = v.term.getSelection();
+    if (text) {
+      v.lastSelection = text;
+      v.lastSelectionAt = Date.now();
+      return text;
+    }
+    if (opts && opts.allowCached && v.lastSelection && Date.now() - v.lastSelectionAt < 5000) {
+      return v.lastSelection;
+    }
+    return '';
   },
 
   clearSelection(id) {
     const v = this.views.get(id);
-    if (v && typeof v.term.clearSelection === 'function') v.term.clearSelection();
+    if (!v) return;
+    v.lastSelection = '';
+    v.lastSelectionAt = 0;
+    if (typeof v.term.clearSelection === 'function') v.term.clearSelection();
   },
 
   // xterm 의 paste 경로 사용 (bracketed paste 처리 포함) → onData → pty
@@ -460,6 +559,13 @@ const TerminalView = {
   dispose(id) {
     const v = this.views.get(id);
     if (v) {
+      if (v.selectionDisposable) {
+        try { v.selectionDisposable.dispose(); } catch (_) {}
+      }
+      if (v.selectionHandler) {
+        v.holder.removeEventListener('pointerup', v.selectionHandler);
+        v.holder.removeEventListener('mouseup', v.selectionHandler);
+      }
       this._detachWebgl(v);
       v.term.dispose();
       v.holder.remove();
