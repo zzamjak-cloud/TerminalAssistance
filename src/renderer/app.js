@@ -174,17 +174,15 @@ const App = {
   bindPlanCaptureButton(id) {
     const btn = document.getElementById(id);
     const holdSelection = (ev) => {
-      TerminalView.rememberSelection(App.state.activeId);
-      ev.preventDefault(); // xterm 선택 영역 유지
+      ev.preventDefault();
       ev.stopPropagation();
+      TerminalView.rememberSelectionSoon(App.state.activeId);
     };
-    btn.onpointerdown = holdSelection;
     btn.onmousedown = holdSelection;
     btn.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      TerminalView.rememberSelection(App.state.activeId);
-      App.captureSelectionAsPlan();
+      void App.captureSelectionAsPlan();
     };
   },
 

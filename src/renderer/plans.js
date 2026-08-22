@@ -33,36 +33,74 @@ Object.assign(App, {
     }
   },
 
+  planCaptureButtons() {
+    return ['btn-plan-capture', 'btn-plan-capture-top']
+      .map((id) => document.getElementById(id))
+      .filter(Boolean);
+  },
+
+  setPlanCaptureButtons(buttons, text, disabled) {
+    for (const btn of buttons) {
+      btn.disabled = disabled;
+      btn.textContent = text;
+    }
+  },
+
+  restorePlanCaptureButtons(buttons, prev) {
+    for (const btn of buttons) {
+      btn.disabled = false;
+      btn.textContent = prev.get(btn);
+    }
+  },
+
+  withPlanTimeout(promise, ms, message) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  },
+
+  async readPlanSelectionText(sessionId) {
+    TerminalView.rememberSelectionSoon(sessionId);
+    const selected = App.normalizePlanSelection(TerminalView.getSelection(sessionId, { allowCached: true }));
+    if (selected) return selected;
+    if (!TerminalView.hasRecentSelectionActivity(sessionId, 60000)) return '';
+    const clip = await App.withPlanTimeout(
+      ta.clipboardText(), 1000, '클립보드 읽기 시간 초과'
+    ).catch(() => '');
+    return App.normalizePlanSelection(clip);
+  },
+
   async captureSelectionAsPlan() {
     const s = App.state.sessions.find((x) => x.id === App.state.activeId);
     if (!s || !s.cwd) {
       alert('계획으로 저장할 활성 세션이 없습니다.');
       return;
     }
-    const text = App.normalizePlanSelection(TerminalView.getSelection(s.id, { allowCached: true }));
-    if (!text) {
-      alert('터미널에서 계획으로 저장할 부분을 드래그로 선택하세요.');
-      TerminalView.activate(s.id);
-      return;
-    }
-    const buttons = ['btn-plan-capture', 'btn-plan-capture-top']
-      .map((id) => document.getElementById(id))
-      .filter(Boolean);
+    const buttons = App.planCaptureButtons();
     const prev = new Map(buttons.map((btn) => [btn, btn.textContent]));
-    for (const btn of buttons) {
-      btn.disabled = true;
-      btn.textContent = '저장 중';
-    }
+    App.setPlanCaptureButtons(buttons, '확인 중', true);
     try {
-      const saved = await ta.addPlanDoc(s.cwd, s.id, text);
+      const text = await App.readPlanSelectionText(s.id);
+      if (!text) {
+        App.setPlanCaptureButtons(buttons, '선택 없음', false);
+        setTimeout(() => App.restorePlanCaptureButtons(buttons, prev), 1200);
+        TerminalView.activate(s.id);
+        return;
+      }
+      App.setPlanCaptureButtons(buttons, '저장 중', true);
+      const saved = await App.withPlanTimeout(
+        ta.addPlanDoc(s.cwd, s.id, text), 5000, '계획 저장 응답 시간이 초과됐습니다.'
+      );
       const existing = App._planCache[s.cwd] ? App._planCache[s.cwd].items : [];
       App._planCache[s.cwd] = {
         at: Date.now(),
         items: [saved, ...existing.filter((it) => it.id !== saved.id)]
       };
       App.revealPlanPanel();
-      await App.renderPlanList(false);
-      await App.renderPlanList(true);
+      void App.renderPlanList(false);
+      void App.renderPlanList(true).catch(() => {});
       TerminalView.clearSelection(s.id);
       for (const btn of buttons) {
         btn.textContent = '저장됨';
@@ -72,7 +110,7 @@ Object.assign(App, {
       }
     } catch (e) {
       alert('계획 저장 실패: ' + e);
-      for (const btn of buttons) btn.textContent = prev.get(btn);
+      App.restorePlanCaptureButtons(buttons, prev);
     } finally {
       for (const btn of buttons) btn.disabled = false;
     }

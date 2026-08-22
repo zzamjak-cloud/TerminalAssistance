@@ -30,11 +30,29 @@ const TerminalView = {
       ta.openUrl(url).catch((err) => console.warn('링크 열기 실패:', err));
     }));
     term.open(holder);
-    const rememberCurrentSelection = () => {
-      requestAnimationFrame(() => this.rememberSelection(session.id));
+    let pointerDownInTerminal = false;
+    let pointerMovedInTerminal = false;
+    const markSelectionStart = () => {
+      pointerDownInTerminal = true;
+      pointerMovedInTerminal = false;
     };
-    holder.addEventListener('pointerup', rememberCurrentSelection);
-    holder.addEventListener('mouseup', rememberCurrentSelection);
+    const markSelectionMove = () => {
+      if (pointerDownInTerminal) pointerMovedInTerminal = true;
+    };
+    const rememberSelectionChange = () => this.rememberSelectionSoon(session.id, { markAttempt: true });
+    const rememberFinishedSelection = () => {
+      this.rememberSelectionSoon(session.id, { markAttempt: pointerMovedInTerminal });
+      pointerDownInTerminal = false;
+      pointerMovedInTerminal = false;
+    };
+    holder.addEventListener('pointerdown', markSelectionStart, true);
+    holder.addEventListener('mousedown', markSelectionStart, true);
+    holder.addEventListener('pointermove', markSelectionMove, true);
+    holder.addEventListener('mousemove', markSelectionMove, true);
+    holder.addEventListener('pointerup', rememberFinishedSelection, true);
+    holder.addEventListener('mouseup', rememberFinishedSelection, true);
+    window.addEventListener('pointerup', rememberFinishedSelection, true);
+    window.addEventListener('mouseup', rememberFinishedSelection, true);
 
     // ── 한글 등 IME 조합 입력 보정 (xterm 5.5.0) ──
     // xterm 은 조합 커밋 텍스트를 "compositionend 후 setTimeout 에 textarea 를 substring"
@@ -353,12 +371,16 @@ const TerminalView = {
       scrollQueued: false,
       lastSelection: '',
       lastSelectionAt: 0,
+      lastSelectionAttemptAt: 0,
       selectionDisposable: null,
-      selectionHandler: rememberCurrentSelection
+      selectionStartHandler: markSelectionStart,
+      selectionMoveHandler: markSelectionMove,
+      selectionHandler: rememberFinishedSelection,
+      selectionFinishHandler: rememberFinishedSelection
     };
     this.views.set(session.id, view);
     if (typeof term.onSelectionChange === 'function') {
-      view.selectionDisposable = term.onSelectionChange(() => this.rememberSelection(session.id));
+      view.selectionDisposable = term.onSelectionChange(rememberSelectionChange);
     }
     return term;
   },
@@ -508,15 +530,30 @@ const TerminalView = {
     });
   },
 
-  rememberSelection(id) {
+  rememberSelection(id, opts) {
     const v = this.views.get(id);
     if (!v || typeof v.term.getSelection !== 'function') return '';
+    if (opts && opts.markAttempt) v.lastSelectionAttemptAt = Date.now();
     const text = v.term.getSelection();
     if (text) {
       v.lastSelection = text;
       v.lastSelectionAt = Date.now();
     }
     return text;
+  },
+
+  rememberSelectionSoon(id, opts) {
+    const remember = () => this.rememberSelection(id, opts);
+    remember();
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(remember);
+    setTimeout(remember, 0);
+  },
+
+  hasRecentSelectionActivity(id, maxAgeMs) {
+    const v = this.views.get(id);
+    if (!v) return false;
+    const since = Math.max(v.lastSelectionAt || 0, v.lastSelectionAttemptAt || 0);
+    return since > 0 && Date.now() - since < maxAgeMs;
   },
 
   getSelection(id, opts) {
@@ -528,7 +565,7 @@ const TerminalView = {
       v.lastSelectionAt = Date.now();
       return text;
     }
-    if (opts && opts.allowCached && v.lastSelection && Date.now() - v.lastSelectionAt < 5000) {
+    if (opts && opts.allowCached && v.lastSelection && Date.now() - v.lastSelectionAt < 30000) {
       return v.lastSelection;
     }
     return '';
@@ -537,9 +574,10 @@ const TerminalView = {
   clearSelection(id) {
     const v = this.views.get(id);
     if (!v) return;
+    if (typeof v.term.clearSelection === 'function') v.term.clearSelection();
     v.lastSelection = '';
     v.lastSelectionAt = 0;
-    if (typeof v.term.clearSelection === 'function') v.term.clearSelection();
+    v.lastSelectionAttemptAt = 0;
   },
 
   // xterm 의 paste 경로 사용 (bracketed paste 처리 포함) → onData → pty
@@ -563,8 +601,14 @@ const TerminalView = {
         try { v.selectionDisposable.dispose(); } catch (_) {}
       }
       if (v.selectionHandler) {
-        v.holder.removeEventListener('pointerup', v.selectionHandler);
-        v.holder.removeEventListener('mouseup', v.selectionHandler);
+        v.holder.removeEventListener('pointerdown', v.selectionStartHandler, true);
+        v.holder.removeEventListener('mousedown', v.selectionStartHandler, true);
+        v.holder.removeEventListener('pointermove', v.selectionMoveHandler, true);
+        v.holder.removeEventListener('mousemove', v.selectionMoveHandler, true);
+        v.holder.removeEventListener('pointerup', v.selectionHandler, true);
+        v.holder.removeEventListener('mouseup', v.selectionHandler, true);
+        window.removeEventListener('pointerup', v.selectionFinishHandler, true);
+        window.removeEventListener('mouseup', v.selectionFinishHandler, true);
       }
       this._detachWebgl(v);
       v.term.dispose();
