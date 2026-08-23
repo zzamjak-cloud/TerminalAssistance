@@ -93,4 +93,8 @@ src/renderer/       프론트엔드 (순수 웹, 번들러 없음)
 
 ## 라이선스
 
-MIT
+GNU General Public License v3.0 only (`GPL-3.0-only`).
+
+이 프로젝트는 오픈소스 상태를 강제하기 위해 GPLv3로 배포됩니다. 복사, 수정, 배포, 파생물 배포는 GPLv3 조건을 따라야 하며, 파생물 역시 동일한 라이선스와 소스 공개 의무를 유지해야 합니다.
+
+저작권 및 저작자 처리는 [AUTHORS.md](AUTHORS.md)를 참고하세요.

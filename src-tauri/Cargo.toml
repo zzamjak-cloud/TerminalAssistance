@@ -1,9 +1,9 @@
 [package]
 name = "terminal-assistance"
-version = "0.10.5"
+version = "0.10.6"
 description = "AI ?쒕???硫???꾨줈?앺듃 ?곕????뚰겕?ㅽ럹?댁뒪"
 authors = ["zzamjak-cloud"]
-license = "MIT"
+license = "GPL-3.0-only"
 edition = "2021"
 
 [build-dependencies]
