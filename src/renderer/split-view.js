@@ -246,7 +246,7 @@ Object.assign(App, {
         const name = document.createElement('span');
         name.className = 'pane-pick-name';
         name.textContent = App.sessionLabel(sess);
-        if (proj) name.style.color = proj.color;
+        if (proj && proj.color) name.style.color = Theme.adjustText(proj.color);
         btn.dataset.sid = sess.id; // 상태 전이 시 태그만 교체하기 위한 좌표
         btn.appendChild(name);
         btn.appendChild(statusTag(sess.status));

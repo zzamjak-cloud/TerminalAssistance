@@ -91,7 +91,10 @@ const TerminalView = {
   _cellColor(cell, kind, term, bold) {
     const cap = kind === 'fg' ? 'Fg' : 'Bg';
     const theme = (term.options && term.options.theme) || {};
-    const fallback = kind === 'fg' ? (theme.foreground || '#d5d9e4') : (theme.background || '#14161c');
+    const themeFallback = Theme.termTheme();
+    const fallback = kind === 'fg'
+      ? (theme.foreground || themeFallback.foreground)
+      : (theme.background || themeFallback.background);
     try {
       if (typeof cell[`is${cap}RGB`] === 'function' && cell[`is${cap}RGB`]()) {
         return this._rgbColor(cell[`get${cap}Color`]());
@@ -217,7 +220,7 @@ const TerminalView = {
     const term = new Terminal({
       fontSize: fontSize || 13,
       fontFamily: 'Menlo, Consolas, "D2Coding", "Cascadia Mono", monospace',
-      theme: { background: '#14161c', foreground: '#d5d9e4' },
+      theme: Theme.termTheme(),
       scrollback: 5000,
       cursorBlink: true
     });
@@ -843,6 +846,14 @@ const TerminalView = {
   setFontSize(n) {
     for (const v of this.views.values()) v.term.options.fontSize = n;
     this.fitActive();
+  },
+
+  // 테마 변경 시 살아있는 모든 터미널의 배경/전경/ANSI 팔레트를 갈아끼운다.
+  applyTheme() {
+    const theme = Theme.termTheme();
+    for (const v of this.views.values()) {
+      try { v.term.options.theme = theme; } catch (_) {}
+    }
   },
 
   dispose(id) {

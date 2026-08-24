@@ -394,8 +394,24 @@ Object.assign(App, {
     // 연동 설치 여부는 외부 설정 파일(~/.claude, ~/.codex)이 진실 — 열 때마다 조회
     let hooks = { claude: false, codex: false };
     try { hooks = await ta.hooksStatus(); } catch (_) {}
+    const themeChips = Theme.PRESETS.map((p) => `
+      <button type="button" class="theme-chip${Theme.state.id === p.id ? ' selected' : ''}" data-theme-id="${p.id}" title="${p.bg} / ${p.accent}">
+        <span class="theme-swatch" style="background:${p.bg}"><i class="theme-dot" style="background:${p.accent}"></i></span>
+        <span class="theme-chip-name">${escapeHtml(p.name)}</span>
+      </button>`).join('');
     App.modal(`
       <h3>설정</h3>
+      <label>테마</label>
+      <div class="theme-grid" id="m-theme-grid">${themeChips}</div>
+      <label>직접 지정 (배경 / 강조색)</label>
+      <div class="theme-custom">
+        <input type="color" id="m-theme-bg-pick" value="${Theme.state.bg}" title="배경색">
+        <input type="text" id="m-theme-bg" class="hex" value="${Theme.state.bg}" placeholder="#14161c" spellcheck="false">
+        <input type="color" id="m-theme-accent-pick" value="${Theme.state.accent}" title="강조색">
+        <input type="text" id="m-theme-accent" class="hex" value="${Theme.state.accent}" placeholder="#2e6cd6" spellcheck="false">
+        <button id="m-theme-apply">적용</button>
+      </div>
+      <div class="form-help">배경 밝기로 라이트/다크를 판별해 글자·상태·프로젝트 색을 자동 보정합니다. 테마는 즉시 적용되며 저장 버튼과 무관하게 유지됩니다.</div>
       <label>글꼴 크기</label><input type="number" id="m-font" min="9" max="24" value="${st.fontSize}">
       <label>셸 (비우면 OS 기본)</label><input type="text" id="m-shell" placeholder="${App.state.platform === 'windows' ? 'powershell.exe' : '/bin/zsh'}" value="${escapeHtml(st.shell || '')}">
       <div class="check"><input type="checkbox" id="m-notify" ${st.notifyOnDone ? 'checked' : ''}><label for="m-notify" style="margin:0">비활성 세션 작업 완료 시 알림</label></div>
@@ -405,6 +421,30 @@ Object.assign(App, {
       <div class="check"><input type="checkbox" id="m-hook-codex" ${hooks.codex ? 'checked' : ''}><label for="m-hook-codex" style="margin:0">Codex 알림 (~/.codex/config.toml 병합, 백업 생성)</label></div>
       <div class="modal-actions"><button id="m-cancel">취소</button><button id="m-save">저장</button></div>`,
       (m, close) => {
+        // ── 테마: 즉시 적용 (렌더러 로컬 설정이라 저장 버튼과 별도로 유지된다) ──
+        const bgHex = m.querySelector('#m-theme-bg');
+        const accentHex = m.querySelector('#m-theme-accent');
+        const bgPick = m.querySelector('#m-theme-bg-pick');
+        const accentPick = m.querySelector('#m-theme-accent-pick');
+        const syncThemeInputs = () => {
+          bgHex.value = Theme.state.bg;
+          accentHex.value = Theme.state.accent;
+          bgPick.value = Theme.state.bg;
+          accentPick.value = Theme.state.accent;
+          for (const b of m.querySelectorAll('.theme-chip')) {
+            b.classList.toggle('selected', b.dataset.themeId === Theme.state.id);
+          }
+        };
+        for (const btn of m.querySelectorAll('.theme-chip')) {
+          btn.onclick = () => { Theme.set(btn.dataset.themeId); syncThemeInputs(); };
+        }
+        bgPick.oninput = () => { bgHex.value = bgPick.value; };
+        accentPick.oninput = () => { accentHex.value = accentPick.value; };
+        m.querySelector('#m-theme-apply').onclick = () => {
+          if (!Theme.set('custom', bgHex.value, accentHex.value)) { alert('색상은 #RRGGBB 형식으로 입력하세요.'); return; }
+          syncThemeInputs();
+        };
+
         m.querySelector('#m-cancel').onclick = close;
         m.querySelector('#m-save').onclick = async () => {
           const patch = {

@@ -134,6 +134,15 @@ const App = {
     setTimeout(() => App.checkUpdate(), 2500);
   },
 
+  // 테마 변경 후 — JS 로 직접 칠한 색(프로젝트 이름 등)을 새 테마 기준으로 다시 계산
+  refreshThemedColors() {
+    if (!App.state.projects.length && !App.state.sessions.length) return;
+    renderSidebar();
+    App.renderTopbar();
+    App.renderEmptyState();
+    if (App.split && App.split.mode !== 'single') App.renderPanePickers();
+  },
+
   renderAll() {
     renderSidebar();
     App.renderExplorer();
@@ -232,7 +241,7 @@ const App = {
     el.textContent = '';
     const h = document.createElement('h2');
     h.textContent = proj.name;
-    h.style.color = proj.color;
+    h.style.color = proj.color ? Theme.adjustText(proj.color) : '';
     const p = document.createElement('p');
     p.textContent = '아직 이 프로젝트에 세션이 없습니다.';
     const btn = document.createElement('button');

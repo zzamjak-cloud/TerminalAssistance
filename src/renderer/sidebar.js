@@ -158,7 +158,8 @@ function renderSidebar() {
     const name = document.createElement('span');
     name.className = 'project-name';
     name.textContent = p.name;
-    name.style.color = p.color;
+    // 라이트 테마에서 밝은 프로젝트 색이 배경에 묻히지 않도록 명도를 눌러 쓴다
+    name.style.color = p.color ? Theme.adjustText(p.color) : '';
     row.appendChild(name);
 
     // 접힌 상태에서도 세션 상태가 보이도록 미니 점 요약
