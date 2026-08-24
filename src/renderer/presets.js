@@ -19,22 +19,24 @@ function renderPresets() {
   const bar = document.getElementById('preset-bar');
   // 고정 요소(+ 프리셋 버튼)는 유지하고 칩만 재렌더
   bar.querySelectorAll('.preset-chip').forEach((el) => el.remove());
-  // 분할 중에는 칩을 각 패널의 프리셋 바가 세션별로 표시 — 상단 고정바에는 + 프리셋 버튼만.
+  // 분할 중에는 전역 프리셋만 상단 고정바에 남기고, 프로젝트 전용 프리셋은 각 패널의
+  // 프리셋 바가 그 패널 세션 기준으로 표시한다 (전역은 포커스 패널 세션에 실행).
   // 프리셋 추가/수정/정렬 후 이 함수만 호출하는 경로(modals·movePreset)를 위해 패널 바도 함께 갱신.
   if (App.renderPanePresets) App.renderPanePresets();
-  if (App.split && App.split.mode !== 'single') return;
   const { presets, activeId, sessions } = App.state;
+  const split = !!(App.split && App.split.mode !== 'single');
   const active = sessions.find((s) => s.id === activeId);
   const projectId = active ? active.projectId : null;
 
   const globals = presets.filter((p) => !p.projectId);
-  const projs = presets.filter((p) => p.projectId && p.projectId === projectId);
+  const projs = split ? [] : presets.filter((p) => p.projectId && p.projectId === projectId);
 
   const makeChip = (p, isGlobal) => {
     const el = document.createElement('button');
     el.className = 'preset-chip' + (isGlobal ? ' global' : '');
     el.dataset.id = p.id;
-    el.title = p.command + '\n(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)';
+    el.title = p.command + (isGlobal && split ? '\n대상: 포커스된 패널의 세션' : '')
+      + '\n(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)';
     el.textContent = p.label;
 
     el.onclick = (e) => App.runPreset(p, !e.shiftKey); // Shift = 입력만, 그 외 즉시 실행

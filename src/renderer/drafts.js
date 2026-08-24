@@ -1,5 +1,7 @@
-// 하단 프롬프트 작성기: 즉시 전송, 세션별 예약 FIFO, 기존 프로젝트 초안을 함께 관리한다.
-// 예약은 기존 drafts 맵의 queued:<sessionId> 키를 사용해 백엔드 형식 변경 없이 영속화한다.
+// 패널별 프롬프트 작성기: 즉시 전송, 세션별 예약 FIFO, 기존 프로젝트 초안을 함께 관리한다.
+// 분할 중에는 패널마다 입력창이 따로 있으므로 모든 API 는 대상 세션 id 를 인자로 받는다
+// (생략하면 활성 세션). 예약은 기존 drafts 맵의 queued:<sessionId> 키를 사용해
+// 백엔드 형식 변경 없이 영속화한다.
 Object.assign(App, {
   _draftSaveChains: new Map(), // 같은 키의 저장 순서를 보장해 늦은 응답이 최신 큐를 덮지 않게 한다
   _queueDispatching: new Set(),
@@ -14,26 +16,31 @@ Object.assign(App, {
     return `queued:${sessionId}`;
   },
 
-  rememberComposerText(text) {
-    const id = App.state.activeId;
-    if (id) App._composerTexts.set(id, text);
+  rememberComposerText(sessionId, text) {
+    if (sessionId) App._composerTexts.set(sessionId, text);
   },
 
-  setComposerText(text) {
-    const id = App.state.activeId;
-    if (id) App._composerTexts.set(id, text);
-    if (TerminalView.promptInput) {
-      TerminalView.promptInput.value = text;
-      TerminalView.resizePromptInput();
+  setComposerText(sessionId, text) {
+    const id = sessionId || App.state.activeId;
+    if (!id) return;
+    App._composerTexts.set(id, text);
+    const c = TerminalView.composerForSession(id);
+    if (c) {
+      c.input.value = text;
+      TerminalView.resizeComposer(c);
     }
   },
 
-  composerText() {
-    return TerminalView.promptInput ? TerminalView.promptInput.value : '';
+  // 화면에 보이는 패널의 입력값이 우선 — 안 보이는 세션은 기억해 둔 텍스트를 쓴다
+  composerText(sessionId) {
+    const id = sessionId || App.state.activeId;
+    if (!id) return '';
+    const c = TerminalView.composerForSession(id);
+    return c ? c.input.value : (App._composerTexts.get(id) || '');
   },
 
-  clearComposerText() {
-    App.setComposerText('');
+  clearComposerText(sessionId) {
+    App.setComposerText(sessionId, '');
   },
 
   // 키별 IPC 저장을 직렬화한다. 호출 시점의 배열을 복사해 이후 로컬 변경과 분리한다.
@@ -49,19 +56,21 @@ Object.assign(App, {
     return task;
   },
 
+  // 화면에 보이는 패널 전부의 예약·초안 목록을 각자의 입력창 위에 그린다
   renderComposerQueue() {
-    const el = document.getElementById('terminal-prompt-list');
-    if (!el) return;
+    for (let i = 0; i < 4; i++) {
+      const c = TerminalView.composers[i];
+      if (c) App.renderPaneComposerQueue(c, App.paneSessionId(i));
+    }
+  },
+
+  renderPaneComposerQueue(c, id) {
+    const el = c.list;
     el.textContent = '';
-    const id = App.state.activeId;
     if (!id) {
       el.classList.add('hidden');
       return;
     }
-
-    const input = TerminalView.promptInput;
-    const remembered = App._composerTexts.get(id) || '';
-    if (input && input.value !== remembered) input.value = remembered;
 
     const queueKey = App.queueKey(id);
     const queued = App.state.drafts[queueKey] || [];
@@ -94,8 +103,8 @@ Object.assign(App, {
       const load = document.createElement('button');
       load.textContent = '불러오기';
       load.onclick = () => {
-        App.setComposerText(d.text);
-        if (TerminalView.promptInput) TerminalView.promptInput.focus();
+        App.setComposerText(id, d.text);
+        c.input.focus();
       };
       const remove = document.createElement('button');
       remove.className = 'composer-remove';
@@ -122,24 +131,24 @@ Object.assign(App, {
     }
   },
 
-  // Cmd/Ctrl+Enter 또는 전송 버튼은 상태와 관계없이 활성 세션에 즉시 실행한다.
-  sendComposerPrompt() {
-    const id = App.state.activeId;
-    const text = App.composerText();
+  // Cmd/Ctrl+Enter 또는 전송 버튼은 상태와 관계없이 그 패널의 세션에 즉시 실행한다.
+  sendComposerPrompt(sessionId) {
+    const id = sessionId || App.state.activeId;
+    const text = App.composerText(id);
     if (!id || !text.trim() || !TerminalView.views.has(id)) return;
     App.deliverDraft(id, text);
-    App.clearComposerText();
+    App.clearComposerText(id);
     App.renderComposerQueue();
   },
 
   // 진행중·허가 대기 상태만 예약한다. 이미 쉬는 세션은 기다릴 작업이 없으므로 즉시 전송한다.
-  async scheduleComposerPrompt() {
-    const id = App.state.activeId;
-    const text = App.composerText();
+  async scheduleComposerPrompt(sessionId) {
+    const id = sessionId || App.state.activeId;
+    const text = App.composerText(id);
     const session = App.state.sessions.find((s) => s.id === id);
     if (!session || !text.trim() || !TerminalView.views.has(id)) return;
     if (session.status === 'idle' || session.status === 'done') {
-      App.sendComposerPrompt();
+      App.sendComposerPrompt(id);
       return;
     }
     if (session.status !== 'running' && session.status !== 'waiting') return;
@@ -148,7 +157,7 @@ Object.assign(App, {
     const before = App.state.drafts[key] || [];
     const next = [...before, { id: newLocalId(), text }];
     App.state.drafts[key] = next;
-    App.clearComposerText();
+    App.clearComposerText(id);
     App.renderComposerQueue();
     try {
       await App.persistDraftList(key, next);
@@ -156,7 +165,7 @@ Object.assign(App, {
       // 같은 큐에 후속 예약이 추가된 경우 최신 배열을 보존한다.
       if (App.state.drafts[key] === next) {
         App.state.drafts[key] = before;
-        if (!App.composerText()) App.setComposerText(text);
+        if (!App.composerText(id)) App.setComposerText(id, text);
       }
       App.renderComposerQueue();
       console.warn('예약 저장 실패:', e);
@@ -215,16 +224,17 @@ Object.assign(App, {
     ta.write(sessionId, '\r');
   },
 
-  showComposerFanout() {
-    const text = App.composerText();
+  showComposerFanout(sessionId) {
+    const id = sessionId || App.state.activeId;
+    const text = App.composerText(id);
     if (!text.trim()) return;
     App.showFanoutModal(text, () => {
-      App.clearComposerText();
+      App.clearComposerText(id);
       App.renderComposerQueue();
     });
   },
 
-  // 기존 일괄 모달을 현재 하단 입력 텍스트 대상으로 사용한다.
+  // 기존 일괄 모달을 그 패널 입력 텍스트 대상으로 사용한다.
   showFanoutModal(text, onSuccess) {
     const alive = App.state.sessions.filter((s) => s.status !== 'exited');
     if (!text.trim() || !alive.length) return;

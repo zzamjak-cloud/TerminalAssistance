@@ -1,6 +1,6 @@
 {
   "name": "terminal-assistance",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "private": true,
   "license": "GPL-3.0-only",
   "description": "AI 시대의 멀티 프로젝트 터미널 워크스페이스 — 프로젝트 전환·명령 프리셋·세션 상태 시각화·이미지 첨부",

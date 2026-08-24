@@ -57,7 +57,7 @@ const App = {
       updateSessionStatus(s); // 전체 재구축 대신 해당 행만 갱신 (호버·드래그 유지)
       if (App.split.mode !== 'single') App.refreshPickerStatus(s); // 피커의 상태 태그만 최신화
       App.renderTopbar();
-      if (sessionId === App.state.activeId) App.renderComposerQueue();
+      App.renderComposerQueue(); // 보이는 패널 전부의 예약 목록 갱신
     });
     ta.onExit(({ sessionId }) => {
       TerminalView.write(sessionId, '\r\n\x1b[31m[세션 종료됨 — 닫기(✕)로 정리]\x1b[0m\r\n');
@@ -140,7 +140,7 @@ const App = {
     renderSidebar();
     App.renderTopbar();
     App.renderEmptyState();
-    if (App.split && App.split.mode !== 'single') App.renderPanePickers();
+    if (App.split && App.split.mode !== 'single') { App.renderPanePickers(); App.renderPanePresets(); }
   },
 
   renderAll() {
@@ -251,20 +251,28 @@ const App = {
     el.append(h, p, btn);
   },
 
-  // 활성 세션 브랜치 갱신 — 값이 바뀐 경우에만 헤더 재렌더
+  // 화면에 보이는 세션(활성 + 분할 패널)의 브랜치 갱신 — 값이 바뀐 경우에만 재렌더.
+  // 분할 패널 헤더도 브랜치를 표시하므로 활성 세션 하나만 폴링하면 나머지가 비어 보인다.
   async refreshBranch() {
-    const s = App.state.sessions.find((x) => x.id === App.state.activeId);
-    if (!s) return;
-    try {
-      const b = await ta.gitBranch(s.cwd);
-      if (App.state.branches[s.id] !== b) {
-        App.state.branches[s.id] = b;
-        App.renderTopbar();
-      }
-    } catch (_) { /* 조회 실패는 무시 */ }
+    const ids = new Set([App.state.activeId, ...App.splitVisiblePanes()].filter(Boolean));
+    let changed = false;
+    for (const id of ids) {
+      const s = App.state.sessions.find((x) => x.id === id);
+      if (!s) continue;
+      try {
+        const b = await ta.gitBranch(s.cwd);
+        if (App.state.branches[s.id] !== b) {
+          App.state.branches[s.id] = b;
+          changed = true;
+        }
+      } catch (_) { /* 조회 실패는 무시 */ }
+    }
+    if (!changed) return;
+    App.renderTopbar();
+    if (App.split.mode !== 'single') App.renderPanePresets();
   },
 
-  // ── 코덱스 남은 사용량 (우측 패널 최상단 헤더 표시) ──
+  // ── 코덱스 남은 사용량 (상단바 표시) ──
   // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 최근 12시간 내 기록이 있을 때만 표시.
   async pollCodexUsage() {
     const el = document.getElementById('panel-codex');
@@ -290,7 +298,7 @@ const App = {
       `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleTimeString()}`;
   },
 
-  // ── 시스템 메모리 폴링 (우측 패널 헤더 표시) ──
+  // ── 시스템 메모리 폴링 (상단바 표시) ──
   async pollStatus() {
     App.refreshBranch(); // 같은 2초 주기에 브랜치도 함께 갱신 (checkout 반영)
     try {

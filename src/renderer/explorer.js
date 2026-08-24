@@ -122,13 +122,13 @@ Object.assign(App, {
         hover = el;
         if (hover) hover.classList.add('drop-hover');
       };
-      // 포인터 아래의 드롭 대상: 메모·하단 프롬프트 입력창 또는 터미널 영역
+      // 포인터 아래의 드롭 대상: 메모·패널 프롬프트 입력창 또는 터미널 영역
       const findTarget = (ev) => {
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
         if (!el) return null;
         const memo = el.closest('.memo-modal-editor');
         if (memo) return memo;
-        const prompt = el.closest('#terminal-prompt-input');
+        const prompt = el.closest('.pane-prompt-input');
         if (prompt) return prompt;
         // 헤더·빈 목록·문서 행 어디에 올려도 패널 전체를 하나의 드롭 지점으로 취급한다.
         const planPanel = el.closest('#plan-panel');
@@ -173,7 +173,7 @@ Object.assign(App, {
           App.insertMemoPlainText(target, quoted + ' ');
           target.dispatchEvent(new Event('input', { bubbles: true }));
         } else if (target && target.tagName === 'TEXTAREA') {
-          // 하단 프롬프트에 드롭 — 끝에 경로를 덧붙인다
+          // 패널 프롬프트에 드롭 — 끝에 경로를 덧붙인다
           target.value = target.value + (target.value && !/\s$/.test(target.value) ? ' ' : '') + quoted + ' ';
           target.dispatchEvent(new Event('input'));
         } else if (target && App.state.activeId) {

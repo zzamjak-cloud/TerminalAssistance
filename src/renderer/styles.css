@@ -247,6 +247,7 @@ button:disabled:hover { border-color: var(--border); }
 }
 #active-info { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 #topbar-actions { display: flex; align-items: center; gap: 6px; }
+#topbar-actions .hidden { display: none; }
 
 /* ── 분할 뷰 전환 버튼 (단일/좌우/상하/2×2) ── */
 #split-controls { display: flex; gap: 3px; }
@@ -348,13 +349,18 @@ button:disabled:hover { border-color: var(--border); }
   grid-template-columns: calc(var(--split-col) - 2px) 4px 1fr;
   grid-template-rows: calc(var(--split-row) - 2px) 4px 1fr;
 }
-.term-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: none; }
-#term-pane-0 { display: block; grid-area: 1 / 1; }
-#term-area.split-h #term-pane-1 { display: block; grid-area: 1 / 3; }
-#term-area.split-v #term-pane-1 { display: block; grid-area: 3 / 1; }
-#term-area.split-grid #term-pane-1 { display: block; grid-area: 1 / 3; }
-#term-area.split-grid #term-pane-2 { display: block; grid-area: 3 / 1; }
-#term-area.split-grid #term-pane-3 { display: block; grid-area: 3 / 3; }
+.term-pane {
+  position: relative; min-width: 0; min-height: 0; overflow: hidden;
+  display: none; flex-direction: column;
+}
+/* 패널 본문 = 터미널 holder 영역. 아래는 그 패널 전용 프롬프트 작성기 */
+.pane-body { position: relative; flex: 1; min-height: 0; }
+#term-pane-0 { display: flex; grid-area: 1 / 1; }
+#term-area.split-h #term-pane-1 { display: flex; grid-area: 1 / 3; }
+#term-area.split-v #term-pane-1 { display: flex; grid-area: 3 / 1; }
+#term-area.split-grid #term-pane-1 { display: flex; grid-area: 1 / 3; }
+#term-area.split-grid #term-pane-2 { display: flex; grid-area: 3 / 1; }
+#term-area.split-grid #term-pane-3 { display: flex; grid-area: 3 / 3; }
 /* 분할 중 포커스 패널: 상단 파랑 바 (QuickFolder 관례) */
 #term-area.split-h .term-pane.focused,
 #term-area.split-v .term-pane.focused,
@@ -391,49 +397,82 @@ button:disabled:hover { border-color: var(--border); }
   flex: 1; min-width: 0; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* 패널별 프리셋 바 (분할 중) — 한 줄 고정, 넘치면 가로 스크롤 */
+/* 패널 헤더 바 (분할 중) — 한 줄 고정. 드롭다운이 바깥으로 열려야 하므로 클리핑하지 않는다 */
 .pane-preset-bar {
   position: absolute; top: 4px; left: 8px; right: 4px; height: 26px;
   display: flex; gap: 6px; align-items: center;
-  overflow-x: auto; overflow-y: hidden;
+  overflow: visible;
   z-index: 3;
 }
-.pane-preset-bar::-webkit-scrollbar { height: 3px; }
-.pane-preset-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-.preset-chip.mini { flex: none; padding: 2px 10px; font-size: 11px; }
+/* 헤더 제목 — 프로젝트 색으로 '상태 · 프로젝트명 — 세션명 ⎇브랜치' 표시 (패널 구분용) */
+.pane-preset-label {
+  flex: 0 1 auto; display: flex; align-items: center; gap: 6px;
+  min-width: 0;
+  padding-right: 9px; border-right: 1px solid var(--border);
+  font-size: 11px; font-weight: 700; overflow: hidden;
+}
+.ppl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ppl-branch { flex: none; font-weight: 400; opacity: .72; }
+/* 프로젝트 프리셋 드롭다운 — 칩을 늘어놓지 않고 접어 둬 패널 폭을 아낀다 */
+.pane-preset-dd { position: relative; flex: none; }
+.pane-preset-toggle {
+  padding: 2px 9px; font-size: 11px; border-radius: 12px;
+  color: var(--fg-dim); white-space: nowrap;
+}
+.pane-preset-toggle:hover, .pane-preset-toggle.open { color: var(--fg); border-color: var(--accent); }
+.pane-preset-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 12;
+  min-width: 170px; max-width: 280px; max-height: 190px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 1px; padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.pane-preset-menu.hidden { display: none; }
+.pane-preset-item {
+  border: none; background: none; color: var(--fg);
+  text-align: left; padding: 5px 8px; font-size: 11px; border-radius: 5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pane-preset-item:hover { background: var(--bg-hover-hi); }
+.pane-preset-item.dragging { opacity: .35; }
 /* 프리셋 바가 있는 패널은 터미널을 그만큼 아래로 */
 .term-pane.with-presets .term-holder { top: 36px; }
 
-/* xterm의 숨은 textarea와 분리된 일반 프롬프트 입력창 — IME/백스페이스는 브라우저 기본 동작을 쓴다. */
-#terminal-prompt {
+/* xterm의 숨은 textarea와 분리된 패널 전용 프롬프트 입력창 — 분할 패널마다 독립.
+   IME/백스페이스는 브라우저 기본 동작을 쓴다. */
+.pane-prompt {
+  flex: none;
   display: flex; flex-direction: column; gap: 6px;
-  padding: 8px 10px;
+  padding: 8px 10px 8px 8px;
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
 }
-#terminal-prompt-compose { display: flex; align-items: stretch; gap: 8px; }
-#terminal-prompt-input {
+.pane-prompt.hidden { display: none; }
+.pane-prompt-compose { display: flex; align-items: stretch; gap: 8px; }
+.pane-prompt-input {
   flex: 1; min-width: 0; resize: none;
-  max-height: 50vh; overflow-y: hidden; padding: 7px 9px;
+  overflow-y: hidden; padding: 7px 9px;
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--fg);
   font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   outline: none;
 }
-#terminal-prompt-input:focus { border-color: var(--accent); }
-#terminal-prompt-input:disabled { opacity: .55; cursor: not-allowed; }
-#terminal-prompt-actions {
+.pane-prompt-input:focus { border-color: var(--accent); }
+.pane-prompt-input:disabled { opacity: .55; cursor: not-allowed; }
+.pane-prompt-actions {
   display: flex; flex: none; flex-direction: column; align-self: flex-start; align-items: stretch;
   width: 54px; gap: 3px;
 }
-#terminal-prompt-actions button { flex: none; min-height: 0; padding: 0 8px; font-size: 11px; }
-#terminal-prompt-send { background: var(--accent-fill); border-color: var(--accent-strong); font-weight: 700; }
-#terminal-prompt-schedule { color: var(--waiting); border-color: var(--waiting); }
-#terminal-prompt-list {
+.pane-prompt-actions button { flex: none; min-height: 0; padding: 0 8px; font-size: 11px; }
+.pp-send { background: var(--accent-fill); border-color: var(--accent-strong); font-weight: 700; }
+.pp-schedule { color: var(--waiting); border-color: var(--waiting); }
+.pane-prompt-list {
   max-height: 132px; overflow-y: auto;
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg);
 }
+.pane-prompt-list.hidden { display: none; }
 .composer-item { display: flex; align-items: center; gap: 7px; padding: 5px 7px; font-size: 11px; }
 .composer-item + .composer-item { border-top: 1px solid var(--border); }
 .composer-kind { flex: none; color: var(--waiting); font-weight: 700; }
@@ -739,7 +778,7 @@ body.sorting * { cursor: grabbing !important; }
 }
 #prompt-panel.hidden { display: none; }
 
-/* 패널 최상단 사용량 헤더: 코덱스 남은 사용량 + 메모리 */
+/* 패널 최상단 헤더: 접기 버튼 (사용량 게이지는 #topbar-actions 로 이동) */
 #usage-head {
   flex: none;
   display: flex; align-items: center; gap: 6px;

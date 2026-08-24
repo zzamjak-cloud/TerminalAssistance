@@ -18,6 +18,20 @@ Object.assign(App, {
   // 현재 모드에서 화면에 보이는 패널들의 세션 배정 (인덱스 = 패널 번호)
   splitVisiblePanes() { return App.split.panes.slice(0, App.splitPaneCount()); },
 
+  // 패널이 담당하는 세션 — 단일 화면은 0번 패널이 활성 세션을 맡는다.
+  // 패널마다 독립된 프롬프트 작성기의 전송 대상 판별에 쓴다.
+  paneSessionId(paneIdx) {
+    if (App.split.mode === 'single') return paneIdx === 0 ? App.state.activeId : null;
+    return paneIdx < App.splitPaneCount() ? App.split.panes[paneIdx] : null;
+  },
+
+  // 세션이 보이는 패널 번호 (화면에 없으면 -1)
+  paneIndexForSession(sessionId) {
+    if (!sessionId) return -1;
+    if (App.split.mode === 'single') return sessionId === App.state.activeId ? 0 : -1;
+    return App.splitVisiblePanes().indexOf(sessionId);
+  },
+
   saveSplitState() {
     const s = App.split;
     localStorage.setItem('ta-split-mode', s.mode);
@@ -154,8 +168,10 @@ Object.assign(App, {
     App.renderPanePresets();
   },
 
-  // 패널별 프리셋 바: 전역 + 그 패널 세션 프로젝트의 프리셋 칩 (분할 중에만).
-  // 클릭 대상은 해당 패널 세션 — 상단 고정바 칩과 동작 규칙(클릭/Shift/우클릭)은 동일.
+  // 패널별 헤더 바: '상태태그 + 프로젝트명 — 세션명 ⎇브랜치' + 프로젝트 전용 프리셋 드롭다운.
+  // 제목은 프로젝트 색으로 칠해 여러 패널을 띄웠을 때 어느 프로젝트인지 한눈에 구분되게 한다.
+  // 프로젝트 프리셋은 칩을 늘어놓으면 좁은 패널 폭을 다 먹으므로 드롭다운 하나로 접어 둔다.
+  // 전역 프리셋은 상단 고정바에 한 번만 두고 포커스 패널 세션에 실행된다.
   renderPanePresets() {
     const s = App.split;
     const n = App.splitPaneCount();
@@ -164,51 +180,98 @@ Object.assign(App, {
       const pane = document.getElementById('term-pane-' + i);
       let bar = pane.querySelector('.pane-preset-bar');
       const sid = s.mode !== 'single' && i < n ? s.panes[i] : null;
-      const sess = sid && App.state.sessions.find((x) => x.id === sid);
-      let chips = [];
-      if (sess) {
-        const globals = App.state.presets.filter((p) => !p.projectId);
-        const projs = App.state.presets.filter((p) => p.projectId && p.projectId === sess.projectId);
-        chips = [...globals.map((p) => [p, true]), ...projs.map((p) => [p, false])];
-      }
-      if (!chips.length) {
+      const sess = sid ? App.state.sessions.find((x) => x.id === sid) : null;
+      if (!sess) {
         if (bar) { bar.remove(); layoutChanged = true; }
         if (pane.classList.contains('with-presets')) { pane.classList.remove('with-presets'); layoutChanged = true; }
         continue;
       }
-      // 내용이 같으면 재생성하지 않는다 — mousedown~click 사이 재렌더는 클릭을 씹는다.
-      // 그룹 플래그(g/p)도 포함해 전역↔프로젝트 전환 시 .global 스타일이 stale 로 남지 않게 한다.
-      const sig = sid + '|' + chips.map(([p, g]) => p.id + ':' + p.label + ':' + p.command + ':' + (g ? 'g' : 'p')).join(',');
+      const proj = App.state.projects.find((p) => p.id === sess.projectId);
+      const branch = App.state.branches[sess.id] || '';
+      const presets = App.state.presets.filter((p) => p.projectId && p.projectId === sess.projectId);
+      // 내용이 같으면 재생성하지 않는다 — mousedown~click 사이 재렌더는 클릭을 씹고,
+      // 열려 있는 드롭다운도 닫혀 버린다. 상태는 서명에서 제외하고 태그만 교체한다(refreshPickerStatus).
+      const sig = [sid, App.sessionLabel(sess), branch, (proj && proj.color) || '', Theme.state.id,
+        presets.map((p) => p.id + ':' + p.label + ':' + p.command).join(',')].join('|');
       if (bar && bar.dataset.sig === sig) continue;
       if (!bar) {
         bar = document.createElement('div');
         bar.className = 'pane-preset-bar';
         pane.appendChild(bar);
-        // 상단 고정바와 같은 규칙의 드래그 정렬 (전역↔프로젝트 그룹 간 이동 금지).
-        // 바가 재생성될 때마다 새 엘리먼트에 다시 배선된다.
-        makeSortable({
-          container: bar,
-          itemSelector: '.preset-chip[data-id]',
-          axis: 'x',
-          canDrop: (srcEl, dstEl) => srcEl.classList.contains('global') === dstEl.classList.contains('global'),
-          onDrop: (srcId, dstId, before) => App.movePreset(srcId, dstId, before)
-        });
       }
       if (!pane.classList.contains('with-presets')) { pane.classList.add('with-presets'); layoutChanged = true; }
       bar.dataset.sig = sig;
       bar.textContent = '';
-      for (const [p, isGlobal] of chips) {
-        const el = document.createElement('button');
-        el.className = 'preset-chip mini' + (isGlobal ? ' global' : '');
-        el.dataset.id = p.id; // 드래그 정렬 좌표
-        el.title = p.command + '\n(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)';
-        el.textContent = p.label;
-        el.onclick = ((preset, targetSid) => (e) => App.runPreset(preset, !e.shiftKey, targetSid))(p, sid);
-        el.oncontextmenu = ((preset) => (e) => { e.preventDefault(); App.showPresetModal(preset); })(p);
-        bar.appendChild(el);
+
+      // ── 헤더 라벨 (상태 태그 + 제목 + 브랜치) ──
+      const label = document.createElement('span');
+      label.className = 'pane-preset-label';
+      label.dataset.sid = sid; // 상태 전이 시 태그만 교체하기 위한 좌표
+      if (proj && proj.color) label.style.color = Theme.adjustText(proj.color);
+      label.title = [App.sessionLabel(sess), branch && '⎇ ' + branch, sess.cwd].filter(Boolean).join('\n');
+      label.appendChild(statusTag(sess.status));
+      const nameEl = document.createElement('span');
+      nameEl.className = 'ppl-name';
+      nameEl.textContent = App.sessionLabel(sess);
+      label.appendChild(nameEl);
+      if (branch) {
+        const brEl = document.createElement('span');
+        brEl.className = 'ppl-branch';
+        brEl.textContent = '⎇ ' + branch;
+        label.appendChild(brEl);
       }
+      bar.appendChild(label);
+
+      // ── 프로젝트 전용 프리셋 드롭다운 ──
+      if (presets.length) bar.appendChild(App.buildPanePresetMenu(presets, sid));
     }
     if (layoutChanged) TerminalView.fitActive(); // 바 유무가 holder 높이를 바꾼다
+  },
+
+  // 프로젝트 프리셋 드롭다운 (패널 헤더용). 항목 동작은 상단 고정바 칩과 동일 —
+  // 클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정. 드래그로 순서 변경.
+  buildPanePresetMenu(presets, sid) {
+    const wrap = document.createElement('span');
+    wrap.className = 'pane-preset-dd';
+
+    const btn = document.createElement('button');
+    btn.className = 'pane-preset-toggle';
+    btn.textContent = `프리셋 ${presets.length} ▾`;
+    btn.title = '이 프로젝트의 명령 프리셋';
+    wrap.appendChild(btn);
+
+    const menu = document.createElement('div');
+    menu.className = 'pane-preset-menu hidden';
+    for (const p of presets) {
+      const item = document.createElement('button');
+      item.className = 'pane-preset-item';
+      item.dataset.id = p.id; // 드래그 정렬 좌표
+      item.title = p.command + '\n(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)';
+      item.textContent = p.label;
+      item.onclick = (e) => { App.closePanePresetMenus(); App.runPreset(p, !e.shiftKey, sid); };
+      item.oncontextmenu = (e) => { e.preventDefault(); App.closePanePresetMenus(); App.showPresetModal(p); };
+      menu.appendChild(item);
+    }
+    makeSortable({
+      container: menu,
+      itemSelector: '.pane-preset-item[data-id]',
+      axis: 'y',
+      onDrop: (srcId, dstId, before) => App.movePreset(srcId, dstId, before)
+    });
+    wrap.appendChild(menu);
+
+    btn.onclick = () => {
+      const willOpen = menu.classList.contains('hidden');
+      App.closePanePresetMenus();
+      menu.classList.toggle('hidden', !willOpen);
+      btn.classList.toggle('open', willOpen);
+    };
+    return wrap;
+  },
+
+  closePanePresetMenus() {
+    document.querySelectorAll('.pane-preset-menu').forEach((m) => m.classList.add('hidden'));
+    document.querySelectorAll('.pane-preset-toggle.open').forEach((b) => b.classList.remove('open'));
   },
 
   // 세션 미배정 패널의 세션 선택 피커 (다른 패널에 이미 표시 중인 세션은 제외)
@@ -257,10 +320,11 @@ Object.assign(App, {
     }
   },
 
-  // 상태 전이 시 피커의 해당 세션 태그만 교체 — 피커 전체 재생성은 진행 중인 클릭을 씹는다
+  // 상태 전이 시 피커·패널 헤더의 해당 세션 태그만 교체 — 전체 재생성은 진행 중인 클릭을 씹는다
   refreshPickerStatus(s) {
-    document.querySelectorAll(`.pane-pick-item[data-sid="${s.id}"] .status-tag`)
-      .forEach((tag) => tag.replaceWith(statusTag(s.status)));
+    document.querySelectorAll(
+      `.pane-pick-item[data-sid="${s.id}"] .status-tag, .pane-preset-label[data-sid="${s.id}"] .status-tag`
+    ).forEach((tag) => tag.replaceWith(statusTag(s.status)));
   },
 
   initSplitUI() {
@@ -274,10 +338,15 @@ Object.assign(App, {
         // 여기서 focusPane → renderSplit 을 타면 대상이 재생성돼 mousedown 타깃이 분리되고
         // click 이 발화하지 않아 첫 클릭이 씹힌다. (칩이 아닌 프리셋 바 여백은 포커스 이동 허용 —
         // sig 가 같아 바는 재생성되지 않으므로 안전)
-        if (e.target.closest('.pane-picker') || e.target.closest('.preset-chip')) return;
+        if (e.target.closest('.pane-picker') || e.target.closest('.preset-chip')
+          || e.target.closest('.pane-preset-dd')) return;
         App.focusPane(i);
       }, true);
     }
+    // 드롭다운 바깥 클릭 = 닫기 (캡처 단계에서 받아 패널 포커스 이동과 순서 무관하게 동작)
+    document.addEventListener('mousedown', (e) => {
+      if (!e.target.closest('.pane-preset-dd')) App.closePanePresetMenus();
+    }, true);
     // 스플리터 드래그 — QuickFolder 와 같이 컨테이너 rect 기준 비율 계산, 0.2~0.8 클램프
     const wireDivider = (el, key, clientProp, sizeProp, rectStart) => {
       el.onmousedown = (e) => {

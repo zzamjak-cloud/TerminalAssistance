@@ -139,7 +139,9 @@ src-tauri/          Rust 백엔드
 src/renderer/       프론트엔드 (순수 웹, 번들러 없음)
   terminal-view.js  xterm.js 세션 뷰 (비활성 세션도 버퍼 유지 → 전환 비용 0)
   sidebar.js        프로젝트/세션 목록 + 상태 시각화
-  presets.js        명령 프리셋 바
+  presets.js        명령 프리셋 바 (전역)
+  split-view.js     분할 패널 배치·패널 헤더·프로젝트 프리셋 드롭다운
+  drafts.js         패널별 프롬프트 작성기 (즉시 전송·예약 FIFO·일괄 전송)
   theme.js          배경·강조색 2값에서 전체 팔레트 파생 (라이트/다크 자동 판별)
   app.js            상태·모달·업데이트 확인
 ```

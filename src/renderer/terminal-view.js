@@ -7,59 +7,138 @@ const TerminalView = {
   views: new Map(), // sessionId → { term, fit, holder, webgl, frozen, queue }
   area: null,
   panes: [], // 분할 패널 컨테이너 (최대 2×2)
-  promptInput: null,
-  promptSend: null,
-  promptSchedule: null,
-  promptFanout: null,
+  paneBodies: [], // 패널별 터미널 영역 (holder 의 부모)
+  composers: [], // 패널별 프롬프트 작성기 — 패널마다 독립된 입력/예약 목록
 
   init() {
     this.area = document.getElementById('term-area');
     this.panes = [0, 1, 2, 3].map((i) => document.getElementById('term-pane-' + i));
-    this.promptInput = document.getElementById('terminal-prompt-input');
-    this.promptSend = document.getElementById('terminal-prompt-send');
-    this.promptSchedule = document.getElementById('terminal-prompt-schedule');
-    this.promptFanout = document.getElementById('terminal-prompt-fanout');
+    this.buildPaneShells();
+    window.addEventListener('resize', () => {
+      this.resizeAllComposers();
+      this.fitActive();
+    });
+    requestAnimationFrame(() => this.resizeAllComposers());
+  },
 
-    const sendPrompt = () => App.sendComposerPrompt();
+  // 각 패널 = 터미널 영역 + 전용 프롬프트 작성기. 분할하면 패널마다 따로 입력·전송한다.
+  buildPaneShells() {
+    this.paneBodies = [];
+    this.composers = [];
+    for (let i = 0; i < 4; i++) {
+      const pane = this.panes[i];
+      const body = document.createElement('div');
+      body.className = 'pane-body';
+      pane.appendChild(body);
+      this.paneBodies.push(body);
+      this.composers.push(this.buildComposer(i, pane));
+    }
+  },
+
+  buildComposer(paneIdx, pane) {
+    const root = document.createElement('div');
+    root.className = 'pane-prompt hidden';
+    const list = document.createElement('div');
+    list.className = 'pane-prompt-list hidden';
+    const compose = document.createElement('div');
+    compose.className = 'pane-prompt-compose';
+    const input = document.createElement('textarea');
+    input.className = 'pane-prompt-input';
+    input.rows = 2;
+    input.spellcheck = false;
+    input.disabled = true;
+    input.placeholder = '프롬프트 입력 (Enter 줄바꿈 · Cmd/Ctrl+Enter 전송)';
+    input.setAttribute('aria-label', '터미널 프롬프트 입력');
+    const actions = document.createElement('div');
+    actions.className = 'pane-prompt-actions';
+    const mkBtn = (cls, text, title) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = cls;
+      b.textContent = text;
+      b.title = title;
+      b.disabled = true;
+      return b;
+    };
+    const send = mkBtn('pp-send', '전송', '이 패널의 세션에 즉시 전송 (Cmd/Ctrl+Enter)');
+    const schedule = mkBtn('pp-schedule', '예약', '진행 중이면 완료 후 전송');
+    const fanout = mkBtn('pp-fanout', '일괄', '선택한 여러 세션에 즉시 전송');
+    actions.append(send, schedule, fanout);
+    compose.append(input, actions);
+    root.append(list, compose);
+    pane.appendChild(root);
+
+    const c = { paneIdx, root, list, input, send, schedule, fanout };
+    const target = () => App.paneSessionId(paneIdx); // 전송 시점의 배정 세션을 그때그때 조회
     // xterm의 키/IME 보정과 완전히 분리해 일반 textarea의 편집 감각을 유지한다.
-    this.promptInput.addEventListener('keydown', (ev) => {
+    input.addEventListener('keydown', (ev) => {
       ev.stopPropagation();
       if (ev.isComposing || ev.keyCode === 229) return;
       if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
         ev.preventDefault();
-        sendPrompt();
+        App.sendComposerPrompt(target());
       }
     });
-    this.promptInput.addEventListener('keypress', (ev) => ev.stopPropagation());
-    this.promptInput.addEventListener('keyup', (ev) => ev.stopPropagation());
-    this.promptInput.addEventListener('input', () => {
-      App.rememberComposerText(this.promptInput.value);
-      this.resizePromptInput();
+    input.addEventListener('keypress', (ev) => ev.stopPropagation());
+    input.addEventListener('keyup', (ev) => ev.stopPropagation());
+    input.addEventListener('input', () => {
+      App.rememberComposerText(target(), input.value);
+      this.resizeComposer(c);
     });
-    this.promptSend.addEventListener('click', sendPrompt);
-    this.promptSchedule.addEventListener('click', () => App.scheduleComposerPrompt());
-    this.promptFanout.addEventListener('click', () => App.showComposerFanout());
-    window.addEventListener('resize', () => {
-      this.resizePromptInput();
-      this.fitActive();
-    });
-    requestAnimationFrame(() => this.resizePromptInput());
+    // 입력창을 쓰면 그 패널이 활성 패널 — 전역 프리셋·이미지 첨부 대상이 어긋나지 않게 한다
+    input.addEventListener('focus', () => App.focusPane(paneIdx));
+    send.addEventListener('click', () => App.sendComposerPrompt(target()));
+    schedule.addEventListener('click', () => App.scheduleComposerPrompt(target()));
+    fanout.addEventListener('click', () => App.showComposerFanout(target()));
+    return c;
   },
 
-  resizePromptInput() {
-    const input = this.promptInput;
-    if (!input) return;
+  // 세션이 보이는 패널의 작성기 (보이지 않으면 null)
+  composerForSession(sid) {
+    const idx = App.paneIndexForSession(sid);
+    return idx >= 0 ? this.composers[idx] || null : null;
+  },
 
+  // 입력 내용에 따라 높이 자동 조절 — 상한은 그 패널 높이의 절반
+  resizeComposer(c) {
+    if (!c || !c.input) return;
+    const input = c.input;
     const previousHeight = input.offsetHeight;
     input.style.height = 'auto';
     const style = getComputedStyle(input);
     const borderHeight = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
     const contentHeight = input.scrollHeight + borderHeight;
-    const maxHeight = Math.floor(window.innerHeight * 0.5);
+    const paneHeight = this.panes[c.paneIdx] ? this.panes[c.paneIdx].clientHeight : 0;
+    const maxHeight = Math.max(56, Math.floor((paneHeight || window.innerHeight) * 0.5));
     input.style.height = `${Math.min(contentHeight, maxHeight)}px`;
     input.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
-
     if (input.offsetHeight !== previousHeight) this.fitActive();
+  },
+
+  resizeAllComposers() {
+    for (const c of this.composers) this.resizeComposer(c);
+  },
+
+  // 패널별 작성기 활성/잠금 + 그 패널 세션의 작성 중 텍스트 복원
+  syncComposerStates(opts) {
+    for (let i = 0; i < 4; i++) {
+      const c = this.composers[i];
+      if (!c) continue;
+      const sid = App.paneSessionId(i);
+      const live = !!(sid && this.views.has(sid));
+      c.root.classList.toggle('hidden', !live);
+      for (const el of [c.input, c.send, c.schedule, c.fanout]) el.disabled = !live;
+      const text = live ? (App._composerTexts.get(sid) || '') : '';
+      if (c.input.value !== text) {
+        c.input.value = text;
+        this.resizeComposer(c);
+      }
+    }
+    App.renderComposerQueue();
+    if (opts && opts.noFocus) return;
+    const focused = App.split && App.split.mode !== 'single' ? App.split.focused : 0;
+    const fc = this.composers[focused];
+    if (fc && !fc.input.disabled) fc.input.focus();
   },
 
   ansiColor(index) {
@@ -215,7 +294,7 @@ const TerminalView = {
   create(session, fontSize, opts) {
     const holder = document.createElement('div');
     holder.className = 'term-holder';
-    this.panes[0].appendChild(holder); // 실제 패널 배치는 syncLayout 이 분할 상태에 맞춰 조정
+    this.paneBodies[0].appendChild(holder); // 실제 패널 배치는 syncLayout 이 분할 상태에 맞춰 조정
 
     const term = new Terminal({
       fontSize: fontSize || 13,
@@ -687,7 +766,7 @@ const TerminalView = {
     }
     const newlyVisible = new Set();
     for (const [sid, v] of this.views) {
-      const target = this.panes[assign.has(sid) ? assign.get(sid) : 0];
+      const target = this.paneBodies[assign.has(sid) ? assign.get(sid) : 0];
       if (target && v.holder.parentElement !== target) {
         // reparent 된 캔버스는 WebGL 컨텍스트가 빈 화면으로 남을 수 있어 떼었다 다시 붙인다
         this._detachWebgl(v);
@@ -712,14 +791,7 @@ const TerminalView = {
         this.scrollToBottom(sid, newlyVisible.has(sid) ||
           !!(opts && opts.toBottom && sid === App.state.activeId));
       }
-      const hasActive = !!(App.state.activeId && this.views.get(App.state.activeId));
-      if (this.promptInput) {
-        this.promptInput.disabled = !hasActive;
-        this.promptSend.disabled = !hasActive;
-        this.promptSchedule.disabled = !hasActive;
-        this.promptFanout.disabled = !hasActive;
-        if (hasActive && !(opts && opts.noFocus)) this.promptInput.focus();
-      }
+      this.syncComposerStates(opts);
     });
   },
 
@@ -880,12 +952,7 @@ const TerminalView = {
       v.term.dispose();
       v.holder.remove();
       this.views.delete(id);
-      if (this.views.size === 0 && this.promptInput) {
-        this.promptInput.disabled = true;
-        this.promptSend.disabled = true;
-        this.promptSchedule.disabled = true;
-        this.promptFanout.disabled = true;
-      }
+      this.syncComposerStates({ noFocus: true });
     }
   }
 };
