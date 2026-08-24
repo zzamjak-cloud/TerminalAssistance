@@ -17,7 +17,12 @@ function initPresetSort() {
 
 function renderPresets() {
   const bar = document.getElementById('preset-bar');
-  bar.textContent = '';
+  // 고정 요소(+ 프리셋 버튼)는 유지하고 칩만 재렌더
+  bar.querySelectorAll('.preset-chip').forEach((el) => el.remove());
+  // 분할 중에는 칩을 각 패널의 프리셋 바가 세션별로 표시 — 상단 고정바에는 + 프리셋 버튼만.
+  // 프리셋 추가/수정/정렬 후 이 함수만 호출하는 경로(modals·movePreset)를 위해 패널 바도 함께 갱신.
+  if (App.renderPanePresets) App.renderPanePresets();
+  if (App.split && App.split.mode !== 'single') return;
   const { presets, activeId, sessions } = App.state;
   const active = sessions.find((s) => s.id === activeId);
   const projectId = active ? active.projectId : null;

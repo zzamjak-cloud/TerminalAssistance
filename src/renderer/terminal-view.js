@@ -1,10 +1,12 @@
 // xterm 인스턴스 관리. 세션별 holder 를 display 토글로 전환 —
 // 비활성 세션도 xterm 버퍼가 유지되므로 전환 시 리플로우/재렌더 비용이 없다.
-// WebGL 렌더러는 활성 세션에만 부착한다 — 브라우저의 WebGL 컨텍스트 수 제한(~16) 때문에
-// 세션이 많아도 컨텍스트를 1개만 쓰고, 비활성 세션은 어차피 화면에 없으므로 손해가 없다.
+// WebGL 렌더러는 화면에 보이는 세션에만 부착한다 — 브라우저의 WebGL 컨텍스트 수 제한(~16)
+// 때문에 세션이 많아도 컨텍스트는 보이는 패널 수(단일 1, 분할 최대 4)만 쓰고,
+// 화면에 없는 세션은 어차피 렌더링되지 않으므로 손해가 없다.
 const TerminalView = {
   views: new Map(), // sessionId → { term, fit, holder, webgl, frozen, queue }
   area: null,
+  panes: [], // 분할 패널 컨테이너 (최대 2×2)
   promptInput: null,
   promptSend: null,
   promptSchedule: null,
@@ -12,6 +14,7 @@ const TerminalView = {
 
   init() {
     this.area = document.getElementById('term-area');
+    this.panes = [0, 1, 2, 3].map((i) => document.getElementById('term-pane-' + i));
     this.promptInput = document.getElementById('terminal-prompt-input');
     this.promptSend = document.getElementById('terminal-prompt-send');
     this.promptSchedule = document.getElementById('terminal-prompt-schedule');
@@ -209,7 +212,7 @@ const TerminalView = {
   create(session, fontSize, opts) {
     const holder = document.createElement('div');
     holder.className = 'term-holder';
-    this.area.appendChild(holder);
+    this.panes[0].appendChild(holder); // 실제 패널 배치는 syncLayout 이 분할 상태에 맞춰 조정
 
     const term = new Terminal({
       fontSize: fontSize || 13,
@@ -663,28 +666,58 @@ const TerminalView = {
     }
   },
 
-  activate(id) {
-    for (const [sid, v] of this.views) {
-      v.holder.classList.toggle('active', sid === id);
-      if (sid !== id) this._detachWebgl(v); // WebGL 컨텍스트는 활성 세션 1개만 유지
+  activate(id, opts) {
+    this.syncLayout(opts);
+  },
+
+  // 분할 상태(App.split)에 맞춰 holder 의 패널 배치·표시·WebGL 부착을 재조정한다.
+  // 단일 모드 = 활성 세션 1개만 표시, 분할 모드 = 각 패널에 배정된 세션 표시.
+  // WebGL 은 화면에 보이는 세션 전부에 부착 (최대 4개 — 컨텍스트 한도 ~16 대비 여유).
+  syncLayout(opts) {
+    const assign = new Map(); // sessionId → paneIdx
+    if (App.split && App.split.mode !== 'single') {
+      App.splitVisiblePanes().forEach((sid, i) => {
+        if (sid && !assign.has(sid)) assign.set(sid, i);
+      });
+    } else if (App.state.activeId) {
+      assign.set(App.state.activeId, 0);
     }
-    const v = this.views.get(id);
-    if (v) {
-      // display 전환 직후엔 크기가 0 → 다음 프레임에 fit (WebGL 부착도 가시 상태에서)
-      requestAnimationFrame(() => {
+    const newlyVisible = new Set();
+    for (const [sid, v] of this.views) {
+      const target = this.panes[assign.has(sid) ? assign.get(sid) : 0];
+      if (target && v.holder.parentElement !== target) {
+        // reparent 된 캔버스는 WebGL 컨텍스트가 빈 화면으로 남을 수 있어 떼었다 다시 붙인다
+        this._detachWebgl(v);
+        target.appendChild(v.holder);
+      }
+      const show = assign.has(sid);
+      if (show && !v.holder.classList.contains('active')) newlyVisible.add(sid);
+      v.holder.classList.toggle('active', show);
+      if (!show) this._detachWebgl(v); // 화면에 없는 세션은 WebGL 컨텍스트 반납
+    }
+    // display 전환 직후엔 크기가 0 → 다음 프레임에 fit (WebGL 부착도 가시 상태에서)
+    requestAnimationFrame(() => {
+      for (const sid of assign.keys()) {
+        const v = this.views.get(sid);
+        if (!v) continue;
         try { v.fit.fit(); } catch (_) {}
         this._attachWebgl(v);
-        this._syncPtySize(id, v);
-        this.scrollToBottom(id, true);
-        if (this.promptInput) {
-          this.promptInput.disabled = false;
-          this.promptSend.disabled = false;
-          this.promptSchedule.disabled = false;
-          this.promptFanout.disabled = false;
-          this.promptInput.focus();
-        }
-      });
-    }
+        this._syncPtySize(sid, v);
+        // 새로 보이게 된 세션만 바닥으로 강제 스크롤 — 이미 보이던 패널의 스크롤백 열람 위치는
+        // 포커스 이동(패널 클릭·드래그 선택 시작)만으로 잃지 않아야 한다.
+        // opts.toBottom: 허가 대기 배지 클릭처럼 명시적 점프 의도만 예외.
+        this.scrollToBottom(sid, newlyVisible.has(sid) ||
+          !!(opts && opts.toBottom && sid === App.state.activeId));
+      }
+      const hasActive = !!(App.state.activeId && this.views.get(App.state.activeId));
+      if (this.promptInput) {
+        this.promptInput.disabled = !hasActive;
+        this.promptSend.disabled = !hasActive;
+        this.promptSchedule.disabled = !hasActive;
+        this.promptFanout.disabled = !hasActive;
+        if (hasActive && !(opts && opts.noFocus)) this.promptInput.focus();
+      }
+    });
   },
 
   isActive(id) {
@@ -713,6 +746,8 @@ const TerminalView = {
   // 치수가 실제로 변했을 때만 PTY 리사이즈 IPC 전송
   // (같은 크기 요청도 ConPTY 는 실제 작업을 수행하므로 무조건 호출하면 드래그가 무거워진다)
   _syncPtySize(id, v) {
+    // 스플리터 극단 축소 등으로 0에 가까운 치수가 나오면 PTY 에 보내지 않는다
+    if (v.term.cols < 2 || v.term.rows < 1) return;
     if (v.term.cols !== v.lastCols || v.term.rows !== v.lastRows) {
       v.lastCols = v.term.cols;
       v.lastRows = v.term.rows;
@@ -720,19 +755,20 @@ const TerminalView = {
     }
   },
 
-  // 패널 드래그·창 리사이즈 등 고빈도 호출을 rAF 로 코얼레싱
+  // 패널 드래그·창 리사이즈 등 고빈도 호출을 rAF 로 코얼레싱.
+  // 분할 모드에서는 화면에 보이는 모든 세션을 리핏한다.
   _fitQueued: false,
   fitActive() {
     if (this._fitQueued) return;
     this._fitQueued = true;
     requestAnimationFrame(() => {
       this._fitQueued = false;
-      const id = App.state.activeId;
-      const v = this.views.get(id);
-      if (!v || !v.holder.classList.contains('active')) return;
-      try { v.fit.fit(); } catch (_) {}
-      this._syncPtySize(id, v);
-      this.scrollToBottom(id);
+      for (const [sid, v] of this.views) {
+        if (!v.holder.classList.contains('active')) continue;
+        try { v.fit.fit(); } catch (_) {}
+        this._syncPtySize(sid, v);
+        this.scrollToBottom(sid);
+      }
     });
   },
 

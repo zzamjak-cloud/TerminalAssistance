@@ -177,9 +177,11 @@ Object.assign(App, {
           target.value = target.value + (target.value && !/\s$/.test(target.value) ? ' ' : '') + quoted + ' ';
           target.dispatchEvent(new Event('input'));
         } else if (target && App.state.activeId) {
-          // 터미널 영역에 드롭 — 활성 세션 입력 라인에 삽입
-          TerminalView.paste(App.state.activeId, quoted + ' ');
-          TerminalView.activate(App.state.activeId);
+          // 터미널 영역에 드롭 — 분할 중이면 커서 아래 패널의 세션, 아니면 활성 세션에 삽입
+          const dropId = App.sessionAtPoint(ev.clientX, ev.clientY) || App.state.activeId;
+          if (dropId !== App.state.activeId) App.activateSession(dropId, { noFocus: true });
+          TerminalView.paste(dropId, quoted + ' ');
+          TerminalView.activate(dropId, { noFocus: true });
         }
         // 드래그를 끝낸 mouseup 과 같은 틱의 click 만 차단 (선택/미리보기 오발동 방지)
         const swallow = (ce) => { ce.stopPropagation(); ce.preventDefault(); };

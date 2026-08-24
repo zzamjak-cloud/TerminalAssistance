@@ -38,11 +38,26 @@
           <div id="waiting-indicator" class="hidden" title="클릭 시 허가 대기 중인 세션으로 이동"></div>
           <button id="btn-command-palette" title="커맨드 팔레트 (Cmd/Ctrl+K)">⌘K</button>
           <button id="btn-term-search" title="터미널 검색 (Cmd/Ctrl+F)">검색</button>
-          <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
+          <div id="split-controls" aria-label="화면 분할">
+            <button id="btn-split-single" class="split-btn" title="단일 화면">
+              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+            </button>
+            <button id="btn-split-h" class="split-btn" title="좌우 분할">
+              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="1.5" x2="8" y2="14.5" stroke="currentColor" stroke-width="1.5"/></svg>
+            </button>
+            <button id="btn-split-v" class="split-btn" title="상하 분할">
+              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="1.5" y1="8" x2="14.5" y2="8" stroke="currentColor" stroke-width="1.5"/></svg>
+            </button>
+            <button id="btn-split-grid" class="split-btn" title="2×2 분할">
+              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="1.5" x2="8" y2="14.5" stroke="currentColor" stroke-width="1.5"/><line x1="1.5" y1="8" x2="14.5" y2="8" stroke="currentColor" stroke-width="1.5"/></svg>
+            </button>
+          </div>
           <button id="btn-toggle-prompts" title="세션 기록·계획 문서·메모 패널 토글">☰ 패널</button>
         </div>
       </div>
-      <div id="preset-bar"></div>
+      <div id="preset-bar">
+        <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
+      </div>
       <div id="term-search" class="hidden">
         <input id="term-search-input" type="text" placeholder="터미널 검색">
         <span id="term-search-count"></span>
@@ -52,6 +67,12 @@
       </div>
       <div id="term-row">
         <div id="term-area">
+          <div class="term-pane" id="term-pane-0"></div>
+          <div class="term-pane" id="term-pane-1"></div>
+          <div class="term-pane" id="term-pane-2"></div>
+          <div class="term-pane" id="term-pane-3"></div>
+          <div id="split-divider-v" class="split-divider"></div>
+          <div id="split-divider-h" class="split-divider"></div>
           <div id="empty-state">
             <h2>프로젝트를 등록하고 터미널을 시작하세요</h2>
             <p>좌측 하단 <b>+ 프로젝트 등록</b> → 프로젝트 클릭 한 번으로 해당 경로의 터미널이 열립니다.<br>
@@ -134,6 +155,7 @@
   <script src="claude-sessions.js"></script>
   <script src="plans.js"></script>
   <script src="panel-layout.js"></script>
+  <script src="split-view.js"></script>
   <script src="modals.js"></script>
   <script src="command-palette.js"></script>
   <script src="terminal-search.js"></script>

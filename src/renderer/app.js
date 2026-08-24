@@ -52,6 +52,7 @@ const App = {
       }
       if (status === 'waiting') App.onWaiting(s);
       updateSessionStatus(s); // 전체 재구축 대신 해당 행만 갱신 (호버·드래그 유지)
+      if (App.split.mode !== 'single') App.refreshPickerStatus(s); // 피커의 상태 태그만 최신화
       App.renderTopbar();
       if (sessionId === App.state.activeId) App.renderComposerQueue();
     });
@@ -60,7 +61,7 @@ const App = {
     });
     ta.onFileDrop((payload) => {
       const paths = payload && payload.paths ? payload.paths : [];
-      if (paths.length) App.handleDrop(paths);
+      if (paths.length) App.handleDrop(paths, payload.position);
     });
     // 다른 앱에 있다가 돌아온 경우 — 활성 세션이 완료 상태면 그 시점부터 열람 카운트다운
     window.addEventListener('focus', () => App.checkDoneViewed(App.state.activeId));
@@ -69,7 +70,8 @@ const App = {
       const ws = App.state.sessions.filter((x) => x.status === 'waiting');
       if (!ws.length) return;
       const i = ws.findIndex((x) => x.id === App.state.activeId);
-      App.activateSession(ws[(i + 1) % ws.length].id);
+      // toBottom: 이미 패널에 보이는 세션이라도 허가 프롬프트가 보이게 바닥으로 점프
+      App.activateSession(ws[(i + 1) % ws.length].id, { toBottom: true });
     };
 
     document.getElementById('btn-add-project').onclick = () => App.showProjectModal();
@@ -92,6 +94,8 @@ const App = {
       document.getElementById('prompt-panel').classList.remove('hidden');
     }
     App.initPanelUI();
+    App.initSplitUI();
+    App.restoreSplitState(); // 세션 목록이 채워진 뒤 분할 모드·패널 배정 복원
     App.initExplorer();
     App.initCommandPaletteUI();
     App.initTerminalSearchUI();
@@ -113,7 +117,14 @@ const App = {
     if (restoring.length) {
       // 리로드 전 활성 세션 우선, 없으면 마지막 세션
       const saved = localStorage.getItem('ta-active-session');
-      const target = restoring.find((s) => s.id === saved) || restoring[restoring.length - 1];
+      let target = restoring.find((s) => s.id === saved) || restoring[restoring.length - 1];
+      // 분할 복원 중: 저장된 활성 세션이 패널 배정에 없으면 배정된 세션을 우선한다
+      // (activateSession 이 포커스 패널 배정을 덮어써 복원 레이아웃이 유실되는 것 방지)
+      if (App.split.mode !== 'single' && !App.splitVisiblePanes().includes(target.id)) {
+        const fallback = App.split.panes[App.split.focused] || App.splitVisiblePanes().find(Boolean);
+        const alive = fallback && restoring.find((s) => s.id === fallback);
+        if (alive) target = alive;
+      }
       App.activateSession(target.id);
     }
 
@@ -127,6 +138,7 @@ const App = {
     renderSidebar();
     App.renderExplorer();
     renderPresets();
+    App.renderSplit();
     App.renderTopbar();
     App.renderImageStrip();
     App.renderClaudeList();
@@ -203,6 +215,11 @@ const App = {
 
   renderEmptyState() {
     const el = document.getElementById('empty-state');
+    // 분할 중에는 오버레이가 화면 전체(다른 패널 터미널)를 덮지 않게 포커스 패널 안으로 이동
+    const host = App.split.mode !== 'single'
+      ? document.getElementById('term-pane-' + App.split.focused)
+      : document.getElementById('term-area');
+    if (el.parentElement !== host) host.appendChild(el);
     const pid = App.state.projectEmptyId;
     const proj = pid && App.state.projects.find((p) => p.id === pid);
     // 선택한 프로젝트에 세션이 생겼거나 프로젝트가 삭제됐으면 선택 해제
@@ -375,11 +392,19 @@ const App = {
     }
   },
 
-  activateSession(id) {
+  activateSession(id, opts) {
+    // 분할 중: 이미 다른 패널에 보이는 세션이면 그 패널로 포커스만 이동, 아니면 포커스 패널에 배정
+    const sp = App.split;
+    if (sp && sp.mode !== 'single') {
+      const idx = App.splitVisiblePanes().indexOf(id);
+      if (idx >= 0) sp.focused = idx;
+      else sp.panes[sp.focused] = id;
+      App.saveSplitState();
+    }
     App.state.activeId = id;
     App.state.projectEmptyId = null; // 세션 활성화 = 빈 프로젝트 시작 화면 해제
     localStorage.setItem('ta-active-session', id); // 웹뷰 리로드 복구 시 활성 세션 유지용
-    TerminalView.activate(id);
+    TerminalView.activate(id, opts);
     App.checkDoneViewed(id); // 즉시 해제 대신 열람 카운트다운 — 무엇이 끝났는지 볼 시간을 준다
     App.renderAll();
     App.refreshBranch(); // 전환 즉시 브랜치 표시 (다음 폴링까지 기다리지 않게)
@@ -404,6 +429,7 @@ const App = {
     delete App.state.images[id];
     delete App.state.branches[id];
     App.clearDoneTimers(id);
+    App.releasePaneSession(id); // 분할 패널 배정 해제 — 빈 패널은 피커로 복귀
     TerminalView.dispose(id);
     if (App.state.activeId === id) {
       const next = App.state.sessions[App.state.sessions.length - 1];
@@ -486,17 +512,25 @@ const App = {
     App.renderImageStrip();
   },
 
-  handleDrop(paths) {
-    const id = App.state.activeId;
+  // position: Tauri drag-drop 물리 좌표 — 분할 중이면 드롭 지점 아래 패널의 세션을 대상으로
+  handleDrop(paths, position) {
+    let id = null;
+    if (position && typeof position.x === 'number') {
+      const scale = window.devicePixelRatio || 1;
+      id = App.sessionAtPoint(position.x / scale, position.y / scale);
+    }
+    id = id || App.state.activeId;
     if (!id) return;
+    if (id !== App.state.activeId) App.activateSession(id, { noFocus: true });
     for (const p of paths) {
       if (/\.(png|jpe?g|gif|bmp|tiff?|webp)$/i.test(p)) App.attachImage(id, p);
       else TerminalView.paste(id, quotePath(p) + ' ');
     }
   },
 
-  async expandPresetCommand(command, slotValues) {
-    const s = App.state.sessions.find((x) => x.id === App.state.activeId);
+  // sessionId 지정 시 해당 세션 기준으로 {branch}/{projectPath} 등 치환 (분할 패널 프리셋용)
+  async expandPresetCommand(command, slotValues, sessionId) {
+    const s = App.state.sessions.find((x) => x.id === (sessionId || App.state.activeId));
     const project = s && App.state.projects.find((p) => p.id === s.projectId);
     const clipboard = command.includes('{clipboard}') ? (await ta.clipboardText().catch(() => '') || '') : '';
     let out = command.replace(/\{(branch|projectPath|projectName|session|clipboard)\}/g, (_, name) => {
@@ -550,10 +584,12 @@ const App = {
     });
   },
 
-  async runPreset(preset, execute) {
-    const id = App.state.activeId;
+  // sessionId 지정 시 그 세션에 실행 (분할 패널 프리셋 바) — 대상 패널로 포커스도 이동
+  async runPreset(preset, execute, sessionId) {
+    const id = sessionId || App.state.activeId;
     if (!id) return;
-    const command = await App.expandPresetCommand(preset.command);
+    if (id !== App.state.activeId) App.activateSession(id, { noFocus: true });
+    const command = await App.expandPresetCommand(preset.command, undefined, id);
     if (command === null) return;
     TerminalView.paste(id, command);
     if (execute) ta.write(id, '\r');
