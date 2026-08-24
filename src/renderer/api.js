@@ -38,7 +38,10 @@
       fontSize: patch.fontSize ?? null,
       shell: patch.shell ?? null,
       notifyOnDone: patch.notifyOnDone ?? null,
-      notifyOnWaiting: patch.notifyOnWaiting ?? null
+      notifyOnWaiting: patch.notifyOnWaiting ?? null,
+      lineHeight: patch.lineHeight ?? null,
+      letterSpacing: patch.letterSpacing ?? null,
+      minContrast: patch.minContrast ?? null
     }),
 
     // AI 도구 연동 상태 { claude, codex } / 설치·제거 (허가 대기 감지)

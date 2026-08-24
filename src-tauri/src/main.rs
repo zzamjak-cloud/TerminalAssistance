@@ -273,6 +273,9 @@ fn update_settings(
     shell: Option<String>,
     notify_on_done: Option<bool>,
     notify_on_waiting: Option<bool>,
+    line_height: Option<f32>,
+    letter_spacing: Option<f32>,
+    min_contrast: Option<f32>,
 ) -> Result<store::Settings, String> {
     let mut s = plock(&store);
     if let Some(v) = font_size {
@@ -286,6 +289,15 @@ fn update_settings(
     }
     if let Some(v) = notify_on_waiting {
         s.data.settings.notify_on_waiting = v;
+    }
+    if let Some(v) = line_height {
+        s.data.settings.line_height = v.clamp(1.0, 2.0);
+    }
+    if let Some(v) = letter_spacing {
+        s.data.settings.letter_spacing = v.clamp(0.0, 4.0);
+    }
+    if let Some(v) = min_contrast {
+        s.data.settings.min_contrast = v.clamp(1.0, 21.0);
     }
     s.save()?;
     Ok(s.data.settings.clone())

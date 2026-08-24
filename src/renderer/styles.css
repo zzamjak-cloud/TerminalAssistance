@@ -662,6 +662,11 @@ button:disabled:hover { border-color: var(--border); }
 #modal .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--fg); }
 #modal .check input { width: auto; }
 .form-help { color: var(--fg-dim); font-size: 11px; line-height: 1.5; margin-top: 5px; user-select: text; }
+/* 설정 모달 슬라이더 행 — 라벨 · 슬라이더 · 현재값 */
+.range-row { display: grid; grid-template-columns: 60px 1fr 46px; align-items: center; gap: 8px; margin: 4px 0; }
+.range-row > span { color: var(--fg-dim); font-size: 12px; }
+.range-row > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.range-row input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent-strong); }
 
 /* ── 터미널 검색 ── */
 #term-search {

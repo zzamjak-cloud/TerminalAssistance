@@ -307,13 +307,13 @@ const TerminalView = {
     holder.className = 'term-holder';
     this.paneBodies[0].appendChild(holder); // 실제 패널 배치는 syncLayout 이 분할 상태에 맞춰 조정
 
-    const term = new Terminal({
+    const term = new Terminal(Object.assign({
       fontSize: fontSize || 13,
       fontFamily: 'Menlo, Consolas, "D2Coding", "Cascadia Mono", monospace',
       theme: Theme.termTheme(),
       scrollback: 5000,
       cursorBlink: true
-    });
+    }, this.readabilityOptions()));
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon.WebLinksAddon((_, url) => {
@@ -661,7 +661,7 @@ const TerminalView = {
       lastRows: 0,
       resetInputMirror: mirrorInvalidate,
       scrollQueued: false,
-      followOutput: true,
+      scrollForce: false,
       scrollDisposable: null,
       lastSelection: '',
       lastSelectionAt: 0,
@@ -674,12 +674,6 @@ const TerminalView = {
       richCopyHandler
     };
     this.views.set(session.id, view);
-    if (typeof term.onScroll === 'function') {
-      view.scrollDisposable = term.onScroll((viewportY) => {
-        const buffer = term.buffer && term.buffer.active;
-        if (buffer) view.followOutput = viewportY >= buffer.baseY;
-      });
-    }
     if (typeof term.onSelectionChange === 'function') {
       view.selectionDisposable = term.onSelectionChange(rememberSelectionChange);
     }
@@ -811,19 +805,33 @@ const TerminalView = {
     return !!(v && v.holder.classList.contains('active'));
   },
 
+  // 뷰포트가 스크롤백 바닥에 붙어 있는지. xterm 은 휠·스크롤바로 인한 스크롤을
+  // suppressScrollEvent 로 처리해 onScroll 을 발화시키지 않으므로(vendor/xterm.js _handleScroll),
+  // 이벤트로 추종 여부를 추적하면 사용자가 위로 올려도 계속 바닥으로 끌려간다 → 버퍼 좌표를 직접 본다.
+  _atBottom(v) {
+    const b = v.term.buffer && v.term.buffer.active;
+    if (!b) return true;
+    return b.viewportY >= b.baseY;
+  },
+
   scrollToBottom(id, force) {
     const v = this.views.get(id);
     if (!v || typeof v.term.scrollToBottom !== 'function') return;
-    if (force) v.followOutput = true;
-    if (!v.followOutput) return;
-    if (v.scrollQueued) return;
+    if (!force && !this._atBottom(v)) return;
+    if (v.scrollQueued) {
+      if (force) v.scrollForce = true;
+      return;
+    }
     v.scrollQueued = true;
+    v.scrollForce = !!force;
     requestAnimationFrame(() => {
       v.scrollQueued = false;
-      if (!v.followOutput) return;
+      const forced = v.scrollForce;
+      v.scrollForce = false;
+      if (!forced && !this._atBottom(v)) return;
       try { v.term.scrollToBottom(); } catch (_) {}
       requestAnimationFrame(() => {
-        if (!v.followOutput) return;
+        if (!this._atBottom(v)) return;
         try { v.term.scrollToBottom(); } catch (_) {}
       });
     });
@@ -917,6 +925,19 @@ const TerminalView = {
     v.lastSelectionAttemptAt = 0;
   },
 
+  // 터미널 본문(xterm 헬퍼 textarea)에 키보드 포커스를 준다.
+  // 프리셋 칩·메뉴는 버튼이라 클릭만으로 포커스를 가져가므로, 명령을 흘려보낸 뒤
+  // 여기서 되돌려야 /model 같은 대화형 선택을 곧바로 방향키로 조작할 수 있다.
+  focusTerminal(id) {
+    const v = this.views.get(id);
+    if (!v) return;
+    // 패널 배치·display 토글은 syncLayout 이 다음 프레임에 끝내므로 그 뒤에 포커스를 준다
+    requestAnimationFrame(() => {
+      if (!v.holder.classList.contains('active')) return;
+      try { v.term.focus(); } catch (_) {}
+    });
+  },
+
   // xterm 의 paste 경로 사용 (bracketed paste 처리 포함) → onData → pty
   paste(id, text) {
     const v = this.views.get(id);
@@ -928,6 +949,33 @@ const TerminalView = {
 
   setFontSize(n) {
     for (const v of this.views.values()) v.term.options.fontSize = n;
+    this.fitActive();
+  },
+
+  // 가독성 설정 → xterm 옵션. 저장값이 없으면 xterm 기본과 같은 무보정 값.
+  // minimumContrastRatio 는 Claude/Codex 가 많이 쓰는 dim·회색 출력이 배경에 묻히는 것을
+  // 배경 대비 기준으로 자동 보정한다 (1 = 끔).
+  readabilityOptions() {
+    const st = (window.App && App.state && App.state.settings) || {};
+    const num = (v, def, lo, hi) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : def;
+    };
+    return {
+      lineHeight: num(st.lineHeight, 1, 1, 2),
+      letterSpacing: num(st.letterSpacing, 0, 0, 4),
+      minimumContrastRatio: num(st.minContrast, 1, 1, 21)
+    };
+  },
+
+  // 셀 치수가 바뀌므로(줄 간격·자간) 적용 후 반드시 리핏 → PTY 리사이즈까지 이어진다
+  applyReadability() {
+    const opts = this.readabilityOptions();
+    for (const v of this.views.values()) {
+      for (const [k, val] of Object.entries(opts)) {
+        try { v.term.options[k] = val; } catch (_) {}
+      }
+    }
     this.fitActive();
   },
 

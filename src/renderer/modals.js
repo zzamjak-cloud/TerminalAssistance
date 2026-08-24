@@ -413,6 +413,11 @@ Object.assign(App, {
       </div>
       <div class="form-help">배경 밝기로 라이트/다크를 판별해 글자·상태·프로젝트 색을 자동 보정합니다. 테마는 즉시 적용되며 저장 버튼과 무관하게 유지됩니다.</div>
       <label>글꼴 크기</label><input type="number" id="m-font" min="9" max="24" value="${st.fontSize}">
+      <label>가독성 (조절하면 터미널에 즉시 반영)</label>
+      <div class="range-row"><span>줄 간격</span><input type="range" id="m-line-height" min="1" max="2" step="0.05" value="${Number(st.lineHeight) || 1}"><span id="m-line-height-v"></span></div>
+      <div class="range-row"><span>자간</span><input type="range" id="m-letter-spacing" min="0" max="4" step="0.5" value="${Number(st.letterSpacing) || 0}"><span id="m-letter-spacing-v"></span></div>
+      <div class="range-row"><span>최소 대비</span><input type="range" id="m-min-contrast" min="1" max="7" step="0.5" value="${Number(st.minContrast) || 1}"><span id="m-min-contrast-v"></span></div>
+      <div class="form-help">최소 대비는 Claude/Codex 가 즐겨 쓰는 흐린 회색·dim 출력이 배경에 묻힐 때 글자색만 배경 대비 기준까지 자동으로 끌어올립니다 (1 = 끔, 4.5 = WCAG AA).</div>
       <label>셸 (비우면 OS 기본)</label><input type="text" id="m-shell" placeholder="${App.state.platform === 'windows' ? 'powershell.exe' : '/bin/zsh'}" value="${escapeHtml(st.shell || '')}">
       <div class="check"><input type="checkbox" id="m-notify" ${st.notifyOnDone ? 'checked' : ''}><label for="m-notify" style="margin:0">비활성 세션 작업 완료 시 알림</label></div>
       <div class="check"><input type="checkbox" id="m-notify-wait" ${st.notifyOnWaiting ? 'checked' : ''}><label for="m-notify-wait" style="margin:0">비활성 세션 허가 대기 시 알림</label></div>
@@ -445,16 +450,50 @@ Object.assign(App, {
           syncThemeInputs();
         };
 
-        m.querySelector('#m-cancel').onclick = close;
+        // ── 가독성: 조절 즉시 터미널에 반영, 취소하면 원래 값으로 되돌린다 ──
+        const readKeys = [
+          ['#m-line-height', 'lineHeight', (n) => n.toFixed(2)],
+          ['#m-letter-spacing', 'letterSpacing', (n) => n.toFixed(1) + 'px'],
+          ['#m-min-contrast', 'minContrast', (n) => (n <= 1 ? '끔' : n.toFixed(1))]
+        ];
+        const readBefore = {};
+        for (const [, key] of readKeys) readBefore[key] = App.state.settings[key];
+        const previewRead = () => {
+          for (const [sel, key] of readKeys) {
+            App.state.settings[key] = Number(m.querySelector(sel).value);
+          }
+          TerminalView.applyReadability();
+        };
+        for (const [sel, , fmt] of readKeys) {
+          const input = m.querySelector(sel);
+          const out = m.querySelector(sel + '-v');
+          const sync = () => { out.textContent = fmt(Number(input.value)); };
+          input.oninput = () => { sync(); previewRead(); };
+          sync();
+        }
+        // Esc 로 닫는 경로는 모달 공통 close() 만 부르므로, 캡처 단계에서 먼저 되돌린다
+        const escRestore = (e) => { if (e.key === 'Escape') { restoreRead(); dropEscRestore(); } };
+        const dropEscRestore = () => document.removeEventListener('keydown', escRestore, true);
+        const restoreRead = () => {
+          Object.assign(App.state.settings, readBefore);
+          TerminalView.applyReadability();
+        };
+        document.addEventListener('keydown', escRestore, true);
+
+        m.querySelector('#m-cancel').onclick = () => { dropEscRestore(); restoreRead(); close(); };
         m.querySelector('#m-save').onclick = async () => {
+          dropEscRestore();
           const patch = {
             fontSize: Math.max(9, Math.min(24, Number(m.querySelector('#m-font').value) || 13)),
             shell: m.querySelector('#m-shell').value.trim(),
             notifyOnDone: m.querySelector('#m-notify').checked,
-            notifyOnWaiting: m.querySelector('#m-notify-wait').checked
+            notifyOnWaiting: m.querySelector('#m-notify-wait').checked,
+            lineHeight: Number(m.querySelector('#m-line-height').value),
+            letterSpacing: Number(m.querySelector('#m-letter-spacing').value),
+            minContrast: Number(m.querySelector('#m-min-contrast').value)
           };
           try { App.state.settings = await ta.updateSettings(patch); }
-          catch (e) { alert('저장 실패: ' + e); return; }
+          catch (e) { restoreRead(); alert('저장 실패: ' + e); return; }
           // 연동 토글은 변경된 것만 반영 — 실패해도 설정 저장은 유지되므로 개별 보고
           const wantClaude = m.querySelector('#m-hook-claude').checked;
           const wantCodex = m.querySelector('#m-hook-codex').checked;
@@ -463,6 +502,7 @@ Object.assign(App, {
           try { if (wantCodex !== hooks.codex) await ta.setCodexHooks(wantCodex); }
           catch (e) { alert('Codex 연동 실패: ' + e); }
           TerminalView.setFontSize(App.state.settings.fontSize);
+          TerminalView.applyReadability();
           close();
         };
       });

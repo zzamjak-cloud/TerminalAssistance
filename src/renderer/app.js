@@ -7,7 +7,10 @@ const App = {
     projects: [],
     presets: [],
     recipes: [],
-    settings: { fontSize: 13, shell: '', notifyOnDone: true, notifyOnWaiting: true },
+    settings: {
+      fontSize: 13, shell: '', notifyOnDone: true, notifyOnWaiting: true,
+      lineHeight: 1, letterSpacing: 0, minContrast: 1
+    },
     sessions: [],   // { id, projectId, title, status, cwd }
     activeId: null,
     platform: '',   // 백엔드가 알려주는 OS (windows | macos | linux)
@@ -664,7 +667,10 @@ const App = {
     if (command === null) return;
     TerminalView.paste(id, command);
     if (execute) ta.write(id, '\r');
-    TerminalView.activate(id);
+    // 프리셋 클릭 후에는 작성기가 아니라 터미널에 포커스를 둔다 —
+    // /model 처럼 즉시 방향키 선택이 필요한 대화형 명령이 바로 조작 가능해야 한다.
+    TerminalView.activate(id, { noFocus: true });
+    TerminalView.focusTerminal(id);
   },
 
   async runRecipe(recipe) {

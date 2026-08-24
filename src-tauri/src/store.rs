@@ -59,10 +59,25 @@ pub struct Settings {
     /// 비활성 세션이 실행 허가를 기다릴 때 데스크톱 알림
     #[serde(rename = "notifyOnWaiting", default = "default_true")]
     pub notify_on_waiting: bool,
+    /// 터미널 줄 간격 배수 (1.0 = xterm 기본)
+    #[serde(rename = "lineHeight", default = "default_line_height")]
+    pub line_height: f32,
+    /// 터미널 자간(px). 좁은 폭의 한글·기호 판독을 돕는다
+    #[serde(rename = "letterSpacing", default)]
+    pub letter_spacing: f32,
+    /// 배경 대비 최소 명암비 — dim/회색 출력이 배경에 묻히는 것을 자동 보정 (1.0 = 끔)
+    #[serde(rename = "minContrast", default = "default_min_contrast")]
+    pub min_contrast: f32,
 }
 
 fn default_font_size() -> u32 {
     13
+}
+fn default_line_height() -> f32 {
+    1.0
+}
+fn default_min_contrast() -> f32 {
+    1.0
 }
 fn default_true() -> bool {
     true
@@ -75,6 +90,9 @@ impl Default for Settings {
             shell: String::new(),
             notify_on_done: true,
             notify_on_waiting: true,
+            line_height: 1.0,
+            letter_spacing: 0.0,
+            min_contrast: 1.0,
         }
     }
 }
