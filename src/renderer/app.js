@@ -17,6 +17,9 @@ const App = {
     projectEmptyId: null // 세션 없는 프로젝트 선택 시 '새 세션 시작' 화면 대상
   },
 
+  // 프로젝트별 마지막 선택 세션 — 프로젝트 클릭 시 이 세션으로 복귀 (렌더러 로컬 설정)
+  lastSessionByProject: JSON.parse(localStorage.getItem('ta-last-session-by-project') || '{}'),
+
   async boot() {
     TerminalView.init();
     // 기본 온보딩 안내(index.html 정적 마크업)를 보관 — 빈 프로젝트 화면과 번갈아 쓴다
@@ -78,8 +81,6 @@ const App = {
     document.getElementById('btn-home-session').onclick = () => App.createSession(null);
     document.getElementById('btn-add-preset').onclick = () => App.showPresetManager();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
-    document.getElementById('btn-command-palette').onclick = () => App.openCommandPalette();
-    document.getElementById('btn-term-search').onclick = () => App.openTerminalSearch();
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
     document.getElementById('btn-claude-refresh').onclick = () => App.renderClaudeList(true);
     document.getElementById('btn-plan-refresh').onclick = () => App.renderPlanList(true);
@@ -97,7 +98,6 @@ const App = {
     App.initSplitUI();
     App.restoreSplitState(); // 세션 목록이 채워진 뒤 분할 모드·패널 배정 복원
     App.initExplorer();
-    App.initCommandPaletteUI();
     App.initTerminalSearchUI();
 
     // 터미널 밖에 포커스가 있을 때의 단축키
@@ -156,7 +156,6 @@ const App = {
   isShortcutBlocked(ev, opts) {
     if (ev.isComposing || ev.keyCode === 229) return true;
     if (App.isOverlayOpen('modal-backdrop')) return true;
-    if (App.isOverlayOpen('command-palette')) return true;
     if (opts && opts.fromTerminal) return false;
     const t = ev.target;
     return !!(t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)));
@@ -167,11 +166,6 @@ const App = {
     if (!mod || ev.altKey || ev.shiftKey) return false;
     if (App.isShortcutBlocked(ev, opts)) return false;
     const key = ev.key.toLowerCase();
-    if (key === 'k') {
-      ev.preventDefault();
-      App.openCommandPalette();
-      return true;
-    }
     if (key === 'f') {
       ev.preventDefault();
       App.openTerminalSearch();
@@ -404,6 +398,11 @@ const App = {
     App.state.activeId = id;
     App.state.projectEmptyId = null; // 세션 활성화 = 빈 프로젝트 시작 화면 해제
     localStorage.setItem('ta-active-session', id); // 웹뷰 리로드 복구 시 활성 세션 유지용
+    const cur = App.state.sessions.find((x) => x.id === id);
+    if (cur && cur.projectId) {
+      App.lastSessionByProject[cur.projectId] = id;
+      localStorage.setItem('ta-last-session-by-project', JSON.stringify(App.lastSessionByProject));
+    }
     TerminalView.activate(id, opts);
     App.checkDoneViewed(id); // 즉시 해제 대신 열람 카운트다운 — 무엇이 끝났는지 볼 시간을 준다
     App.renderAll();

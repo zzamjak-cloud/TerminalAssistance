@@ -64,8 +64,8 @@ button:disabled:hover { border-color: var(--border); }
   border-bottom: 1px solid var(--border);
 }
 .brand { font-weight: 700; font-size: 13px; letter-spacing: .3px; }
-/* 제목 우측 작은 버전 표기 (백엔드 get_state 의 version 으로 채움) */
-#app-version { font-weight: 400; font-size: 10px; letter-spacing: 0; color: var(--fg-dim); margin-left: 5px; }
+/* 사이드바 상단 버전 표기 (백엔드 get_state 의 version 으로 채움) — 앱 제목은 헤더에 있어 생략 */
+#app-version { font-weight: 400; font-size: 11px; letter-spacing: 0; color: var(--fg-dim); }
 #btn-settings { padding: 3px 10px; font-size: 16px; line-height: 1.2; }
 #project-list { flex: 1; overflow-y: auto; padding: 6px; }
 .project {
@@ -91,7 +91,9 @@ button:disabled:hover { border-color: var(--border); }
 
 .session-row {
   display: flex; align-items: center; gap: 8px;
-  padding: 4px 6px 4px 22px;
+  /* 프로젝트 하위임이 드러나도록 행 자체를 들여쓰기 — 활성 파랑 배경도 그만큼 좁아진다 */
+  margin-left: 18px;
+  padding: 4px 6px;
   border-radius: 6px;
   cursor: pointer;
   color: var(--fg-dim);
@@ -599,61 +601,6 @@ button:disabled:hover { border-color: var(--border); }
 #modal .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--fg); }
 #modal .check input { width: auto; }
 .form-help { color: var(--fg-dim); font-size: 11px; line-height: 1.5; margin-top: 5px; user-select: text; }
-
-/* ── 커맨드 팔레트 ── */
-#command-palette {
-  position: fixed; inset: 0;
-  z-index: 350;
-  background: rgba(0, 0, 0, .35);
-  display: flex; justify-content: center; align-items: flex-start;
-  padding-top: 12vh;
-}
-#command-palette.hidden { display: none; }
-.cp-box {
-  width: min(720px, calc(100vw - 32px));
-  max-height: 72vh;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, .45);
-  overflow: hidden;
-}
-#cp-input {
-  width: 100%;
-  background: var(--bg);
-  border: none;
-  border-bottom: 1px solid var(--border);
-  color: var(--fg);
-  padding: 13px 15px;
-  font-size: 15px;
-  outline: none;
-}
-#cp-list {
-  max-height: calc(72vh - 48px);
-  overflow-y: auto;
-  padding: 6px;
-}
-.cp-item {
-  width: 100%;
-  display: flex; gap: 10px; align-items: center;
-  text-align: left;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 8px 9px;
-}
-.cp-item:hover, .cp-item.selected { background: var(--bg-hover); border-color: var(--accent); }
-.cp-kind {
-  flex: 0 0 68px;
-  color: var(--fg-dim);
-  font-size: 10px;
-  font-weight: 700;
-}
-.cp-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.cp-title, .cp-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cp-title { font-size: 13px; color: var(--fg); }
-.cp-subtitle { font-size: 11px; color: var(--fg-dim); }
-.cp-empty { color: var(--fg-dim); font-size: 12px; padding: 18px 12px; text-align: center; }
 
 /* ── 터미널 검색 ── */
 #term-search {

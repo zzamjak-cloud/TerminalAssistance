@@ -191,11 +191,15 @@ function renderSidebar() {
     actions.appendChild(addBtn);
     actions.appendChild(editBtn);
     row.appendChild(actions);
-    // 클릭 = 폴딩 접기/펼치기 (세션 추가는 ＋ 버튼으로만). 경로는 호버 툴팁으로만 표시.
-    // 세션이 없는 프로젝트는 접을 것이 없으므로 메인 영역에 '새 세션 시작' 화면을 띄운다
+    // 클릭 = 프로젝트 선택: 세션이 없으면 즉시 새 세션 시작,
+    // 있으면 이 프로젝트에서 마지막으로 선택했던 세션으로 복귀 (접힘 상태면 펼침).
+    // 폴딩 접기/펼치기는 chevron 으로만 한다. 경로는 호버 툴팁으로만 표시.
     row.onclick = () => {
-      if (mySessions.length) { Collapsed.toggle(p.id); renderSidebar(); }
-      else App.showProjectEmpty(p.id);
+      if (Collapsed.has(p.id)) Collapsed.toggle(p.id); // 선택한 세션이 바로 보이도록 펼침
+      if (!mySessions.length) { App.createSession(p.id); return; }
+      const lastId = App.lastSessionByProject[p.id];
+      const target = mySessions.find((s) => s.id === lastId) || mySessions[mySessions.length - 1];
+      App.activateSession(target.id);
     };
     row.title = p.path;
     box.appendChild(row);
