@@ -43,12 +43,62 @@ jobs:
       - name: 프론트 의존성 설치
         run: npm install
 
+      # macOS 코드사인 — 서명 없이 빌드하면 앱이 ad-hoc 서명으로 남고, macOS 가 TCC 권한을
+      # 실행 파일의 cdhash 에 고정한다. cdhash 는 릴리즈마다 바뀌므로 사용자가 "전체 디스크
+      # 접근"을 허용해도 업데이트마다 무효화되고 권한 팝업이 반복된다. 자체서명 인증서로
+      # 서명하면 designated requirement 가 `identifier + certificate leaf` 가 되어
+      # 릴리즈가 바뀌어도 사용자 권한이 유지된다.
+      # 인증서 준비: bash scripts/macos-selfsign.sh export → 출력된 값을 리포 secret 에 등록.
+      - name: macOS 코드사인 인증서 가져오기
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::error::APPLE_CERTIFICATE secret 이 없습니다. 서명 없이 릴리즈하면 사용자 권한 팝업이 반복됩니다."
+            exit 1
+          fi
+          echo "$APPLE_CERTIFICATE" | base64 --decode > cert.p12
+
+          # 러너 전용 임시 키체인 — 러너는 매번 폐기되므로 정리 불필요.
+          # codesign 은 검색 목록에 있는 키체인만 뒤지므로 list-keychains 로 명시 등록해야 한다.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security list-keychains -d user -s build.keychain login.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import cert.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+          # 자체서명 인증서는 Apple 앵커가 없어 codeSign 정책 신뢰를 직접 넣어야
+          # codesign 이 인증서 '이름'으로 서명할 수 있다. 러너는 sudo 무암호.
+          openssl pkcs12 -in cert.p12 -passin "pass:$APPLE_CERTIFICATE_PASSWORD" \
+            -clcerts -nokeys -legacy -out cert.pem 2>/dev/null \
+            || openssl pkcs12 -in cert.p12 -passin "pass:$APPLE_CERTIFICATE_PASSWORD" \
+               -clcerts -nokeys -out cert.pem
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain cert.pem
+          rm -f cert.p12 cert.pem
+
+          # 이름으로 서명 가능한 신원이 실제로 잡혔는지 확인 — 아니면 조용히 미서명 릴리즈가 나간다
+          security find-identity -v -p codesigning
+          security find-identity -v -p codesigning | grep -qF "$APPLE_SIGNING_IDENTITY" \
+            || { echo "::error::서명 신원 '$APPLE_SIGNING_IDENTITY' 을 찾을 수 없습니다."; exit 1; }
+
       - name: 빌드 & 릴리즈 게시
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Tauri 가 번들링 중에 서명해야 한다. 번들 후 따로 서명하면 이미 만들어진
+          # .app.tar.gz 와 그 업데이터 서명(.sig)이 미서명 번들을 가리키게 된다.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Terminal Assistance ${{ github.ref_name }}'
@@ -56,3 +106,21 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      # 서명이 조용히 빠지면 사용자 쪽 권한 팝업이 그대로 재발하므로 산출물을 직접 확인한다.
+      # designated requirement 에 cdhash 가 남아 있으면 = 서명 실패(ad-hoc) 이므로 실패 처리.
+      - name: macOS 서명 결과 검증
+        if: matrix.platform == 'macos-latest'
+        run: |
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/Terminal Assistance.app"
+          codesign -dv "$APP"
+          DR="$(codesign -d -r- "$APP" 2>&1 | tail -1)"
+          echo "$DR"
+          case "$DR" in
+            *cdhash*|*"not signed"*)
+              echo "::error::ad-hoc 서명 상태입니다. 업데이트마다 사용자 권한이 초기화됩니다."
+              exit 1 ;;
+          esac
+          echo "$DR" | grep -q 'certificate leaf' \
+            || { echo "::error::designated requirement 에 인증서 조건이 없습니다."; exit 1; }
+          codesign --verify --deep --strict "$APP"

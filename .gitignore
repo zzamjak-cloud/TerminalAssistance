@@ -14,3 +14,7 @@ dist/
 # 도구 부산물
 .playwright-mcp/
 .serena/
+
+# macOS 코드사인 인증서 (절대 커밋 금지)
+*.p12
+*-secrets.txt

@@ -48,6 +48,59 @@ npm run dev      # 개발 실행
 npm run build    # 배포 빌드 (dmg / exe)
 ```
 
+### macOS: 권한 팝업이 반복되는 경우
+
+서명 인증서 없이 빌드하면 앱이 ad-hoc(linker) 서명 상태로 남습니다. ad-hoc 서명은 인증서 체인이
+없어서 macOS 가 권한 기록(TCC csreq)을 실행 파일의 cdhash 에만 고정하는데, cdhash 는 빌드마다
+바뀝니다. 그래서 "전체 디스크 접근"을 허용해도 다음 빌드에서 무효화되고, 터미널에서 `claude` 가
+홈 디렉터리를 훑을 때 문서·데스크탑·다운로드·음악·사진 폴더 권한 팝업이 매번 다시 뜹니다.
+
+자체서명 인증서로 서명하면 csreq 가 `identifier + certificate leaf` 기준이 되어 재빌드해도
+권한이 유지됩니다.
+
+```bash
+npm run sign:mac    # 최초 1회: 인증서 생성 + 현재 빌드 서명 (관리자 권한 불필요)
+npm run build:mac   # 이후 빌드는 이 명령으로 — 빌드 중 자동 서명됨
+
+bash scripts/macos-selfsign.sh reset    # 낡은 cdhash 에 묶인 기존 허용 기록 초기화
+bash scripts/macos-selfsign.sh verify   # designated requirement 확인 (cdhash 가 없으면 정상)
+```
+
+`reset` 후에는 시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근에서 기존
+`Terminal Assistance` 항목을 지우고 서명된 앱을 다시 등록하면 됩니다.
+
+릴리즈도 같은 인증서로 서명되므로(아래 참고), 자동 업데이트 후에도 권한이 유지됩니다.
+서명되지 않은 예전 버전을 쓰고 있다면 설치된 앱을 직접 재서명할 수도 있습니다.
+
+```bash
+bash scripts/macos-selfsign.sh installed   # /Applications 의 앱을 재서명
+```
+
+### macOS 릴리즈 서명 설정 (메인테이너용, 최초 1회)
+
+릴리즈 빌드를 서명하지 않으면 **모든 사용자**가 업데이트마다 같은 권한 팝업을 다시 겪습니다.
+CI 가 로컬과 동일한 자체서명 인증서를 쓰도록 secret 을 등록하세요.
+
+```bash
+bash scripts/macos-selfsign.sh export   # secret 값을 파일로 저장
+```
+
+`~/.tauri/terminalassistance-codesign-secrets.txt` 의 값들을 리포 Settings → Secrets and
+variables → Actions 에 등록하고, **등록 후 파일을 삭제하세요**
+(`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `KEYCHAIN_PASSWORD`).
+
+- 인증서와 비밀번호는 `~/.tauri/terminalassistance-codesign.p12` / `.pass` 에 있습니다.
+  **분실하면 재발급이 불가능하고**, 새로 만들면 designated requirement 의 leaf 해시가 바뀌어
+  전체 사용자의 권한 허용이 한 번 초기화됩니다. 백업해 두세요.
+- 개인키이므로 터미널·로그·리포에 노출되지 않게 다루세요. 유출되면 그 인증서로 서명된
+  다른 앱이 사용자가 이 앱에 부여한 권한을 물려받을 수 있습니다.
+- 릴리즈 워크플로에 검증 단계가 있어, 서명이 빠지면 릴리즈가 실패합니다.
+- 공증(notarization)은 하지 않으므로 첫 실행 시 Gatekeeper 경고는 그대로 남습니다
+  (현재 ad-hoc 상태와 동일). 이를 없애려면 Apple Developer ID 가 필요합니다.
+
+> `npm run dev` 는 `.app` 번들이 아닌 실행 파일을 직접 띄우므로 이 방식으로 서명할 수 없습니다.
+> 권한 동작을 확인할 때는 `npm run build:mac` 으로 만든 번들을 사용하세요.
+
 ## 릴리즈 (메인테이너용)
 
 버전 태그를 푸시하면 GitHub Actions 가 macOS/Windows 를 빌드해 릴리즈를 게시하고,
