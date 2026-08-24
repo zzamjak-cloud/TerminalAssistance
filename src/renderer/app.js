@@ -371,11 +371,25 @@ const App = {
     }
   },
 
+  // 최근 첨부 이미지 — 패널 작성기 안에 그린다 (창 하단 고정 스트립은 입력창을 가렸다)
   renderImageStrip() {
-    const strip = document.getElementById('image-strip');
+    let layoutChanged = false;
+    for (let i = 0; i < 4; i++) {
+      const c = TerminalView.composers[i];
+      if (c && App.renderPaneImages(c, App.paneSessionId(i))) layoutChanged = true;
+    }
+    if (layoutChanged) TerminalView.fitActive(); // 스트립 유무가 터미널 높이를 바꾼다
+  },
+
+  // 스트립 표시 여부가 바뀌면 true (터미널 재fit 필요)
+  renderPaneImages(c, sessionId) {
+    const strip = c.images;
     strip.textContent = '';
-    const imgs = App.state.images[App.state.activeId] || [];
-    if (!imgs.length) return;
+    const imgs = (sessionId && App.state.images[sessionId]) || [];
+    const was = strip.classList.contains('hidden');
+    strip.classList.toggle('hidden', !imgs.length);
+    const changed = was !== strip.classList.contains('hidden');
+    if (!imgs.length) return changed;
     const label = document.createElement('span');
     label.className = 'strip-label';
     label.textContent = '최근 첨부:';
@@ -388,6 +402,7 @@ const App = {
       el.onclick = () => ta.openPath(im.path);
       strip.appendChild(el);
     }
+    return changed;
   },
 
   // ── 세션 ──
@@ -520,8 +535,43 @@ const App = {
     if (text) TerminalView.paste(id, text);
   },
 
-  attachImage(id, path) {
-    TerminalView.paste(id, quotePath(path) + ' ');
+  // 패널 입력창에 붙여넣기 — 클립보드에 이미지가 있으면 경로 첨부, 아니면 텍스트 삽입
+  async pasteToComposer(sessionId, composer, clipboardText) {
+    if (!sessionId || !composer) return;
+    let imgPath = null;
+    try { imgPath = await ta.clipboardImage(); } catch (_) { /* 이미지 없음 */ }
+    if (imgPath) { App.attachImage(sessionId, imgPath, composer); return; }
+    let text = clipboardText;
+    if (!text) text = await ta.clipboardText().catch(() => '');
+    if (text) App.insertComposerText(composer, sessionId, text);
+  },
+
+  // 커서 위치에 텍스트 삽입 + 작성 중 내용 기억 + 높이 재조정
+  insertComposerText(composer, sessionId, text) {
+    const el = composer.input;
+    if (el.disabled) return;
+    const start = el.selectionStart != null ? el.selectionStart : el.value.length;
+    const end = el.selectionEnd != null ? el.selectionEnd : el.value.length;
+    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+    const caret = start + text.length;
+    el.selectionStart = el.selectionEnd = caret;
+    App.rememberComposerText(sessionId, el.value);
+    TerminalView.resizeComposer(composer);
+    el.focus();
+  },
+
+  // 화면 좌표 아래의 패널 작성기 (입력창·이미지 스트립 등 작성기 영역 전체)
+  composerAtPoint(x, y) {
+    const el = document.elementFromPoint(x, y);
+    const root = el && el.closest ? el.closest('.pane-prompt') : null;
+    if (!root) return null;
+    return TerminalView.composers.find((c) => c.root === root) || null;
+  },
+
+  // composer 를 주면 그 입력창에, 없으면 터미널에 경로를 넣는다
+  attachImage(id, path, composer) {
+    if (composer) App.insertComposerText(composer, id, quotePath(path) + ' ');
+    else TerminalView.paste(id, quotePath(path) + ' ');
     if (!App.state.images[id]) App.state.images[id] = [];
     App.state.images[id].unshift({ path, src: ta.fileSrc(path) });
     if (App.state.images[id].length > IMAGE_STRIP_MAX) App.state.images[id].length = IMAGE_STRIP_MAX;
@@ -531,15 +581,20 @@ const App = {
   // position: Tauri drag-drop 물리 좌표 — 분할 중이면 드롭 지점 아래 패널의 세션을 대상으로
   handleDrop(paths, position) {
     let id = null;
+    let composer = null;
     if (position && typeof position.x === 'number') {
       const scale = window.devicePixelRatio || 1;
-      id = App.sessionAtPoint(position.x / scale, position.y / scale);
+      const x = position.x / scale, y = position.y / scale;
+      // 프롬프트 입력창 위에 놓았으면 그 패널 작성기에, 터미널 위면 터미널에 삽입한다
+      composer = App.composerAtPoint(x, y);
+      id = composer ? App.paneSessionId(composer.paneIdx) : App.sessionAtPoint(x, y);
     }
     id = id || App.state.activeId;
     if (!id) return;
     if (id !== App.state.activeId) App.activateSession(id, { noFocus: true });
     for (const p of paths) {
-      if (/\.(png|jpe?g|gif|bmp|tiff?|webp)$/i.test(p)) App.attachImage(id, p);
+      if (/\.(png|jpe?g|gif|bmp|tiff?|webp)$/i.test(p)) App.attachImage(id, p, composer);
+      else if (composer) App.insertComposerText(composer, id, quotePath(p) + ' ');
       else TerminalView.paste(id, quotePath(p) + ' ');
     }
   },

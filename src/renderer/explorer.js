@@ -172,8 +172,15 @@ Object.assign(App, {
         } else if (target && target.classList.contains('memo-modal-editor')) {
           App.insertMemoPlainText(target, quoted + ' ');
           target.dispatchEvent(new Event('input', { bubbles: true }));
+        } else if (target && target.classList.contains('pane-prompt-input')) {
+          // 패널 프롬프트에 드롭 — 커서 위치에 경로 삽입, 이미지면 첨부 목록에도 기록
+          const composer = App.composerAtPoint(ev.clientX, ev.clientY);
+          const sid = composer ? App.paneSessionId(composer.paneIdx) : null;
+          if (composer && sid) {
+            if (!isDir && /\.(png|jpe?g|gif|bmp|tiff?|webp)$/i.test(name)) App.attachImage(sid, absPath, composer);
+            else App.insertComposerText(composer, sid, quoted + ' ');
+          }
         } else if (target && target.tagName === 'TEXTAREA') {
-          // 패널 프롬프트에 드롭 — 끝에 경로를 덧붙인다
           target.value = target.value + (target.value && !/\s$/.test(target.value) ? ' ' : '') + quoted + ' ';
           target.dispatchEvent(new Event('input'));
         } else if (target && App.state.activeId) {

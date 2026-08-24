@@ -38,6 +38,8 @@ const TerminalView = {
   buildComposer(paneIdx, pane) {
     const root = document.createElement('div');
     root.className = 'pane-prompt hidden';
+    const images = document.createElement('div');
+    images.className = 'pane-prompt-images hidden'; // 이 세션에 첨부한 최근 이미지
     const list = document.createElement('div');
     list.className = 'pane-prompt-list hidden';
     const compose = document.createElement('div');
@@ -65,10 +67,10 @@ const TerminalView = {
     const fanout = mkBtn('pp-fanout', '일괄', '선택한 여러 세션에 즉시 전송');
     actions.append(send, schedule, fanout);
     compose.append(input, actions);
-    root.append(list, compose);
+    root.append(images, list, compose);
     pane.appendChild(root);
 
-    const c = { paneIdx, root, list, input, send, schedule, fanout };
+    const c = { paneIdx, root, images, list, input, send, schedule, fanout };
     const target = () => App.paneSessionId(paneIdx); // 전송 시점의 배정 세션을 그때그때 조회
     // xterm의 키/IME 보정과 완전히 분리해 일반 textarea의 편집 감각을 유지한다.
     input.addEventListener('keydown', (ev) => {
@@ -78,6 +80,15 @@ const TerminalView = {
         ev.preventDefault();
         App.sendComposerPrompt(target());
       }
+    });
+    // 텍스트 붙여넣기는 기본 동작에 맡기고(실행 취소 이력 보존), 텍스트가 없을 때만
+    // 네이티브 클립보드에서 이미지를 받아 저장된 PNG 경로를 삽입한다.
+    input.addEventListener('paste', (ev) => {
+      ev.stopPropagation();
+      const text = ev.clipboardData ? ev.clipboardData.getData('text/plain') : '';
+      if (text) return;
+      ev.preventDefault();
+      void App.pasteToComposer(target(), c, '');
     });
     input.addEventListener('keypress', (ev) => ev.stopPropagation());
     input.addEventListener('keyup', (ev) => ev.stopPropagation());

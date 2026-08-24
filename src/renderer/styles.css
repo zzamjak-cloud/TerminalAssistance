@@ -500,18 +500,18 @@ button:disabled:hover { border-color: var(--border); }
 }
 #btn-empty-new:hover { background: var(--accent-fill-hi); }
 
-/* ── 이미지 스트립 ── */
-#image-strip {
+/* ── 이미지 스트립 (패널 작성기 안 — 창 하단 고정 시 입력창을 가렸다) ── */
+.pane-prompt-images {
   display: flex; gap: 6px; align-items: center;
-  padding: 6px 12px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
+  padding: 4px 6px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg);
   overflow-x: auto;
 }
-#image-strip:empty { display: none; }
+.pane-prompt-images.hidden { display: none; }
 .strip-label { font-size: 11px; color: var(--fg-dim); flex: none; }
 .strip-thumb {
-  height: 44px; border-radius: 4px; cursor: pointer;
+  height: 38px; border-radius: 4px; cursor: pointer;
   border: 1px solid var(--border); flex: none;
 }
 .strip-thumb:hover { border-color: var(--accent); }
