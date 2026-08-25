@@ -81,11 +81,12 @@ button:disabled:hover { border-color: var(--border); }
   user-select: none;
 }
 #sidebar-head {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; align-items: center; gap: 6px;
   padding: 12px;
   border-bottom: 1px solid var(--border);
 }
-.brand { font-weight: 700; font-size: 13px; letter-spacing: .3px; }
+/* 버전 표기가 남은 폭을 차지 → ＋(프로젝트 추가)·⚙ 버튼은 우측 정렬 */
+.brand { flex: 1; min-width: 0; font-weight: 700; font-size: 13px; letter-spacing: .3px; }
 /* 사이드바 상단 버전 표기 (백엔드 get_state 의 version 으로 채움) — 앱 제목은 헤더에 있어 생략 */
 #app-version { font-weight: 400; font-size: 11px; letter-spacing: 0; color: var(--fg-dim); }
 #btn-settings { padding: 3px 10px; font-size: 16px; line-height: 1.2; }
@@ -159,8 +160,7 @@ button:disabled:hover { border-color: var(--border); }
 .status-tag.done { color: var(--done); background: var(--done-tint); font-weight: 700; }
 .status-tag.exited { color: var(--exited); background: var(--exited-tint); }
 
-#sidebar-foot { padding: 10px; display: flex; gap: 6px; border-top: 1px solid var(--border); }
-#btn-add-project { flex: 1; }
+#btn-add-project { padding: 2px 8px; font-size: 13px; }
 
 /* ── 탐색기 (프로젝트 파일 트리) ── */
 #explorer {
@@ -304,35 +304,6 @@ button:disabled:hover { border-color: var(--border); }
 #waiting-indicator:hover { background: var(--waiting-tint-hi); }
 #waiting-indicator.hidden { display: none; }
 
-/* 고정바: 프리셋이 없어도 항상 표시 (+ 프리셋 버튼이 상주) */
-#preset-bar {
-  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
-  min-height: 20px;
-}
-#btn-add-preset {
-  border-radius: 14px;
-  border-style: dashed;
-  padding: 3px 12px;
-  font-size: 12px;
-  color: var(--fg-dim);
-}
-#btn-add-preset:hover { color: var(--fg); border-style: solid; }
-.preset-chip {
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 3px 12px;
-  font-size: 12px;
-  cursor: pointer;
-  max-width: 260px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.preset-chip:hover { border-color: var(--accent); background: var(--bg-hover-hi); }
-/* 전역 프리셋: 파랑 배경, 목록 맨앞 고정 */
-.preset-chip.global { background: var(--accent-fill); border-color: var(--accent-strong); }
-.preset-chip.global:hover { background: var(--accent-fill-hi); }
 /* ── 프리셋 관리 팝업 ── */
 .pm-title {
   display: flex; justify-content: space-between; align-items: center;
@@ -371,8 +342,10 @@ button:disabled:hover { border-color: var(--border); }
 }
 /* 패널 본문 = 터미널 holder 영역. 아래는 그 패널 전용 프롬프트 작성기 */
 .pane-body { position: relative; flex: 1; min-height: 0; }
-/* 분할 중 포커스 패널: 상단 파랑 바 (QuickFolder 관례) */
-#term-area.split .term-pane.focused { box-shadow: inset 0 2px 0 var(--accent-strong); }
+/* 분할 중 포커스 패널: 상단 파랑 바 (QuickFolder 관례).
+   패널 헤더 바가 불투명 배경으로 패널의 inset 그림자를 가리므로 바에도 같은 표시를 그린다. */
+#term-area.split .term-pane.focused,
+#term-area.split .term-pane.focused .pane-preset-bar { box-shadow: inset 0 2px 0 var(--accent-strong); }
 .split-divider { display: none; background: var(--border); transition: background .15s; }
 .split-divider:hover, .split-divider.active { background: var(--accent); }
 .split-divider.v { cursor: col-resize; }
@@ -401,10 +374,30 @@ button:disabled:hover { border-color: var(--border); }
   flex: 1; min-width: 0; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* 패널 헤더 바 (분할 중) — 한 줄 고정. 드롭다운이 바깥으로 열려야 하므로 클리핑하지 않는다 */
+/* 빈 패널의 '+ 세션 추가' — 프로젝트 선택 모달로 새 세션 시작 */
+.pane-add-session {
+  flex: none;
+  border-radius: 14px; border-style: dashed;
+  padding: 4px 14px; font-size: 12px; color: var(--fg-dim);
+}
+.pane-add-session:hover { color: var(--fg); border-style: solid; border-color: var(--accent); }
+/* '+ 세션 추가' 모달의 프로젝트 항목 */
+.sa-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 10px; margin-bottom: 4px;
+  font-size: 12px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sa-item:hover { background: var(--accent-fill); border-color: var(--accent-strong); }
+/* 패널 헤더 바 — 단일 화면·분할 공통, 한 줄 고정.
+   배경/하단 구분선으로 터미널 본문과 시각적으로 분리한다.
+   드롭다운이 바깥으로 열려야 하므로 클리핑하지 않는다 */
 .pane-preset-bar {
-  position: absolute; top: 4px; left: 8px; right: 4px; height: 26px;
+  position: absolute; top: 0; left: 0; right: 0; height: 30px;
   display: flex; gap: 6px; align-items: center;
+  padding: 0 6px 0 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
   overflow: visible;
   z-index: 3;
 }
@@ -412,21 +405,36 @@ button:disabled:hover { border-color: var(--border); }
 .pane-preset-label {
   flex: 0 1 auto; display: flex; align-items: center; gap: 6px;
   min-width: 0;
-  padding-right: 9px; border-right: 1px solid var(--border);
   font-size: 11px; font-weight: 700; overflow: hidden;
 }
-.ppl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ppl-branch { flex: none; font-weight: 400; opacity: .72; }
-/* 프로젝트 프리셋 드롭다운 — 칩을 늘어놓지 않고 접어 둬 패널 폭을 아낀다 */
-.pane-preset-dd { position: relative; flex: none; }
-.pane-preset-toggle {
-  padding: 2px 9px; font-size: 11px; border-radius: 12px;
-  color: var(--fg-dim); white-space: nowrap;
+.ppl-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 4px; border: 1px solid transparent; border-radius: 4px;
+  cursor: text;
 }
-.pane-preset-toggle:hover, .pane-preset-toggle.open { color: var(--fg); border-color: var(--accent); }
+/* 호버 = 흐린 입력필드 프리뷰 (더블클릭으로 이름 변경 가능함을 암시) */
+.ppl-name:hover { background: var(--bg); border-color: var(--border); }
+/* 패널 헤더의 세션 이름 인라인 편집 입력 */
+.ppl-rename {
+  flex: 0 1 auto; min-width: 110px; max-width: 240px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--accent); border-radius: 4px;
+  padding: 1px 5px; font-size: 11px; font-family: inherit; font-weight: 400;
+}
+.ppl-rename:focus { outline: none; }
+.ppl-branch { flex: none; font-weight: 400; opacity: .72; }
+/* 프리셋 드롭다운 — 헤더 우측 정렬, 오렌지 배경으로 눈에 띄게 */
+.pane-preset-dd { position: relative; flex: none; margin-left: auto; }
+.pane-preset-toggle {
+  padding: 2px 10px; font-size: 11px; border-radius: 12px; font-weight: 700;
+  background: #e07b1a; border-color: #c96a10; color: #fff;
+  white-space: nowrap;
+}
+.pane-preset-toggle:hover, .pane-preset-toggle.open { background: #f08c2b; border-color: #f08c2b; color: #fff; }
+/* 메뉴는 버튼 기준 우측 끝 정렬로 열린다 (헤더 우측 배치와 짝) */
 .pane-preset-menu {
-  position: absolute; top: calc(100% + 4px); left: 0; z-index: 12;
-  min-width: 170px; max-width: 280px; max-height: 190px; overflow-y: auto;
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 12;
+  min-width: 170px; max-width: 280px; max-height: 240px; overflow-y: auto;
   display: flex; flex-direction: column; gap: 1px; padding: 4px;
   background: var(--bg-panel);
   border: 1px solid var(--border); border-radius: 8px;
@@ -440,7 +448,18 @@ button:disabled:hover { border-color: var(--border); }
 }
 .pane-preset-item:hover { background: var(--bg-hover-hi); }
 .pane-preset-item.dragging { opacity: .35; }
-/* 프리셋 바가 있는 패널은 터미널을 그만큼 아래로 */
+/* 전역 프리셋: 파랑 배경, 목록 맨앞 고정 (구 상단 고정바 칩과 같은 구분) */
+.pane-preset-item.global { background: var(--accent-fill); }
+.pane-preset-item.global:hover { background: var(--accent-fill-hi); }
+/* '+ 프리셋 추가' — 목록과 구분선으로 분리된 관리 진입점 */
+.pane-preset-add {
+  border: none; background: none; color: var(--fg-dim);
+  text-align: left; padding: 6px 8px 5px; font-size: 11px; border-radius: 0 0 5px 5px;
+  border-top: 1px solid var(--border); margin-top: 3px;
+  white-space: nowrap;
+}
+.pane-preset-add:hover { color: var(--fg); background: var(--bg-hover-hi); }
+/* 헤더 바가 있는 패널은 터미널을 그만큼 아래로 */
 .term-pane.with-presets .term-holder { top: 36px; }
 
 /* xterm의 숨은 textarea와 분리된 패널 전용 프롬프트 입력창 — 분할 패널마다 독립.
@@ -458,11 +477,12 @@ button:disabled:hover { border-color: var(--border); }
   flex: 1; min-width: 0; resize: none;
   overflow-y: hidden; padding: 7px 9px;
   border: 1px solid var(--border); border-radius: 6px;
-  background: var(--bg); color: var(--fg);
+  /* 터미널 배경보다 밝은 회색 — 입력창이 터미널과 구분되어 보이게 (오입력 방지) */
+  background: var(--bg-hover); color: var(--fg);
   font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   outline: none;
 }
-.pane-prompt-input:focus { border-color: var(--accent); }
+.pane-prompt-input:focus { border-color: var(--accent); background: var(--bg-hover-hi); }
 .pane-prompt-input:disabled { opacity: .55; cursor: not-allowed; }
 .pane-prompt-actions {
   display: flex; flex: none; flex-direction: column; align-self: flex-start; align-items: stretch;
@@ -714,8 +734,8 @@ button:disabled:hover { border-color: var(--border); }
 #sidebar.collapsed { width: 40px !important; cursor: pointer; }
 #sidebar.collapsed .brand,
 #sidebar.collapsed #btn-settings,
-#sidebar.collapsed #project-list,
-#sidebar.collapsed #sidebar-foot { display: none; }
+#sidebar.collapsed #btn-add-project,
+#sidebar.collapsed #project-list { display: none; }
 #sidebar.collapsed #sidebar-head { justify-content: center; padding: 12px 4px; }
 #sidebar.collapsed #btn-fold-left { transform: rotate(180deg); }
 #prompt-panel span, #prompt-panel button { white-space: nowrap; }
@@ -750,6 +770,21 @@ button:disabled:hover { border-color: var(--border); }
 }
 .session-rename:focus { outline: none; }
 
+/* 하단 중앙 토스트 — 복구 알림 등 가벼운 공지. 클릭을 막지 않는다 */
+#app-toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 8px);
+  max-width: min(560px, 84vw);
+  padding: 9px 16px;
+  background: var(--bg-panel); color: var(--fg);
+  border: 1px solid var(--accent-strong); border-radius: 8px;
+  box-shadow: var(--shadow);
+  font-size: 12px; font-weight: 600;
+  opacity: 0; pointer-events: none;
+  transition: opacity .25s, transform .25s;
+  z-index: 200;
+}
+#app-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
 .mini-dots { display: flex; gap: 3px; align-items: center; }
 .mini-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-dim); }
 .mini-dot.running { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
@@ -758,7 +793,7 @@ button:disabled:hover { border-color: var(--border); }
 .mini-dot.exited { background: var(--exited); }
 
 /* ── 포인터 드래그 정렬 (프로젝트·프리셋 공용) ── */
-.project.dragging, .preset-chip.dragging { opacity: .35; }
+.project.dragging { opacity: .35; }
 body.sorting { cursor: grabbing; user-select: none; }
 body.sorting * { cursor: grabbing !important; }
 /* 드롭 위치 표시: 파란 점선 */

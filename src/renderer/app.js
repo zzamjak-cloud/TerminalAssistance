@@ -1,6 +1,7 @@
 // 앱 상태·부트스트랩·세션 수명주기.
 // 나머지 책임은 파일로 분리: 초안 drafts.js / AI 세션 기록 열람 claude-sessions.js /
-// 패널 레이아웃 panel-layout.js / 모달 modals.js / 사이드바·프리셋 렌더 sidebar.js·presets.js /
+// 패널 레이아웃 panel-layout.js / 모달 modals.js / 사이드바 렌더 sidebar.js /
+// 분할·패널 헤더(프리셋 드롭다운) split-view.js /
 // 터미널 terminal-view.js. 각 파일이 Object.assign(App, ...) 으로 메서드를 붙인다.
 const App = {
   state: {
@@ -24,6 +25,10 @@ const App = {
   lastSessionByProject: JSON.parse(localStorage.getItem('ta-last-session-by-project') || '{}'),
 
   async boot() {
+    // 크래시 복구 감지 — sessionStorage 는 렌더러 리로드에는 살아남고 새 프로세스에선 비어 있다.
+    // 값이 이미 있으면 이번 boot 는 리로드(크래시 자동 복구 또는 수동 새로고침)다.
+    const recovered = sessionStorage.getItem('ta-booted') === '1';
+    sessionStorage.setItem('ta-booted', '1');
     TerminalView.init();
     // 기본 온보딩 안내(index.html 정적 마크업)를 보관 — 빈 프로젝트 화면과 번갈아 쓴다
     App._emptyDefault = document.getElementById('empty-state').innerHTML;
@@ -33,6 +38,9 @@ const App = {
       drafts: st.drafts || {}, platform: st.platform || ''
     });
     await App.cleanupDeadQueuedPrompts();
+    App.restoreComposerTexts(); // 리로드·재시작 전 작성 중이던 프롬프트 복원
+    // 리로드·종료 직전 작성 중 텍스트를 즉시 저장 (스로틀 대기분 포함)
+    window.addEventListener('pagehide', () => App.flushComposerPersists());
     // 사이드바 제목 우측 버전 표기
     document.getElementById('app-version').textContent = st.version ? 'v' + st.version : '';
 
@@ -53,12 +61,13 @@ const App = {
         App.onDone(s, busyMs);
         // 반복 done 이벤트가 다음 예약까지 소진하지 않도록 실제 실행 완료 전이만 처리한다.
         if (prevStatus === 'running') App.handleQueuedDone(sessionId);
+        if (prevStatus !== 'done') App.focusComposerOnDone(s);
       } else {
         App.clearDoneTimers(sessionId); // 새 작업 시작/입력 등으로 done 이탈 → 확인 추적 취소
       }
       if (status === 'waiting') App.onWaiting(s);
       updateSessionStatus(s); // 전체 재구축 대신 해당 행만 갱신 (호버·드래그 유지)
-      if (App.isSplit()) App.refreshPickerStatus(s); // 피커의 상태 태그만 최신화
+      App.refreshPickerStatus(s); // 피커·패널 헤더의 상태 태그만 최신화 (단일 화면 헤더 포함)
       App.renderTopbar();
       App.renderComposerQueue(); // 보이는 패널 전부의 예약 목록 갱신
     });
@@ -81,8 +90,6 @@ const App = {
     };
 
     document.getElementById('btn-add-project').onclick = () => App.showProjectModal();
-    document.getElementById('btn-home-session').onclick = () => App.createSession(null);
-    document.getElementById('btn-add-preset').onclick = () => App.showPresetManager();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
     document.getElementById('btn-claude-refresh').onclick = () => App.renderClaudeList(true);
@@ -132,9 +139,41 @@ const App = {
     }
 
     App.renderAll();
+    if (recovered) App.noteRecovery(); // UI 가 그려진 뒤 복구 사실을 알린다
 
     // 자동 업데이트 확인 (백그라운드 — 실패는 조용히 무시)
     setTimeout(() => App.checkUpdate(), 2500);
+  },
+
+  // ── 크래시 복구 가시화 ──
+  // 리로드 복구가 일어났음을 토스트로 알리고 누적 횟수·시각을 기록한다.
+  // (수동 새로고침도 같은 경로로 감지되지만, 알림이 무해하므로 구분하지 않는다)
+  noteRecovery() {
+    let count = 0;
+    try {
+      count = (parseInt(localStorage.getItem('ta-recovery-count'), 10) || 0) + 1;
+      localStorage.setItem('ta-recovery-count', String(count));
+      // 최근 복구 시각 30건 보관 — 깜빡임 원인 추적용 (콘솔에서 ta-recovery-log 조회)
+      let log = [];
+      try { log = JSON.parse(localStorage.getItem('ta-recovery-log') || '[]'); } catch (_) {}
+      log.push(new Date().toISOString());
+      localStorage.setItem('ta-recovery-log', JSON.stringify(log.slice(-30)));
+    } catch (_) {}
+    App.showToast(`⟳ 화면이 복구되었습니다 — 작성 중이던 프롬프트는 보존됩니다${count ? ` (누적 ${count}회)` : ''}`);
+  },
+
+  // 하단 중앙 토스트 — 자동으로 사라진다 (복구 알림 등 가벼운 공지용)
+  showToast(message, ms) {
+    let el = document.getElementById('app-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'app-toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.classList.add('show');
+    clearTimeout(App._toastTimer);
+    App._toastTimer = setTimeout(() => el.classList.remove('show'), ms || 7000);
   },
 
   // 테마 변경 후 — JS 로 직접 칠한 색(프로젝트 이름 등)을 새 테마 기준으로 다시 계산
@@ -143,14 +182,14 @@ const App = {
     renderSidebar();
     App.renderTopbar();
     App.renderEmptyState();
-    if (App.isSplit && App.isSplit()) { App.renderPanePickers(); App.renderPanePresets(); }
+    App.renderPanePickers();
+    App.renderPanePresets(); // 패널 헤더는 단일 화면에도 있다
   },
 
   renderAll() {
     renderSidebar();
     App.renderExplorer();
-    renderPresets();
-    App.renderSplit();
+    App.renderSplit(); // renderPanePresets(패널 헤더·프리셋 드롭다운) 포함
     App.renderTopbar();
     App.renderImageStrip();
     App.renderClaudeList();
@@ -193,6 +232,23 @@ const App = {
       App.newSessionInActiveProject();
       return true;
     }
+    // 패널 폴딩 토글 3종 — P: 우측 패널, I: 좌측 프로젝트 사이드바, O: 탐색기
+    // (preventDefault 로 브라우저 기본 동작(인쇄/파일 열기)을 막는다)
+    if (key === 'p') {
+      ev.preventDefault();
+      App.togglePromptPanel();
+      return true;
+    }
+    if (key === 'i') {
+      ev.preventDefault();
+      App.toggleLeftSidebar();
+      return true;
+    }
+    if (key === 'o') {
+      ev.preventDefault();
+      App.toggleExplorer();
+      return true;
+    }
     return false;
   },
 
@@ -232,7 +288,9 @@ const App = {
     if (!proj || App.state.sessions.some((s) => s.projectId === pid)) {
       App.state.projectEmptyId = null;
       el.textContent = '';
-      if (App.state.sessions.length) {
+      // 분할 중에는 세션이 하나도 없어도 온보딩 오버레이를 띄우지 않는다 —
+      // 각 패널의 피커('+ 세션 추가' 포함)가 빈 화면 안내를 대신한다.
+      if (App.state.sessions.length || App.isSplit()) {
         el.style.display = 'none';
       } else {
         el.style.display = 'flex';
@@ -272,7 +330,7 @@ const App = {
     }
     if (!changed) return;
     App.renderTopbar();
-    if (App.isSplit()) App.renderPanePresets();
+    App.renderPanePresets(); // 패널 헤더의 ⎇브랜치 갱신 (단일 화면 포함)
   },
 
   // ── 코덱스 남은 사용량 (상단바 표시) ──
@@ -327,7 +385,7 @@ const App = {
     if (to < 0) { arr.splice(from, 0, moved); return; }
     if (!before) to += 1;
     arr.splice(to, 0, moved);
-    renderPresets();
+    App.renderPanePresets();
     await ta.reorderPresets(arr.map((p) => p.id)).catch((e) => console.warn('프리셋 순서 저장 실패:', e));
   },
 
@@ -417,6 +475,16 @@ const App = {
       const info = await ta.createSession(projectId);
       App.state.sessions.push(info);
       TerminalView.create(info, App.state.settings.fontSize);
+      // 분할 중 새 세션은 빈 패널부터 채운다 — 포커스 패널이 이미 차 있으면 첫 빈 패널로
+      // 포커스를 옮겨, activateSession 이 그 자리에 배정 + 선택하게 한다.
+      // (포커스 패널 자체가 빈 패널이면 그대로 — 피커의 '+ 세션 추가'가 지정한 자리 유지)
+      if (App.isSplit()) {
+        const panes = App.splitVisiblePanes();
+        if (panes[App.split.focused]) {
+          const empty = panes.indexOf(null);
+          if (empty >= 0) App.split.focused = empty;
+        }
+      }
       App.activateSession(info.id);
       return info; // AI 세션 재개 등 후속 입력용
     } catch (e) {
@@ -462,6 +530,7 @@ const App = {
     await ta.closeSession(id);
     await App.clearQueuedPrompts(id);
     App._composerTexts.delete(id);
+    App.dropComposerPersist(id); // 저장분·예약 타이머 정리
     App.state.sessions = App.state.sessions.filter((s) => s.id !== id);
     delete App.state.images[id];
     delete App.state.branches[id];
@@ -488,6 +557,22 @@ const App = {
   DONE_VIEW_MS: 5000,
   DONE_FALLBACK_MS: 5 * 60 * 1000,
   doneTimers: new Map(), // sessionId → { view, fallback }
+
+  // 작업 완료 시 커서를 그 패널의 프롬프트 입력창으로 — 완료 직후 이어서 치는
+  // 텍스트가 터미널(xterm)로 새는 것을 막는다. 보고 있는(활성) 세션에만 적용하고,
+  // 다른 입력 요소에서 작성 중이면 포커스를 뺏지 않는다.
+  // (xterm 의 숨은 textarea 는 '커서가 터미널에 있는' 상태이므로 입력창으로 옮겨 온다)
+  focusComposerOnDone(s) {
+    if (s.id !== App.state.activeId) return;
+    if (App.isOverlayOpen('modal-backdrop')) return;
+    const c = TerminalView.composerForSession(s.id);
+    if (!c || c.input.disabled) return;
+    const ae = document.activeElement;
+    const editing = ae && ae !== c.input && (ae.isContentEditable ||
+      (['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName) && !ae.classList.contains('xterm-helper-textarea')));
+    if (editing) return;
+    c.input.focus();
+  },
 
   // 작업 완료: 확인 추적 시작 + 보고 있지 않은 세션이면 데스크톱 알림
   onDone(s, busyMs) {

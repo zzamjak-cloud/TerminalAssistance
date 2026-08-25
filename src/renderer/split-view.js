@@ -1,4 +1,4 @@
-// 터미널 분할화면: 열×행 그리드 8종 (1×1 ~ 3×2 · 2×3, 최대 6분할).
+// 터미널 분할화면: 열×행 그리드 9종 (1×1 ~ 4×1 · 3×2 · 2×3, 최대 6분할).
 // 상태는 App.split 이 단독 소유하고, holder 배치·표시는 TerminalView.syncLayout 이 수행한다.
 // 분할 후 세션 미배정 패널에는 피커가 떠서 사용자가 직접 세션을 골라 배정한다.
 // 각 패널의 동작(프롬프트 입력·프리셋·검색 등)은 분할 전과 동일 — 활성 세션 = 포커스 패널.
@@ -12,6 +12,7 @@ const SPLIT_MODES = [
   { id: '2x2', cols: 2, rows: 2, label: '2×2 4분할' },
   { id: '3x1', cols: 3, rows: 1, label: '좌우 3분할' },
   { id: '1x3', cols: 1, rows: 3, label: '상하 3분할' },
+  { id: '4x1', cols: 4, rows: 1, label: '좌우 4분할' },
   { id: '3x2', cols: 3, rows: 2, label: '3×2 6분할' },
   { id: '2x3', cols: 2, rows: 3, label: '2×3 6분할' }
 ];
@@ -32,8 +33,8 @@ Object.assign(App, {
     focused: 0,
     // 스플리터 위치는 트랙 수별로 따로 기억한다 — 2열에서 맞춰 둔 비율이
     // 3열로 갔다가 돌아왔을 때 흐트러지지 않게.
-    colPos: { 2: evenSplits(2), 3: evenSplits(3) }, // 열 스플리터 누적 위치 (좌 기준)
-    rowPos: { 2: evenSplits(2), 3: evenSplits(3) }  // 행 스플리터 누적 위치 (상 기준)
+    colPos: { 2: evenSplits(2), 3: evenSplits(3), 4: evenSplits(4) }, // 열 스플리터 누적 위치 (좌 기준)
+    rowPos: { 2: evenSplits(2), 3: evenSplits(3) }                    // 행 스플리터 누적 위치 (상 기준)
   },
 
   // 스플리터끼리·가장자리와의 최소 간격 — 트랙이 0 으로 찌그러지는 것을 막는다
@@ -83,7 +84,8 @@ Object.assign(App, {
       let obj = null;
       try { obj = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) { return; }
       if (!obj) return;
-      for (const n of [2, 3]) {
+      // 트랙 수는 열/행이 다르다 (열 2~4, 행 2~3) — 기본값에 있는 키만 복원한다
+      for (const n of Object.keys(target).map(Number)) {
         const arr = obj[n];
         if (!Array.isArray(arr) || arr.length !== n - 1) continue;
         if (App.validSplitPositions(arr)) target[n] = arr.slice();
@@ -154,6 +156,9 @@ Object.assign(App, {
     }
     App.renderSplit();
     TerminalView.syncLayout();
+    // 세션이 하나도 없으면 activateSession 경로를 타지 않는다 —
+    // 분할 여부에 따라 온보딩 오버레이 표시/숨김을 여기서 갱신한다
+    App.renderEmptyState();
   },
 
   // 피커에서 세션 선택 → 해당 패널에 배정 + 포커스
@@ -233,13 +238,15 @@ Object.assign(App, {
       // 포커스 링은 세션이 배정된 패널에만 — 빈 패널은 프롬프트 대상이 아니므로 오해를 막는다
       pane.classList.toggle('focused', split && s.focused === i && !!s.panes[i]);
     }
-    // 스플리터: 세로는 열 사이, 가로는 행 사이. 쓰지 않는 것은 감춘다.
-    for (let k = 0; k < 2; k++) {
+    // 스플리터: 세로는 열 사이(최대 3개), 가로는 행 사이(최대 2개). 쓰지 않는 것은 감춘다.
+    for (let k = 0; k < 3; k++) {
       const v = document.getElementById('split-divider-v' + k);
-      const h = document.getElementById('split-divider-h' + k);
       v.style.display = k < m.cols - 1 ? 'block' : '';
-      h.style.display = k < m.rows - 1 ? 'block' : '';
       if (k < m.cols - 1) v.style.gridArea = `1 / ${2 * k + 2} / -1 / ${2 * k + 3}`;
+    }
+    for (let k = 0; k < 2; k++) {
+      const h = document.getElementById('split-divider-h' + k);
+      h.style.display = k < m.rows - 1 ? 'block' : '';
       if (k < m.rows - 1) h.style.gridArea = `${2 * k + 2} / 1 / ${2 * k + 3} / -1`;
     }
     App.renderSplitMenu();
@@ -323,18 +330,20 @@ Object.assign(App, {
     document.getElementById('btn-split').setAttribute('aria-expanded', 'false');
   },
 
-  // 패널별 헤더 바: '상태태그 + 프로젝트명 — 세션명 ⎇브랜치' + 프로젝트 전용 프리셋 드롭다운.
+  // 패널별 헤더 바: '상태태그 + 프로젝트명 — 세션명 ⎇브랜치' + 프리셋 드롭다운(우측 정렬).
+  // 단일 화면에도 표시된다 — 0번 패널이 활성 세션의 헤더를 맡는다.
   // 제목은 프로젝트 색으로 칠해 여러 패널을 띄웠을 때 어느 프로젝트인지 한눈에 구분되게 한다.
-  // 프로젝트 프리셋은 칩을 늘어놓으면 좁은 패널 폭을 다 먹으므로 드롭다운 하나로 접어 둔다.
-  // 전역 프리셋은 상단 고정바에 한 번만 두고 포커스 패널 세션에 실행된다.
+  // 프리셋은 칩을 늘어놓으면 좁은 패널 폭을 다 먹으므로 드롭다운 하나로 접어 두고,
+  // 전역 프리셋 + 그 세션 프로젝트 전용 프리셋을 모두 담는다 (실행 대상 = 그 패널 세션).
   renderPanePresets() {
-    const s = App.split;
     const n = App.splitPaneCount();
     let layoutChanged = false;
     for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const pane = document.getElementById('term-pane-' + i);
       let bar = pane.querySelector('.pane-preset-bar');
-      const sid = App.isSplit() && i < n ? s.panes[i] : null;
+      // 이름 인라인 편집 중에는 재생성하지 않는다 — 편집 중이던 입력이 날아가는 것 방지
+      if (bar && bar.querySelector('.ppl-rename')) continue;
+      const sid = i < n ? App.paneSessionId(i) : null; // 단일 화면은 0번 = 활성 세션
       const sess = sid ? App.state.sessions.find((x) => x.id === sid) : null;
       if (!sess) {
         if (bar) { bar.remove(); layoutChanged = true; }
@@ -343,11 +352,12 @@ Object.assign(App, {
       }
       const proj = App.state.projects.find((p) => p.id === sess.projectId);
       const branch = App.state.branches[sess.id] || '';
-      const presets = App.state.presets.filter((p) => p.projectId && p.projectId === sess.projectId);
+      const globals = App.state.presets.filter((p) => !p.projectId);
+      const projs = App.state.presets.filter((p) => p.projectId && p.projectId === sess.projectId);
       // 내용이 같으면 재생성하지 않는다 — mousedown~click 사이 재렌더는 클릭을 씹고,
       // 열려 있는 드롭다운도 닫혀 버린다. 상태는 서명에서 제외하고 태그만 교체한다(refreshPickerStatus).
       const sig = [sid, App.sessionLabel(sess), branch, (proj && proj.color) || '', Theme.state.id,
-        presets.map((p) => p.id + ':' + p.label + ':' + p.command).join(',')].join('|');
+        globals.concat(projs).map((p) => p.id + ':' + p.label + ':' + p.command).join(',')].join('|');
       if (bar && bar.dataset.sig === sig) continue;
       if (!bar) {
         bar = document.createElement('div');
@@ -368,6 +378,9 @@ Object.assign(App, {
       const nameEl = document.createElement('span');
       nameEl.className = 'ppl-name';
       nameEl.textContent = App.sessionLabel(sess);
+      // 더블클릭 = 세션 이름 인라인 변경 — 사이드바를 접어 둔 상태에서도 수정할 수 있다
+      nameEl.title = '더블클릭으로 세션 이름 변경';
+      nameEl.ondblclick = (e) => { e.stopPropagation(); App.startPaneRename(nameEl, sid); };
       label.appendChild(nameEl);
       if (branch) {
         const brEl = document.createElement('span');
@@ -377,40 +390,101 @@ Object.assign(App, {
       }
       bar.appendChild(label);
 
-      // ── 프로젝트 전용 프리셋 드롭다운 ──
-      if (presets.length) bar.appendChild(App.buildPanePresetMenu(presets, sid));
+      // ── 프리셋 드롭다운 (전역 + 프로젝트 전용, 우측 정렬) ──
+      bar.appendChild(App.buildPanePresetMenu(globals, projs, sid, sess.projectId));
     }
     if (layoutChanged) TerminalView.fitActive(); // 바 유무가 holder 높이를 바꾼다
   },
 
-  // 프로젝트 프리셋 드롭다운 (패널 헤더용). 항목 동작은 상단 고정바 칩과 동일 —
-  // 클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정. 드래그로 순서 변경.
-  buildPanePresetMenu(presets, sid) {
+  // 패널 헤더 제목의 인라인 이름 변경 — 사이드바(startRename)와 같은 규칙:
+  // Enter/포커스 이탈 = 확정, Esc = 취소, 빈 값 = 원복. 편집 대상은 세션 제목(title)만.
+  startPaneRename(nameEl, sid) {
+    const sess = App.state.sessions.find((x) => x.id === sid);
+    if (!sess) return;
+    const bar = nameEl.closest('.pane-preset-bar');
+    if (bar && bar.querySelector('.ppl-rename')) return; // 이미 편집 중
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'ppl-rename';
+    input.value = sess.title;
+    input.maxLength = 40;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+    // 편집 중 클릭이 패널 포커스 이동/드래그로 새지 않게
+    input.onclick = (ev) => ev.stopPropagation();
+    input.onmousedown = (ev) => ev.stopPropagation();
+    let done = false; // Enter → blur 이중 확정 방지
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      const title = input.value.trim();
+      // 입력 요소를 먼저 제거해야 renderPanePresets 의 '편집 중 재생성 금지' 가드
+      // (.ppl-rename 존재 시 스킵)가 풀려 제목 span 으로 복원된다 — 안 지우면 편집 화면에 갇힌다
+      input.remove();
+      if (commit && title && title !== sess.title) {
+        try {
+          await ta.renameSession(sid, title);
+          sess.title = title;
+          renderSidebar();
+          App.renderTopbar();
+        } catch (err) {
+          console.warn('세션 이름 변경 실패:', err);
+        }
+      }
+      if (bar) delete bar.dataset.sig; // 서명을 지워 강제 재생성 (Esc/실패 시 원래 제목으로 복원)
+      App.renderPanePresets();
+    };
+    input.onkeydown = (ev) => {
+      ev.stopPropagation(); // 전역 단축키(Cmd+1~9 등)로 새지 않게
+      if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); finish(true); }
+      else if (ev.key === 'Escape') finish(false);
+    };
+    input.onblur = () => finish(true);
+  },
+
+  // 프리셋 드롭다운 (패널 헤더용) — 전역(파랑 배경, 맨앞) + 프로젝트 전용 + '+ 프리셋 추가'.
+  // 클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정. 드래그로 같은 그룹 내 순서 변경.
+  buildPanePresetMenu(globals, projs, sid, projectId) {
     const wrap = document.createElement('span');
     wrap.className = 'pane-preset-dd';
 
+    const total = globals.length + projs.length;
     const btn = document.createElement('button');
     btn.className = 'pane-preset-toggle';
-    btn.textContent = `프리셋 ${presets.length} ▾`;
-    btn.title = '이 프로젝트의 명령 프리셋';
+    btn.textContent = total ? `프리셋 ${total} ▾` : '프리셋 ▾';
+    btn.title = '명령 프리셋 (전역 + 프로젝트 전용) — 이 패널의 세션에 실행';
     wrap.appendChild(btn);
 
     const menu = document.createElement('div');
     menu.className = 'pane-preset-menu hidden';
-    for (const p of presets) {
+    const makeItem = (p, isGlobal) => {
       const item = document.createElement('button');
-      item.className = 'pane-preset-item';
+      item.className = 'pane-preset-item' + (isGlobal ? ' global' : '');
       item.dataset.id = p.id; // 드래그 정렬 좌표
       item.title = p.command + '\n(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)';
       item.textContent = p.label;
       item.onclick = (e) => { App.closePanePresetMenus(); App.runPreset(p, !e.shiftKey, sid); };
       item.oncontextmenu = (e) => { e.preventDefault(); App.closePanePresetMenus(); App.showPresetModal(p); };
-      menu.appendChild(item);
-    }
+      return item;
+    };
+    for (const p of globals) menu.appendChild(makeItem(p, true)); // 전역은 항상 맨앞
+    for (const p of projs) menu.appendChild(makeItem(p, false));
+
+    // '+ 프리셋 추가' — 관리 팝업을 이 패널 세션의 프로젝트 기준으로 연다
+    const add = document.createElement('button');
+    add.className = 'pane-preset-add';
+    add.textContent = '+ 프리셋 추가';
+    add.title = '프리셋 관리 (추가·수정·삭제)';
+    add.onclick = () => { App.closePanePresetMenus(); App.showPresetManager(projectId || null); };
+    menu.appendChild(add);
+
     makeSortable({
       container: menu,
       itemSelector: '.pane-preset-item[data-id]',
       axis: 'y',
+      // 전역(global)↔프로젝트 그룹 간 이동 금지
+      canDrop: (srcEl, dstEl) => srcEl.classList.contains('global') === dstEl.classList.contains('global'),
       onDrop: (srcId, dstId, before) => App.movePreset(srcId, dstId, before)
     });
     wrap.appendChild(menu);
@@ -444,34 +518,37 @@ Object.assign(App, {
         pane.appendChild(picker);
       }
       picker.textContent = '';
-      const h = document.createElement('h3');
-      h.textContent = '표시할 세션 선택';
-      picker.appendChild(h);
       const taken = App.splitVisiblePanes().filter(Boolean);
       const candidates = App.state.sessions.filter((x) => !taken.includes(x.id));
-      if (!candidates.length) {
-        const p = document.createElement('p');
-        p.textContent = '선택할 수 있는 세션이 없습니다.\n사이드바에서 새 세션을 시작하세요.';
-        picker.appendChild(p);
-        continue;
+      const h = document.createElement('h3');
+      h.textContent = candidates.length ? '표시할 세션 선택' : '세션이 없습니다';
+      picker.appendChild(h);
+      if (candidates.length) {
+        const list = document.createElement('div');
+        list.className = 'pane-picker-list';
+        for (const sess of candidates) {
+          const btn = document.createElement('button');
+          btn.className = 'pane-pick-item';
+          const proj = App.state.projects.find((p) => p.id === sess.projectId);
+          const name = document.createElement('span');
+          name.className = 'pane-pick-name';
+          name.textContent = App.sessionLabel(sess);
+          if (proj && proj.color) name.style.color = Theme.adjustText(proj.color);
+          btn.dataset.sid = sess.id; // 상태 전이 시 태그만 교체하기 위한 좌표
+          btn.appendChild(name);
+          btn.appendChild(statusTag(sess.status));
+          btn.onclick = ((paneIdx, sid) => () => App.assignPaneSession(paneIdx, sid))(i, sess.id);
+          list.appendChild(btn);
+        }
+        picker.appendChild(list);
       }
-      const list = document.createElement('div');
-      list.className = 'pane-picker-list';
-      for (const sess of candidates) {
-        const btn = document.createElement('button');
-        btn.className = 'pane-pick-item';
-        const proj = App.state.projects.find((p) => p.id === sess.projectId);
-        const name = document.createElement('span');
-        name.className = 'pane-pick-name';
-        name.textContent = App.sessionLabel(sess);
-        if (proj && proj.color) name.style.color = Theme.adjustText(proj.color);
-        btn.dataset.sid = sess.id; // 상태 전이 시 태그만 교체하기 위한 좌표
-        btn.appendChild(name);
-        btn.appendChild(statusTag(sess.status));
-        btn.onclick = ((paneIdx, sid) => () => App.assignPaneSession(paneIdx, sid))(i, sess.id);
-        list.appendChild(btn);
-      }
-      picker.appendChild(list);
+      // '+ 세션 추가' — 프로젝트를 골라 이 패널에 새 세션을 연다 (세션이 있어도 상주)
+      const addBtn = document.createElement('button');
+      addBtn.className = 'pane-add-session';
+      addBtn.textContent = '+ 세션 추가';
+      addBtn.title = '프로젝트를 선택해 이 패널에 새 세션을 시작';
+      addBtn.onclick = ((paneIdx) => () => App.showSessionAddModal(paneIdx))(i);
+      picker.appendChild(addBtn);
     }
   },
 
@@ -491,12 +568,11 @@ Object.assign(App, {
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape') App.closeSplitMenu(); });
     for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       document.getElementById('term-pane-' + i).addEventListener('mousedown', (e) => {
-        // 피커/프리셋 칩 클릭은 assignPaneSession·runPreset 이 포커스까지 처리한다.
+        // 피커/프리셋 드롭다운 클릭은 assignPaneSession·runPreset 이 포커스까지 처리한다.
         // 여기서 focusPane → renderSplit 을 타면 대상이 재생성돼 mousedown 타깃이 분리되고
-        // click 이 발화하지 않아 첫 클릭이 씹힌다. (칩이 아닌 프리셋 바 여백은 포커스 이동 허용 —
+        // click 이 발화하지 않아 첫 클릭이 씹힌다. (드롭다운이 아닌 헤더 바 여백은 포커스 이동 허용 —
         // sig 가 같아 바는 재생성되지 않으므로 안전)
-        if (e.target.closest('.pane-picker') || e.target.closest('.preset-chip')
-          || e.target.closest('.pane-preset-dd')) return;
+        if (e.target.closest('.pane-picker') || e.target.closest('.pane-preset-dd')) return;
         App.focusPane(i);
       }, true);
     }
@@ -542,9 +618,7 @@ Object.assign(App, {
         window.addEventListener('mouseup', up);
       };
     };
-    for (let k = 0; k < 2; k++) {
-      wireDivider(document.getElementById('split-divider-v' + k), 'col', k);
-      wireDivider(document.getElementById('split-divider-h' + k), 'row', k);
-    }
+    for (let k = 0; k < 3; k++) wireDivider(document.getElementById('split-divider-v' + k), 'col', k);
+    for (let k = 0; k < 2; k++) wireDivider(document.getElementById('split-divider-h' + k), 'row', k);
   }
 });

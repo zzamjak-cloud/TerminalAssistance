@@ -11,20 +11,17 @@
   <div id="layout">
     <aside id="sidebar">
       <div id="sidebar-head">
-        <button id="btn-fold-left" class="fold-btn" title="사이드바 접기/펼치기">⟨</button>
+        <button id="btn-fold-left" class="fold-btn" title="사이드바 접기/펼치기 (Cmd/Ctrl+I)">⟨</button>
         <span class="brand"><span id="app-version"></span></span>
+        <button id="btn-add-project" title="프로젝트 추가">＋</button>
         <button id="btn-settings" title="설정">⚙</button>
       </div>
       <div id="project-list"></div>
-      <div id="sidebar-foot">
-        <button id="btn-add-project">+ 프로젝트</button>
-        <button id="btn-home-session" title="홈 디렉토리 터미널">+ 터미널</button>
-      </div>
     </aside>
     <div class="resize-handle" id="resize-left" title="드래그로 너비 조절"></div>
     <aside id="explorer">
       <div id="explorer-head">
-        <button id="btn-fold-explorer" class="fold-btn" title="탐색기 접기/펼치기">⟨</button>
+        <button id="btn-fold-explorer" class="fold-btn" title="탐색기 접기/펼치기 (Cmd/Ctrl+O)">⟨</button>
         <span id="explorer-title" class="sec-title">탐색기</span>
         <button id="btn-tree-refresh" title="파일 트리 새로고침">↻</button>
       </div>
@@ -43,11 +40,8 @@
             <button id="btn-split" class="split-btn" title="화면 분할" aria-haspopup="true" aria-expanded="false"></button>
             <div id="split-menu" class="hidden" role="menu"></div>
           </div>
-          <button id="btn-toggle-prompts" title="세션 기록·계획 문서·메모 패널 토글">☰</button>
+          <button id="btn-toggle-prompts" title="세션 기록·계획 문서·메모 패널 토글 (Cmd/Ctrl+P)">☰</button>
         </div>
-      </div>
-      <div id="preset-bar">
-        <button id="btn-add-preset" title="명령 프리셋 추가">+ 프리셋</button>
       </div>
       <div id="term-search" class="hidden">
         <input id="term-search-input" type="text" placeholder="터미널 검색">
@@ -64,14 +58,15 @@
           <div class="term-pane" id="term-pane-3"></div>
           <div class="term-pane" id="term-pane-4"></div>
           <div class="term-pane" id="term-pane-5"></div>
-          <!-- 스플리터: 세로 최대 2개(3열) · 가로 최대 2개(3행) — 배치는 renderSplit 이 정한다 -->
+          <!-- 스플리터: 세로 최대 3개(4열) · 가로 최대 2개(3행) — 배치는 renderSplit 이 정한다 -->
           <div id="split-divider-v0" class="split-divider v"></div>
           <div id="split-divider-v1" class="split-divider v"></div>
+          <div id="split-divider-v2" class="split-divider v"></div>
           <div id="split-divider-h0" class="split-divider h"></div>
           <div id="split-divider-h1" class="split-divider h"></div>
           <div id="empty-state">
             <h2>프로젝트를 등록하고 터미널을 시작하세요</h2>
-            <p>좌측 하단 <b>+ 프로젝트</b> → 프로젝트 클릭 한 번으로 해당 경로의 터미널이 열립니다.<br>
+            <p>좌측 상단 <b>＋</b> 버튼으로 프로젝트를 등록하고, 프로젝트 클릭 한 번으로 해당 경로의 터미널이 열립니다.<br>
             이미지는 <b>Cmd/Ctrl+V</b> 붙여넣기 또는 <b>드래그앤드롭</b>으로 첨부됩니다.<br>
             <b>Cmd/Ctrl+1~9</b> 세션 전환 · <b>Cmd/Ctrl+T</b> 새 세션</p>
           </div>
@@ -83,7 +78,7 @@
       <!-- 패널 최상단 헤더: 접기 버튼만 (사용량 게이지는 상단바로 이동) -->
       <div id="usage-head">
         <span class="spacer"></span>
-        <button id="btn-fold-right" class="fold-btn" title="패널 접기">⟩</button>
+        <button id="btn-fold-right" class="fold-btn" title="패널 접기 (Cmd/Ctrl+P)">⟩</button>
       </div>
       <section id="history-panel" class="panel-sec" data-sec="claude">
         <div class="sec-head">
@@ -121,7 +116,6 @@
   <script src="dnd.js"></script>
   <script src="terminal-view.js"></script>
   <script src="sidebar.js"></script>
-  <script src="presets.js"></script>
   <!-- app.js 가 App 을 정의하고, 아래 파일들이 Object.assign 으로 영역별 메서드를 붙인다 -->
   <script src="app.js"></script>
   <script src="explorer.js"></script>

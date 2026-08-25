@@ -7,6 +7,69 @@ Object.assign(App, {
   _queueDispatching: new Set(),
   _composerTexts: new Map(), // 세션 전환 중 작성하던 텍스트의 오전송 방지
 
+  // ── 작성 중 텍스트 영속화 (크래시 리로드·앱 재시작 대비) ──
+  // 입력 버벅임 방지 설계: 키 입력 프레임에서는 O(1) 예약만 하고(타이머 재설정도 없음 —
+  // 키마다 clearTimeout/setTimeout 을 반복하는 트레일링 디바운스 대신 스로틀),
+  // 실제 localStorage 동기 쓰기는 주기 만료 후 유휴 시간(requestIdleCallback)에 수행한다.
+  // 최신 텍스트는 쓰기 시점에 _composerTexts 에서 읽으므로 저장 지연은 최대 주기+유휴 대기.
+  _composerSaveTimers: new Map(), // sessionId → timeout id
+  COMPOSER_SAVE_MS: 700,
+
+  composerStoreKey(id) {
+    return 'ta-composer:' + id;
+  },
+
+  scheduleComposerPersist(sessionId) {
+    if (!sessionId || App._composerSaveTimers.has(sessionId)) return; // 이미 예약됨
+    App._composerSaveTimers.set(sessionId, setTimeout(() => {
+      App._composerSaveTimers.delete(sessionId);
+      const write = () => App.persistComposerText(sessionId);
+      if (window.requestIdleCallback) requestIdleCallback(write, { timeout: 1000 });
+      else write();
+    }, App.COMPOSER_SAVE_MS));
+  },
+
+  persistComposerText(sessionId) {
+    const text = App._composerTexts.get(sessionId) || '';
+    try {
+      if (text) localStorage.setItem(App.composerStoreKey(sessionId), text);
+      else localStorage.removeItem(App.composerStoreKey(sessionId));
+    } catch (_) { /* 저장 실패(용량 등)는 무시 — 입력 자체를 방해하지 않는다 */ }
+  },
+
+  // 예약된 저장 전부 즉시 실행 — pagehide(리로드·종료 직전)에서 최신 텍스트를 남긴다
+  flushComposerPersists() {
+    for (const [id, t] of App._composerSaveTimers) {
+      clearTimeout(t);
+      App.persistComposerText(id);
+    }
+    App._composerSaveTimers.clear();
+  },
+
+  // 부팅 시 저장분 복원 + 죽은 세션 키 정리 (세션 목록 로드 직후 호출)
+  restoreComposerTexts() {
+    const alive = new Set(App.state.sessions.map((s) => s.id));
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (!k || !k.startsWith('ta-composer:')) continue;
+        const id = k.slice('ta-composer:'.length);
+        if (alive.has(id)) App._composerTexts.set(id, localStorage.getItem(k) || '');
+        else localStorage.removeItem(k);
+      }
+    } catch (_) {}
+  },
+
+  // 세션 종료 시 저장분·예약 정리
+  dropComposerPersist(id) {
+    const t = App._composerSaveTimers.get(id);
+    if (t) {
+      clearTimeout(t);
+      App._composerSaveTimers.delete(id);
+    }
+    try { localStorage.removeItem(App.composerStoreKey(id)); } catch (_) {}
+  },
+
   draftKeyForSession(sessionId) {
     const s = App.state.sessions.find((x) => x.id === sessionId);
     return s && s.projectId ? s.projectId : '';
@@ -17,13 +80,18 @@ Object.assign(App, {
   },
 
   rememberComposerText(sessionId, text) {
-    if (sessionId) App._composerTexts.set(sessionId, text);
+    if (!sessionId) return;
+    App._composerTexts.set(sessionId, text);
+    App.scheduleComposerPersist(sessionId);
   },
 
   setComposerText(sessionId, text) {
     const id = sessionId || App.state.activeId;
     if (!id) return;
     App._composerTexts.set(id, text);
+    // 비우기(전송·예약 직후)는 즉시 반영 — 크래시 시 이미 보낸 텍스트가 복원되지 않게
+    if (text) App.scheduleComposerPersist(id);
+    else App.persistComposerText(id);
     const c = TerminalView.composerForSession(id);
     if (c) {
       c.input.value = text;
@@ -56,20 +124,26 @@ Object.assign(App, {
     return task;
   },
 
-  // 화면에 보이는 패널 전부의 예약·초안 목록을 각자의 입력창 위에 그린다
+  // 화면에 보이는 패널 전부의 예약·초안 목록을 각자의 입력창 위에 그린다.
+  // 목록 유무·항목 수가 composer 영역 높이를 바꾸므로, 높이가 바뀐 패널이 있으면
+  // 터미널을 재fit 한다 — 안 하면 터미널 내용이 예약 목록을 덮는다.
   renderComposerQueue() {
+    let layoutChanged = false;
     for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const c = TerminalView.composers[i];
-      if (c) App.renderPaneComposerQueue(c, App.paneSessionId(i));
+      if (c && App.renderPaneComposerQueue(c, App.paneSessionId(i))) layoutChanged = true;
     }
+    if (layoutChanged) TerminalView.fitActive(); // rAF 코얼레싱 — 치수 변경 시에만 IPC
   },
 
+  // 목록을 다시 그리고, 높이가 바뀌었으면 true 를 반환한다 (호출부가 터미널 재fit)
   renderPaneComposerQueue(c, id) {
     const el = c.list;
+    const before = el.offsetHeight;
     el.textContent = '';
     if (!id) {
       el.classList.add('hidden');
-      return;
+      return el.offsetHeight !== before;
     }
 
     const queueKey = App.queueKey(id);
@@ -114,6 +188,7 @@ Object.assign(App, {
     });
 
     el.classList.toggle('hidden', !queued.length && !legacy.length);
+    return el.offsetHeight !== before;
   },
 
   async removeStoredDraft(key, draftId) {

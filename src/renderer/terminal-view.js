@@ -76,6 +76,7 @@ const TerminalView = {
     input.addEventListener('keydown', (ev) => {
       ev.stopPropagation();
       if (ev.isComposing || ev.keyCode === 229) return;
+      if (this.handleComposerEditKeys(input, ev)) return;
       if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
         ev.preventDefault();
         App.sendComposerPrompt(target());
@@ -104,6 +105,79 @@ const TerminalView = {
     return c;
   },
 
+  // Windows/Linux 입력창의 커서 이동·삭제를 Mac 과 맞춘다 —
+  // Ctrl+←/→ = 줄(문단) 시작/끝 (Mac 의 Cmd+←/→), Alt+←/→ = 단어 그룹 단위 (Mac 의 Opt+←/→),
+  // Ctrl+Backspace = 줄 시작까지 삭제 (Mac 의 Cmd+Delete), Alt+Backspace = 단어 삭제 (Mac 의 Opt+Delete).
+  // Shift+방향키 조합은 선택 확장. Mac 은 네이티브 동작이 이미 이 규칙이므로 손대지 않는다.
+  // 처리했으면 true 를 반환한다 (호출부가 이후 키 처리를 건너뛰게).
+  handleComposerEditKeys(input, ev) {
+    if (App.state.platform === 'macos') return false;
+    const arrow = ev.key === 'ArrowLeft' || ev.key === 'ArrowRight';
+    if (!arrow && ev.key !== 'Backspace') return false;
+    // Ctrl 또는 Alt 중 정확히 하나만 — Ctrl+Alt 동시(AltGr)는 건드리지 않는다
+    if (ev.metaKey || ev.ctrlKey === ev.altKey) return false;
+    const v = input.value;
+    // 줄 시작/끝 — 캐럿이 있는 줄의 개행 경계까지
+    // (lastIndexOf 는 음수 fromIndex 를 0 으로 취급하므로 캐럿 0 은 따로 처리)
+    const lineStart = (p) => (p === 0 ? 0 : v.lastIndexOf('\n', p - 1) + 1);
+    const lineEnd = (p) => { const nl = v.indexOf('\n', p); return nl < 0 ? v.length : nl; };
+    // 단어 그룹 — 공백을 건너뛴 뒤 같은 종류(단어/기호) 묶음의 경계까지
+    const isWord = (ch) => /[\p{L}\p{N}_]/u.test(ch);
+    const wordLeft = (p) => {
+      let i = p;
+      while (i > 0 && /\s/.test(v[i - 1])) i--;
+      if (i > 0) {
+        const w = isWord(v[i - 1]);
+        while (i > 0 && !/\s/.test(v[i - 1]) && isWord(v[i - 1]) === w) i--;
+      }
+      return i;
+    };
+    const wordRight = (p) => {
+      let i = p;
+      while (i < v.length && /\s/.test(v[i])) i++;
+      if (i < v.length) {
+        const w = isWord(v[i]);
+        while (i < v.length && !/\s/.test(v[i]) && isWord(v[i]) === w) i++;
+      }
+      return i;
+    };
+
+    if (ev.key === 'Backspace') {
+      if (ev.shiftKey) return false; // Shift 변형은 손대지 않는다
+      // 선택이 있으면 선택 삭제(기본 동작)에 맡긴다
+      if (input.selectionStart !== input.selectionEnd) return false;
+      ev.preventDefault(); // 기본 단어 삭제(Ctrl+Backspace)를 막고 아래 규칙으로 대체
+      const pos = input.selectionStart;
+      const from = ev.ctrlKey ? lineStart(pos) : wordLeft(pos);
+      if (from >= pos) return true; // 지울 범위 없음 (줄 시작 등)
+      // execCommand 경유 삭제는 네이티브 실행 취소(undo) 이력과 input 이벤트를 보존한다
+      input.setSelectionRange(from, pos);
+      if (!(document.execCommand && document.execCommand('delete'))) {
+        input.setRangeText('', from, pos, 'end');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      return true;
+    }
+
+    // ── 방향키 이동 ──
+    ev.preventDefault();
+    const left = ev.key === 'ArrowLeft';
+    // 선택이 있으면 이동 중인 쪽(focus) 끝을 기준으로 계산한다
+    const backward = input.selectionDirection === 'backward';
+    const focusPos = backward ? input.selectionStart : input.selectionEnd;
+    const pos = ev.ctrlKey
+      ? (left ? lineStart(focusPos) : lineEnd(focusPos))
+      : (left ? wordLeft(focusPos) : wordRight(focusPos));
+    if (ev.shiftKey) {
+      const anchor = backward ? input.selectionEnd : input.selectionStart;
+      if (pos < anchor) input.setSelectionRange(pos, anchor, 'backward');
+      else input.setSelectionRange(anchor, pos, 'forward');
+    } else {
+      input.setSelectionRange(pos, pos);
+    }
+    return true;
+  },
+
   // 세션이 보이는 패널의 작성기 (보이지 않으면 null)
   composerForSession(sid) {
     const idx = App.paneIndexForSession(sid);
@@ -114,6 +188,14 @@ const TerminalView = {
   resizeComposer(c) {
     if (!c || !c.input) return;
     const input = c.input;
+    // 숨겨진 상태(부팅 직후 등)에선 scrollHeight 가 0 이라 계산하면 쪼그라든 높이가
+    // 인라인으로 박제된다 — 인라인 높이를 지워 rows 기본 크기로 되돌리고,
+    // 표시된 뒤(syncComposerStates)에 다시 계산한다.
+    if (!input.offsetParent) {
+      input.style.height = '';
+      input.style.overflowY = 'hidden';
+      return;
+    }
     const previousHeight = input.offsetHeight;
     input.style.height = 'auto';
     const style = getComputedStyle(input);
@@ -137,12 +219,15 @@ const TerminalView = {
       if (!c) continue;
       const sid = App.paneSessionId(i);
       const live = !!(sid && this.views.has(sid));
+      const wasHidden = c.root.classList.contains('hidden');
       c.root.classList.toggle('hidden', !live);
       for (const el of [c.input, c.send, c.schedule, c.fanout]) el.disabled = !live;
       const text = live ? (App._composerTexts.get(sid) || '') : '';
       if (c.input.value !== text) {
         c.input.value = text;
         this.resizeComposer(c);
+      } else if (live && wasHidden) {
+        this.resizeComposer(c); // 숨김 중엔 높이 계산이 불가 — 처음 보일 때 기본/실측 높이로 재계산
       }
     }
     App.renderComposerQueue();
@@ -647,6 +732,19 @@ const TerminalView = {
         ev.preventDefault();
         App.newSessionInActiveProject();
         return false;
+      }
+      // ── 나머지 터미널 제어 조합(Ctrl+문자) 차단 ──
+      // 이 앱의 주 사용자는 터미널 단축키를 모른다 — Ctrl+D(셸 종료), Ctrl+Z(중지),
+      // Ctrl+S(출력 정지), Ctrl+R(역검색) 등이 실수로 눌려 혼란을 만들지 않게
+      // PTY 로 보내지 않는다. 예외: Ctrl+C 는 실행 중인 작업 중단용으로 필수라 유지.
+      // (preventDefault 로 웹뷰 기본 동작(Ctrl+R 리로드, Ctrl+S 저장 등)도 함께 막는다.
+      //  Ctrl+Alt 동시는 AltGr 문자 입력일 수 있어 건드리지 않는다)
+      if (ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+        const k = ev.key.toLowerCase();
+        if (/^[a-z]$/.test(k) && k !== 'c') {
+          ev.preventDefault();
+          return false;
+        }
       }
       return true;
     });

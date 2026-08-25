@@ -112,6 +112,7 @@ function renderSidebar() {
             await ta.renameSession(s.id, title);
             s.title = title;
             App.renderTopbar(); // 헤더의 '프로젝트명 — 제목' 즉시 갱신
+            App.renderPanePresets(); // 패널 헤더 제목도 함께 갱신 (단일 화면 포함)
           } catch (err) {
             console.warn('세션 이름 변경 실패:', err);
           }
@@ -127,6 +128,73 @@ function renderSidebar() {
     };
     return row;
   };
+
+  // ── '일반 터미널' 고정 블록 (목록 최상단) ──
+  // 프로젝트에 속하지 않은 세션(홈 디렉토리 터미널)의 상주 프로젝트.
+  // 세션이 없어도 항상 표시 — 신규 일반 세션은 여기의 ＋ 로 추가한다.
+  {
+    const HOME_FOLD_KEY = '__home__'; // Collapsed 저장용 가상 id (실프로젝트 id 와 충돌 없음)
+    const orphans = sessions.filter((s) => !s.projectId || !projects.some((p) => p.id === s.projectId));
+    const folded = Collapsed.has(HOME_FOLD_KEY);
+    const box = document.createElement('div');
+    box.className = 'project'; // data-id 없음 → 드래그 정렬 대상에서 제외 (상단 고정)
+    const row = document.createElement('div');
+    row.className = 'project-row' + (orphans.some((s) => s.id === activeId) ? ' active' : '');
+
+    const chev = document.createElement('span');
+    if (orphans.length) {
+      chev.className = 'chevron ' + (folded ? 'folded' : 'open');
+      chev.textContent = '❯';
+      chev.title = folded ? '펼치기' : '접기';
+      chev.onclick = (e) => { e.stopPropagation(); Collapsed.toggle(HOME_FOLD_KEY); renderSidebar(); };
+    } else {
+      chev.className = 'chevron';
+    }
+    row.appendChild(chev);
+
+    const name = document.createElement('span');
+    name.className = 'project-name';
+    name.textContent = '일반 터미널';
+    name.style.color = 'var(--fg-dim)';
+    row.appendChild(name);
+
+    if (folded && orphans.length) {
+      const mini = document.createElement('span');
+      mini.className = 'mini-dots';
+      for (const s of orphans.slice(0, 5)) {
+        const md = document.createElement('span');
+        md.className = 'mini-dot ' + s.status;
+        mini.appendChild(md);
+      }
+      row.appendChild(mini);
+    }
+
+    const actions = document.createElement('span');
+    actions.className = 'project-actions';
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '＋';
+    addBtn.title = '새 일반 터미널 세션 (홈 디렉토리)';
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (Collapsed.has(HOME_FOLD_KEY)) Collapsed.toggle(HOME_FOLD_KEY); // 새 세션이 바로 보이도록 펼침
+      App.createSession(null);
+    };
+    actions.appendChild(addBtn);
+    row.appendChild(actions);
+
+    // 클릭 = 세션이 없으면 즉시 새 일반 세션, 있으면 마지막 세션으로 복귀 (접힘이면 펼침)
+    row.onclick = () => {
+      if (Collapsed.has(HOME_FOLD_KEY)) Collapsed.toggle(HOME_FOLD_KEY);
+      if (!orphans.length) { App.createSession(null); return; }
+      App.activateSession(orphans[orphans.length - 1].id);
+    };
+    row.title = '홈 디렉토리에서 여는 일반 터미널';
+    box.appendChild(row);
+    if (!folded) {
+      for (const s of orphans) box.appendChild(sessionRow(s));
+    }
+    list.appendChild(box);
+  }
 
   for (const p of projects) {
     const mySessions = sessions.filter((s) => s.projectId === p.id);
@@ -208,23 +276,6 @@ function renderSidebar() {
     if (!folded) {
       for (const s of mySessions) box.appendChild(sessionRow(s));
     }
-    list.appendChild(box);
-  }
-
-  // 프로젝트에 속하지 않은 세션 (+ 터미널 버튼으로 연 것)
-  const orphans = sessions.filter((s) => !s.projectId || !projects.some((p) => p.id === s.projectId));
-  if (orphans.length) {
-    const box = document.createElement('div');
-    box.className = 'project';
-    const row = document.createElement('div');
-    row.className = 'project-row' + (orphans.some((s) => s.id === activeId) ? ' active' : '');
-    const name = document.createElement('span');
-    name.className = 'project-name';
-    name.textContent = '일반 터미널';
-    name.style.color = 'var(--fg-dim)';
-    row.appendChild(name);
-    box.appendChild(row);
-    for (const s of orphans) box.appendChild(sessionRow(s));
     list.appendChild(box);
   }
 

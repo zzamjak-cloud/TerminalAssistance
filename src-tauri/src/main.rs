@@ -526,6 +526,8 @@ fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
 // WebView2 렌더러 프로세스가 죽으면(메모리 부족 등) 자동 리로드해 화면을 복구한다.
 // 리로드 후 프론트 boot() 가 get_scrollback 으로 세션 내용을 복원하므로 데이터 손실이 없다.
 // (PTY 와 자식 프로세스는 Rust 쪽에 있어 렌더러 크래시의 영향을 받지 않는다)
+// 모든 ProcessFailed 이벤트는 종류·시각을 app_data_dir/crash-recovery.log 에 남긴다 —
+// "깜빡임"이 렌더러 크래시였는지, GPU 재시작이었는지 사후 판별용.
 #[cfg(windows)]
 fn install_crash_recovery(window: &tauri::WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -534,7 +536,14 @@ fn install_crash_recovery(window: &tauri::WebviewWindow) {
     };
     use webview2_com::ProcessFailedEventHandler;
 
-    let _ = window.with_webview(|webview| unsafe {
+    let log_path = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("crash-recovery.log"));
+
+    let _ = window.with_webview(move |webview| unsafe {
         let Ok(core) = webview.controller().CoreWebView2() else {
             return;
         };
@@ -544,6 +553,31 @@ fn install_crash_recovery(window: &tauri::WebviewWindow) {
                 let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
                 if let Some(a) = &args {
                     let _ = a.ProcessFailedKind(&mut kind);
+                }
+                // 종류 라벨 (COREWEBVIEW2_PROCESS_FAILED_KIND 정수값 기준)
+                let label = match kind.0 {
+                    0 => "browser_exited",       // 브라우저 프로세스 사망 — 창 전체 소실, 리로드 불가
+                    1 => "render_exited",        // 렌더러 사망 — 아래에서 자동 리로드
+                    2 => "render_unresponsive",  // 무응답 — 스스로 회복 가능
+                    3 => "frame_render_exited",
+                    4 => "utility_exited",
+                    5 => "sandbox_helper_exited",
+                    6 => "gpu_exited",           // GPU 재시작 — 화면 깜빡임의 다른 후보
+                    _ => "other",
+                };
+                if let Some(p) = &log_path {
+                    let secs = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let _ = fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(p)
+                        .and_then(|mut f| {
+                            use std::io::Write;
+                            writeln!(f, "{secs}\tkind={} ({label})", kind.0)
+                        });
                 }
                 // 렌더러 프로세스 사망일 때만 리로드 (Unresponsive 등은 스스로 회복 가능)
                 if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {

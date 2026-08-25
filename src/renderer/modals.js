@@ -73,9 +73,10 @@ Object.assign(App, {
   },
 
   // ── 프리셋 관리 팝업: 전역/프로젝트 전용 구분, 추가·수정·삭제 ──
-  showPresetManager() {
+  // forProjectId 지정 시 그 프로젝트 기준 (패널 드롭다운의 '+ 프리셋 추가'), 생략 시 활성 세션 기준
+  showPresetManager(forProjectId) {
     const active = App.state.sessions.find((s) => s.id === App.state.activeId);
-    const projectId = active ? active.projectId : null;
+    const projectId = forProjectId !== undefined ? forProjectId : (active ? active.projectId : null);
     const proj = App.state.projects.find((p) => p.id === projectId);
 
     App.modal(`
@@ -86,7 +87,7 @@ Object.assign(App, {
       <div class="pm-list" id="pm-projs"></div>
       <div class="modal-actions"><button id="m-close">닫기</button></div>`,
       (m, close) => {
-        const back = () => App.showPresetManager(); // 추가/수정 후 관리 팝업으로 복귀
+        const back = () => App.showPresetManager(projectId); // 추가/수정 후 관리 팝업으로 복귀
         const row = (p) => {
           const r = document.createElement('div');
           r.className = 'pm-row';
@@ -106,7 +107,7 @@ Object.assign(App, {
             try { await ta.removePreset(p.id); }
             catch (e) { alert('삭제 실패: ' + e); return; }
             App.state.presets = App.state.presets.filter((x) => x.id !== p.id);
-            renderPresets();
+            App.renderPanePresets();
             back();
           };
           r.append(lb, cmd, edit, del);
@@ -125,6 +126,47 @@ Object.assign(App, {
         m.querySelector('#pm-add-g').onclick = () => App.showPresetModal(null, { scope: '', back });
         if (proj) m.querySelector('#pm-add-p').onclick = () => App.showPresetModal(null, { scope: proj.id, back });
         m.querySelector('#m-close').onclick = close;
+      });
+  },
+
+  // ── 빈 분할 패널의 '+ 세션 추가': 프로젝트를 골라 그 패널에 새 세션을 연다 ──
+  showSessionAddModal(paneIdx) {
+    const projs = App.state.projects;
+    App.modal(`
+      <h3>새 세션 시작</h3>
+      <p style="color:var(--fg-dim);line-height:1.6;margin-bottom:6px">세션을 추가할 프로젝트를 선택하세요.</p>
+      <div class="pm-list" id="sa-list"></div>
+      <div class="modal-actions">
+        <button id="sa-home">홈 디렉토리 터미널</button>
+        <button id="sa-new-proj">+ 프로젝트 등록</button>
+        <button id="m-cancel">취소</button>
+      </div>`,
+      (m, close) => {
+        const start = (projectId) => {
+          close();
+          // 클릭한 패널이 여전히 빈 패널이면 그 자리에 배정되게 포커스를 옮겨 둔다
+          // (createSession 은 포커스 패널이 비어 있으면 그대로 쓴다)
+          if (App.isSplit() && paneIdx < App.splitPaneCount() && !App.split.panes[paneIdx]) {
+            App.split.focused = paneIdx;
+          }
+          App.createSession(projectId);
+        };
+        const list = m.querySelector('#sa-list');
+        if (!projs.length) {
+          list.innerHTML = '<div class="pm-empty">등록된 프로젝트가 없습니다. 프로젝트를 먼저 등록하거나 홈 디렉토리 터미널로 시작하세요.</div>';
+        }
+        for (const p of projs) {
+          const btn = document.createElement('button');
+          btn.className = 'sa-item';
+          btn.textContent = p.name;
+          btn.title = p.path;
+          if (p.color) btn.style.color = Theme.adjustText(p.color);
+          btn.onclick = () => start(p.id);
+          list.appendChild(btn);
+        }
+        m.querySelector('#sa-home').onclick = () => start(null);
+        m.querySelector('#sa-new-proj').onclick = () => { close(); App.showProjectModal(); };
+        m.querySelector('#m-cancel').onclick = close;
       });
   },
 
@@ -344,7 +386,7 @@ Object.assign(App, {
       .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} 전용</option>`).join('');
     App.modal(`
       <h3>${existing ? '프리셋 수정' : '명령 프리셋 추가'}</h3>
-      <label>이름(칩에 표시)</label><input type="text" id="m-label" placeholder="예: 빌드 & 테스트">
+      <label>이름(메뉴에 표시)</label><input type="text" id="m-label" placeholder="예: 빌드 & 테스트">
       <label>명령</label><input type="text" id="m-cmd" placeholder="예: npm run build && npm test">
       <div class="form-help">변수: {branch}, {projectPath}, {projectName}, {session}, {clipboard}, {input:작업명}</div>
       <label>범위</label><select id="m-scope"><option value="">전역 (모든 세션)</option>${opts}</select>
@@ -353,7 +395,7 @@ Object.assign(App, {
         <button id="m-cancel">취소</button><button id="m-save">저장</button>
       </div>`,
       (m, close) => {
-        const finish = () => { close(); renderPresets(); if (mgrOpts && mgrOpts.back) mgrOpts.back(); };
+        const finish = () => { close(); App.renderPanePresets(); if (mgrOpts && mgrOpts.back) mgrOpts.back(); };
         const label = m.querySelector('#m-label'), cmd = m.querySelector('#m-cmd'), scope = m.querySelector('#m-scope');
         if (existing) { label.value = existing.label; cmd.value = existing.command; scope.value = existing.projectId || ''; }
         else if (mgrOpts && mgrOpts.scope !== undefined) {
