@@ -249,8 +249,8 @@ button:disabled:hover { border-color: var(--border); }
 #topbar-actions { display: flex; align-items: center; gap: 6px; }
 #topbar-actions .hidden { display: none; }
 
-/* ── 분할 뷰 전환 버튼 (단일/좌우/상하/2×2) ── */
-#split-controls { display: flex; gap: 3px; }
+/* ── 분할 모드 드롭다운 (1×1 ~ 3×2 · 2×3) ── */
+#split-controls { position: relative; display: flex; }
 .split-btn { padding: 4px 7px; line-height: 0; color: var(--fg-dim); }
 .split-btn svg { display: block; }
 .split-btn:hover { color: var(--fg); }
@@ -258,6 +258,28 @@ button:disabled:hover { border-color: var(--border); }
   background: var(--accent-fill);
   border-color: var(--accent-strong);
   color: var(--accent-on-fill);
+}
+#split-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 30;
+  /* 절대 배치라 폭이 shrink-to-fit — max-content 로 두 열이 찌그러지지 않게 한다 */
+  display: grid; grid-template-columns: repeat(2, auto); width: max-content; gap: 2px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+#split-menu.hidden { display: none; }
+.split-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 9px 5px 6px;
+  font-size: 12px; white-space: nowrap; text-align: left;
+  background: none; border: 1px solid transparent; color: var(--fg-dim);
+}
+.split-item svg { display: block; flex: none; }
+.split-item:hover { background: var(--bg-hover); border-color: var(--accent); color: var(--fg); }
+.split-item.active {
+  background: var(--accent-fill); border-color: var(--accent-strong); color: var(--accent-on-fill);
 }
 
 /* ── 사용량 게이지 (메모리·코덱스 공용, 녹색=여유 → 빨강=위험) ── */
@@ -334,20 +356,14 @@ button:disabled:hover { border-color: var(--border); }
 .pm-empty { color: var(--fg-dim); font-size: 11px; padding: 6px 2px; }
 
 #term-row { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-/* 분할화면: CSS grid 로 최대 2×2 패널 + 스플리터 배치. 비율은 --split-col/--split-row 변수 */
+/* 분할화면: CSS grid 로 최대 3열 × 3행(단, 패널 6개까지) 배치.
+   트랙 구성과 패널·스플리터 위치는 renderSplit 이 인라인 스타일로 정한다 —
+   모드가 8종이라 모드별 CSS 클래스보다 열·행 수로 계산하는 편이 단순하다. */
 #term-area {
   flex: 1; position: relative; min-height: 0; min-width: 0;
   display: grid;
   grid-template-columns: 1fr;
   grid-template-rows: 1fr;
-  --split-col: 50%;
-  --split-row: 50%;
-}
-#term-area.split-h { grid-template-columns: calc(var(--split-col) - 2px) 4px 1fr; }
-#term-area.split-v { grid-template-rows: calc(var(--split-row) - 2px) 4px 1fr; }
-#term-area.split-grid {
-  grid-template-columns: calc(var(--split-col) - 2px) 4px 1fr;
-  grid-template-rows: calc(var(--split-row) - 2px) 4px 1fr;
 }
 .term-pane {
   position: relative; min-width: 0; min-height: 0; overflow: hidden;
@@ -355,24 +371,12 @@ button:disabled:hover { border-color: var(--border); }
 }
 /* 패널 본문 = 터미널 holder 영역. 아래는 그 패널 전용 프롬프트 작성기 */
 .pane-body { position: relative; flex: 1; min-height: 0; }
-#term-pane-0 { display: flex; grid-area: 1 / 1; }
-#term-area.split-h #term-pane-1 { display: flex; grid-area: 1 / 3; }
-#term-area.split-v #term-pane-1 { display: flex; grid-area: 3 / 1; }
-#term-area.split-grid #term-pane-1 { display: flex; grid-area: 1 / 3; }
-#term-area.split-grid #term-pane-2 { display: flex; grid-area: 3 / 1; }
-#term-area.split-grid #term-pane-3 { display: flex; grid-area: 3 / 3; }
 /* 분할 중 포커스 패널: 상단 파랑 바 (QuickFolder 관례) */
-#term-area.split-h .term-pane.focused,
-#term-area.split-v .term-pane.focused,
-#term-area.split-grid .term-pane.focused { box-shadow: inset 0 2px 0 var(--accent-strong); }
+#term-area.split .term-pane.focused { box-shadow: inset 0 2px 0 var(--accent-strong); }
 .split-divider { display: none; background: var(--border); transition: background .15s; }
 .split-divider:hover, .split-divider.active { background: var(--accent); }
-#split-divider-v { grid-area: 1 / 2 / -1 / 3; cursor: col-resize; }
-#split-divider-h { grid-area: 2 / 1 / 3 / -1; cursor: row-resize; }
-#term-area.split-h #split-divider-v,
-#term-area.split-grid #split-divider-v { display: block; }
-#term-area.split-v #split-divider-h,
-#term-area.split-grid #split-divider-h { display: block; }
+.split-divider.v { cursor: col-resize; }
+.split-divider.h { cursor: row-resize; }
 .term-holder { position: absolute; inset: 4px 0 0 8px; display: none; }
 .term-holder.active { display: block; }
 /* 세션 미배정 패널의 세션 선택 피커 */

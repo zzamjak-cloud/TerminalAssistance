@@ -24,7 +24,7 @@ function renderPresets() {
   // 프리셋 추가/수정/정렬 후 이 함수만 호출하는 경로(modals·movePreset)를 위해 패널 바도 함께 갱신.
   if (App.renderPanePresets) App.renderPanePresets();
   const { presets, activeId, sessions } = App.state;
-  const split = !!(App.split && App.split.mode !== 'single');
+  const split = !!(App.isSplit && App.isSplit());
   const active = sessions.find((s) => s.id === activeId);
   const projectId = active ? active.projectId : null;
 

@@ -1,19 +1,50 @@
-// 터미널 분할화면: 단일 / 좌우 / 상하 / 2×2 그리드 뷰.
+// 터미널 분할화면: 열×행 그리드 8종 (1×1 ~ 3×2 · 2×3, 최대 6분할).
 // 상태는 App.split 이 단독 소유하고, holder 배치·표시는 TerminalView.syncLayout 이 수행한다.
 // 분할 후 세션 미배정 패널에는 피커가 떠서 사용자가 직접 세션을 골라 배정한다.
 // 각 패널의 동작(프롬프트 입력·프리셋·검색 등)은 분할 전과 동일 — 활성 세션 = 포커스 패널.
-const SPLIT_PANE_COUNT = { single: 1, horizontal: 2, vertical: 2, grid: 4 };
+// 패널 번호는 행 우선(row-major): idx = row * cols + col.
+
+// 모드 id 는 '열x행'. 순서 = 헤더 드롭다운 표시 순서.
+const SPLIT_MODES = [
+  { id: '1x1', cols: 1, rows: 1, label: '단일 화면' },
+  { id: '2x1', cols: 2, rows: 1, label: '좌우 2분할' },
+  { id: '1x2', cols: 1, rows: 2, label: '상하 2분할' },
+  { id: '2x2', cols: 2, rows: 2, label: '2×2 4분할' },
+  { id: '3x1', cols: 3, rows: 1, label: '좌우 3분할' },
+  { id: '1x3', cols: 1, rows: 3, label: '상하 3분할' },
+  { id: '3x2', cols: 3, rows: 2, label: '3×2 6분할' },
+  { id: '2x3', cols: 2, rows: 3, label: '2×3 6분할' }
+];
+// v0.11.6 이전 저장값 호환 (단일/좌우/상하/2×2)
+const SPLIT_LEGACY_MODES = { single: '1x1', horizontal: '2x1', vertical: '1x2', grid: '2x2' };
+const splitMode = (id) => SPLIT_MODES.find((m) => m.id === id) || SPLIT_MODES[0];
+
+// 패널 인덱스 0..SPLIT_MAX_PANES-1 (DOM·배열 순회 공용)
+const SPLIT_PANE_IDX = Array.from({ length: SPLIT_MAX_PANES }, (_, i) => i);
+const emptyPanes = () => new Array(SPLIT_MAX_PANES).fill(null);
+// 트랙 n 개를 균등 분할했을 때의 스플리터 누적 위치 (예: 3 → [0.333, 0.667])
+const evenSplits = (n) => Array.from({ length: n - 1 }, (_, i) => (i + 1) / n);
 
 Object.assign(App, {
   split: {
-    mode: 'single',                  // single | horizontal(좌우) | vertical(상하) | grid(2×2)
-    panes: [null, null, null, null], // 패널별 배정 세션 id
+    mode: '1x1',          // SPLIT_MODES 의 id ('열x행')
+    panes: emptyPanes(),  // 패널별 배정 세션 id
     focused: 0,
-    colRatio: 0.5,                   // 좌측 열 너비 비율 (0.2~0.8)
-    rowRatio: 0.5                    // 상단 행 높이 비율 (0.2~0.8)
+    // 스플리터 위치는 트랙 수별로 따로 기억한다 — 2열에서 맞춰 둔 비율이
+    // 3열로 갔다가 돌아왔을 때 흐트러지지 않게.
+    colPos: { 2: evenSplits(2), 3: evenSplits(3) }, // 열 스플리터 누적 위치 (좌 기준)
+    rowPos: { 2: evenSplits(2), 3: evenSplits(3) }  // 행 스플리터 누적 위치 (상 기준)
   },
 
-  splitPaneCount() { return SPLIT_PANE_COUNT[App.split.mode] || 1; },
+  // 스플리터끼리·가장자리와의 최소 간격 — 트랙이 0 으로 찌그러지는 것을 막는다
+  SPLIT_MIN_TRACK: 0.12,
+
+  splitCols() { return splitMode(App.split.mode).cols; },
+  splitRows() { return splitMode(App.split.mode).rows; },
+  splitPaneCount() { const m = splitMode(App.split.mode); return m.cols * m.rows; },
+
+  // 분할 중인가 (패널 2개 이상) — 단일 화면과 동작이 갈리는 지점에서 쓴다
+  isSplit() { return App.splitPaneCount() > 1; },
 
   // 현재 모드에서 화면에 보이는 패널들의 세션 배정 (인덱스 = 패널 번호)
   splitVisiblePanes() { return App.split.panes.slice(0, App.splitPaneCount()); },
@@ -21,22 +52,22 @@ Object.assign(App, {
   // 패널이 담당하는 세션 — 단일 화면은 0번 패널이 활성 세션을 맡는다.
   // 패널마다 독립된 프롬프트 작성기의 전송 대상 판별에 쓴다.
   paneSessionId(paneIdx) {
-    if (App.split.mode === 'single') return paneIdx === 0 ? App.state.activeId : null;
+    if (!App.isSplit()) return paneIdx === 0 ? App.state.activeId : null;
     return paneIdx < App.splitPaneCount() ? App.split.panes[paneIdx] : null;
   },
 
   // 세션이 보이는 패널 번호 (화면에 없으면 -1)
   paneIndexForSession(sessionId) {
     if (!sessionId) return -1;
-    if (App.split.mode === 'single') return sessionId === App.state.activeId ? 0 : -1;
+    if (!App.isSplit()) return sessionId === App.state.activeId ? 0 : -1;
     return App.splitVisiblePanes().indexOf(sessionId);
   },
 
   saveSplitState() {
     const s = App.split;
     localStorage.setItem('ta-split-mode', s.mode);
-    localStorage.setItem('ta-split-col', String(s.colRatio));
-    localStorage.setItem('ta-split-row', String(s.rowRatio));
+    localStorage.setItem('ta-split-colpos', JSON.stringify(s.colPos));
+    localStorage.setItem('ta-split-rowpos', JSON.stringify(s.rowPos));
     localStorage.setItem('ta-split-panes', JSON.stringify(s.panes));
     localStorage.setItem('ta-split-focused', String(s.focused));
   },
@@ -44,17 +75,27 @@ Object.assign(App, {
   // 부팅 시 복원 — 세션 목록(App.state.sessions)이 채워진 뒤에 호출해야 한다
   restoreSplitState() {
     const s = App.split;
-    const mode = localStorage.getItem('ta-split-mode');
-    if (SPLIT_PANE_COUNT[mode]) s.mode = mode;
-    const cr = Number(localStorage.getItem('ta-split-col'));
-    const rr = Number(localStorage.getItem('ta-split-row'));
-    if (cr >= 0.2 && cr <= 0.8) s.colRatio = cr;
-    if (rr >= 0.2 && rr <= 0.8) s.rowRatio = rr;
+    const savedMode = localStorage.getItem('ta-split-mode');
+    const mode = SPLIT_LEGACY_MODES[savedMode] || savedMode;
+    if (SPLIT_MODES.some((m) => m.id === mode)) s.mode = mode;
+    // 스플리터 위치: 오름차순·간격이 모두 유효할 때만 복원 (하나라도 깨지면 균등 분할)
+    const readPos = (key, target) => {
+      let obj = null;
+      try { obj = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) { return; }
+      if (!obj) return;
+      for (const n of [2, 3]) {
+        const arr = obj[n];
+        if (!Array.isArray(arr) || arr.length !== n - 1) continue;
+        if (App.validSplitPositions(arr)) target[n] = arr.slice();
+      }
+    };
+    readPos('ta-split-colpos', s.colPos);
+    readPos('ta-split-rowpos', s.rowPos);
     let saved = [];
     try { saved = JSON.parse(localStorage.getItem('ta-split-panes') || '[]'); } catch (_) {}
     // 죽은 세션·중복 배정은 버린다 (해당 패널은 피커로 복원됨)
     const seen = new Set();
-    s.panes = [0, 1, 2, 3].map((i) => {
+    s.panes = SPLIT_PANE_IDX.map((i) => {
       const id = saved[i];
       if (!id || seen.has(id) || !App.state.sessions.some((x) => x.id === id)) return null;
       seen.add(id);
@@ -64,27 +105,40 @@ Object.assign(App, {
     if (Number.isInteger(f) && f >= 0 && f < App.splitPaneCount()) s.focused = f;
   },
 
+  // 스플리터 위치 배열이 유효한가 (오름차순 + 트랙 최소 폭 확보)
+  validSplitPositions(arr) {
+    const gap = App.SPLIT_MIN_TRACK;
+    let prev = 0;
+    for (const v of arr) {
+      if (!(typeof v === 'number') || !(v - prev >= gap)) return false;
+      prev = v;
+    }
+    return 1 - prev >= gap;
+  },
+
   setSplitMode(mode) {
     const s = App.split;
-    if (!SPLIT_PANE_COUNT[mode] || s.mode === mode) return;
+    if (!SPLIT_MODES.some((m) => m.id === mode) || s.mode === mode) return;
+    const wasSplit = App.isSplit();
     // 이전 모드에서 보이던 세션들 (단일 모드는 활성 세션 하나)
-    const prevVisible = s.mode === 'single'
-      ? (App.state.activeId ? [App.state.activeId] : [])
-      : App.splitVisiblePanes().filter(Boolean);
+    const prevVisible = wasSplit
+      ? App.splitVisiblePanes().filter(Boolean)
+      : (App.state.activeId ? [App.state.activeId] : []);
     // 축소 시 세션들의 패널 인덱스가 앞으로 당겨지므로, 포커스는 세션 id 기준으로 재계산한다
-    const prevFocusedId = s.mode === 'single' ? App.state.activeId : s.panes[s.focused];
+    const prevFocusedId = wasSplit ? s.panes[s.focused] : App.state.activeId;
     s.mode = mode;
     const n = App.splitPaneCount();
-    if (mode === 'single') {
+    if (n === 1) {
       // 포커스 패널의 세션을 단일 화면으로 유지 (없으면 배정된 첫 세션)
       const keep = s.panes[s.focused] || prevVisible[0] || App.state.activeId || null;
-      s.panes = [keep, null, null, null];
+      s.panes = emptyPanes();
+      s.panes[0] = keep;
       s.focused = 0;
       App.saveSplitState();
       if (keep) { App.activateSession(keep); return; } // renderAll → renderSplit 포함
     } else {
       // 확장은 기존 배정 유지, 축소는 앞쪽 패널로 압축
-      const next = [null, null, null, null];
+      const next = emptyPanes();
       prevVisible.slice(0, n).forEach((id, i) => { next[i] = id; });
       if (!next.includes(App.state.activeId) && App.state.activeId && !next[0]) next[0] = App.state.activeId;
       s.panes = next;
@@ -116,7 +170,7 @@ Object.assign(App, {
   // 패널 클릭(캡처) = 포커스 이동. 터미널 클릭·선택을 방해하지 않게 프롬프트 포커스는 뺏지 않는다.
   focusPane(paneIdx) {
     const s = App.split;
-    if (s.mode === 'single' || paneIdx >= App.splitPaneCount() || s.focused === paneIdx) return;
+    if (!App.isSplit() || paneIdx >= App.splitPaneCount() || s.focused === paneIdx) return;
     s.focused = paneIdx;
     App.saveSplitState();
     const id = s.panes[paneIdx];
@@ -126,7 +180,7 @@ Object.assign(App, {
 
   // 화면 좌표 아래 패널에 배정된 세션 id (단일 모드·패널 밖·미배정이면 null) — 드롭 대상 판별용
   sessionAtPoint(x, y) {
-    if (App.split.mode === 'single') return null;
+    if (!App.isSplit()) return null;
     const n = App.splitPaneCount();
     for (let i = 0; i < n; i++) {
       const r = document.getElementById('term-pane-' + i).getBoundingClientRect();
@@ -147,25 +201,126 @@ Object.assign(App, {
   },
 
   // 분할 관련 DOM 갱신 (컨테이너 클래스·비율·포커스 표시·버튼 상태·피커) — fit 은 하지 않는다
+  // 스플리터 두께(4px)를 뺀 grid 트랙 문자열. 마지막 트랙은 1fr 로 남은 폭을 채운다.
+  splitTracks(positions, count) {
+    if (count < 2) return '1fr';
+    const parts = [];
+    let prev = 0;
+    for (let i = 0; i < count - 1; i++) {
+      const size = ((positions[i] - prev) * 100).toFixed(2);
+      parts.push(`calc(${size}% - ${i === 0 ? 2 : 4}px)`, '4px');
+      prev = positions[i];
+    }
+    parts.push('1fr');
+    return parts.join(' ');
+  },
+
   renderSplit() {
     const s = App.split;
+    const m = splitMode(s.mode);
     const area = document.getElementById('term-area');
-    area.classList.toggle('split-h', s.mode === 'horizontal');
-    area.classList.toggle('split-v', s.mode === 'vertical');
-    area.classList.toggle('split-grid', s.mode === 'grid');
-    area.style.setProperty('--split-col', (s.colRatio * 100).toFixed(2) + '%');
-    area.style.setProperty('--split-row', (s.rowRatio * 100).toFixed(2) + '%');
-    for (let i = 0; i < 4; i++) {
+    const split = App.isSplit();
+    area.classList.toggle('split', split);
+    area.style.gridTemplateColumns = App.splitTracks(s.colPos[m.cols] || [], m.cols);
+    area.style.gridTemplateRows = App.splitTracks(s.rowPos[m.rows] || [], m.rows);
+
+    // 패널: 행 우선으로 grid 트랙에 배치 (트랙 번호는 1-based, 스플리터가 짝수 트랙)
+    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
+      const pane = document.getElementById('term-pane-' + i);
+      const on = i < m.cols * m.rows;
+      pane.style.display = on ? 'flex' : '';
+      if (on) pane.style.gridArea = `${2 * Math.floor(i / m.cols) + 1} / ${2 * (i % m.cols) + 1}`;
       // 포커스 링은 세션이 배정된 패널에만 — 빈 패널은 프롬프트 대상이 아니므로 오해를 막는다
-      document.getElementById('term-pane-' + i)
-        .classList.toggle('focused', s.mode !== 'single' && s.focused === i && !!s.panes[i]);
+      pane.classList.toggle('focused', split && s.focused === i && !!s.panes[i]);
     }
-    const btns = { single: 'btn-split-single', horizontal: 'btn-split-h', vertical: 'btn-split-v', grid: 'btn-split-grid' };
-    for (const [m, bid] of Object.entries(btns)) {
-      document.getElementById(bid).classList.toggle('active', s.mode === m);
+    // 스플리터: 세로는 열 사이, 가로는 행 사이. 쓰지 않는 것은 감춘다.
+    for (let k = 0; k < 2; k++) {
+      const v = document.getElementById('split-divider-v' + k);
+      const h = document.getElementById('split-divider-h' + k);
+      v.style.display = k < m.cols - 1 ? 'block' : '';
+      h.style.display = k < m.rows - 1 ? 'block' : '';
+      if (k < m.cols - 1) v.style.gridArea = `1 / ${2 * k + 2} / -1 / ${2 * k + 3}`;
+      if (k < m.rows - 1) h.style.gridArea = `${2 * k + 2} / 1 / ${2 * k + 3} / -1`;
     }
+    App.renderSplitMenu();
     App.renderPanePickers();
     App.renderPanePresets();
+  },
+
+  // 모드 아이콘 — 테두리 사각형 + 열·행 경계선. 8종을 같은 규칙으로 그린다.
+  splitModeIcon(cols, rows, size) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    const px = size || 14;
+    svg.setAttribute('width', px);
+    svg.setAttribute('height', px);
+    svg.setAttribute('viewBox', '0 0 16 16');
+    const line = (x1, y1, x2, y2) => {
+      const el = document.createElementNS(NS, 'line');
+      el.setAttribute('x1', x1.toFixed(2));
+      el.setAttribute('y1', y1.toFixed(2));
+      el.setAttribute('x2', x2.toFixed(2));
+      el.setAttribute('y2', y2.toFixed(2));
+      el.setAttribute('stroke', 'currentColor');
+      el.setAttribute('stroke-width', '1.5');
+      svg.appendChild(el);
+    };
+    const rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('x', '1.5');
+    rect.setAttribute('y', '1.5');
+    rect.setAttribute('width', '13');
+    rect.setAttribute('height', '13');
+    rect.setAttribute('rx', '2');
+    rect.setAttribute('fill', 'none');
+    rect.setAttribute('stroke', 'currentColor');
+    rect.setAttribute('stroke-width', '1.5');
+    svg.appendChild(rect);
+    for (let c = 1; c < cols; c++) line(1.5 + (13 * c) / cols, 1.5, 1.5 + (13 * c) / cols, 14.5);
+    for (let r = 1; r < rows; r++) line(1.5, 1.5 + (13 * r) / rows, 14.5, 1.5 + (13 * r) / rows);
+    return svg;
+  },
+
+  // 헤더 버튼 아이콘(현재 모드) + 드롭다운 목록. 목록은 최초 1회만 만들고 강조만 갱신한다.
+  renderSplitMenu() {
+    const s = App.split;
+    const m = splitMode(s.mode);
+    const btn = document.getElementById('btn-split');
+    btn.textContent = '';
+    btn.appendChild(App.splitModeIcon(m.cols, m.rows));
+    btn.title = `화면 분할 — 현재 ${m.label}`;
+    const menu = document.getElementById('split-menu');
+    if (!menu.childElementCount) {
+      for (const mode of SPLIT_MODES) {
+        const item = document.createElement('button');
+        item.className = 'split-item';
+        item.dataset.mode = mode.id;
+        item.setAttribute('role', 'menuitem');
+        item.appendChild(App.splitModeIcon(mode.cols, mode.rows));
+        const label = document.createElement('span');
+        label.textContent = mode.label;
+        item.appendChild(label);
+        item.onclick = () => { App.closeSplitMenu(); App.setSplitMode(mode.id); };
+        menu.appendChild(item);
+      }
+    }
+    menu.querySelectorAll('.split-item').forEach((el) => {
+      el.classList.toggle('active', el.dataset.mode === s.mode);
+    });
+  },
+
+  toggleSplitMenu() {
+    const menu = document.getElementById('split-menu');
+    if (menu.classList.contains('hidden')) {
+      menu.classList.remove('hidden');
+      document.getElementById('btn-split').setAttribute('aria-expanded', 'true');
+    } else {
+      App.closeSplitMenu();
+    }
+  },
+
+  closeSplitMenu() {
+    document.getElementById('split-menu').classList.add('hidden');
+    document.getElementById('btn-split').setAttribute('aria-expanded', 'false');
   },
 
   // 패널별 헤더 바: '상태태그 + 프로젝트명 — 세션명 ⎇브랜치' + 프로젝트 전용 프리셋 드롭다운.
@@ -176,10 +331,10 @@ Object.assign(App, {
     const s = App.split;
     const n = App.splitPaneCount();
     let layoutChanged = false;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const pane = document.getElementById('term-pane-' + i);
       let bar = pane.querySelector('.pane-preset-bar');
-      const sid = s.mode !== 'single' && i < n ? s.panes[i] : null;
+      const sid = App.isSplit() && i < n ? s.panes[i] : null;
       const sess = sid ? App.state.sessions.find((x) => x.id === sid) : null;
       if (!sess) {
         if (bar) { bar.remove(); layoutChanged = true; }
@@ -278,10 +433,10 @@ Object.assign(App, {
   renderPanePickers() {
     const s = App.split;
     const n = App.splitPaneCount();
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const pane = document.getElementById('term-pane-' + i);
       let picker = pane.querySelector('.pane-picker');
-      const need = s.mode !== 'single' && i < n && !s.panes[i];
+      const need = App.isSplit() && i < n && !s.panes[i];
       if (!need) { if (picker) picker.remove(); continue; }
       if (!picker) {
         picker = document.createElement('div');
@@ -328,11 +483,13 @@ Object.assign(App, {
   },
 
   initSplitUI() {
-    document.getElementById('btn-split-single').onclick = () => App.setSplitMode('single');
-    document.getElementById('btn-split-h').onclick = () => App.setSplitMode('horizontal');
-    document.getElementById('btn-split-v').onclick = () => App.setSplitMode('vertical');
-    document.getElementById('btn-split-grid').onclick = () => App.setSplitMode('grid');
-    for (let i = 0; i < 4; i++) {
+    document.getElementById('btn-split').onclick = (e) => { e.stopPropagation(); App.toggleSplitMenu(); };
+    // 드롭다운 바깥 클릭·Esc 로 닫기
+    document.addEventListener('mousedown', (e) => {
+      if (!e.target.closest('#split-controls')) App.closeSplitMenu();
+    }, true);
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') App.closeSplitMenu(); });
+    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       document.getElementById('term-pane-' + i).addEventListener('mousedown', (e) => {
         // 피커/프리셋 칩 클릭은 assignPaneSession·runPreset 이 포커스까지 처리한다.
         // 여기서 focusPane → renderSplit 을 타면 대상이 재생성돼 mousedown 타깃이 분리되고
@@ -348,17 +505,30 @@ Object.assign(App, {
       if (!e.target.closest('.pane-preset-dd')) App.closePanePresetMenus();
     }, true);
     // 스플리터 드래그 — QuickFolder 와 같이 컨테이너 rect 기준 비율 계산, 0.2~0.8 클램프
-    const wireDivider = (el, key, clientProp, sizeProp, rectStart) => {
+    // 스플리터 드래그 — 컨테이너 rect 기준 비율 계산.
+    // 인접 스플리터(와 가장자리)로부터 SPLIT_MIN_TRACK 만큼 떨어지도록 클램프한다.
+    const wireDivider = (el, axis, k) => {
+      const horizontal = axis === 'col';
       el.onmousedown = (e) => {
         e.preventDefault();
         el.classList.add('active');
         const area = document.getElementById('term-area');
-        const cssVar = key === 'colRatio' ? '--split-col' : '--split-row';
+        const gap = App.SPLIT_MIN_TRACK;
         const move = (ev) => {
+          const m = splitMode(App.split.mode);
+          const count = horizontal ? m.cols : m.rows;
+          const pos = (horizontal ? App.split.colPos : App.split.rowPos)[count];
+          if (!pos || k >= pos.length) return;
           const rect = area.getBoundingClientRect();
-          const ratio = (ev[clientProp] - rect[rectStart]) / rect[sizeProp];
-          App.split[key] = Math.max(0.2, Math.min(0.8, ratio));
-          area.style.setProperty(cssVar, (App.split[key] * 100).toFixed(2) + '%');
+          const ratio = horizontal
+            ? (ev.clientX - rect.left) / rect.width
+            : (ev.clientY - rect.top) / rect.height;
+          const min = (k === 0 ? 0 : pos[k - 1]) + gap;
+          const max = (k === pos.length - 1 ? 1 : pos[k + 1]) - gap;
+          pos[k] = Math.max(min, Math.min(max, ratio));
+          const tracks = App.splitTracks(pos, count);
+          if (horizontal) area.style.gridTemplateColumns = tracks;
+          else area.style.gridTemplateRows = tracks;
           TerminalView.fitActive(); // rAF 코얼레싱 + 치수 변경 시에만 리사이즈 IPC
         };
         const up = () => {
@@ -372,7 +542,9 @@ Object.assign(App, {
         window.addEventListener('mouseup', up);
       };
     };
-    wireDivider(document.getElementById('split-divider-v'), 'colRatio', 'clientX', 'width', 'left');
-    wireDivider(document.getElementById('split-divider-h'), 'rowRatio', 'clientY', 'height', 'top');
+    for (let k = 0; k < 2; k++) {
+      wireDivider(document.getElementById('split-divider-v' + k), 'col', k);
+      wireDivider(document.getElementById('split-divider-h' + k), 'row', k);
+    }
   }
 });

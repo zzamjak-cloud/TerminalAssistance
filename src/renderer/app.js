@@ -58,7 +58,7 @@ const App = {
       }
       if (status === 'waiting') App.onWaiting(s);
       updateSessionStatus(s); // 전체 재구축 대신 해당 행만 갱신 (호버·드래그 유지)
-      if (App.split.mode !== 'single') App.refreshPickerStatus(s); // 피커의 상태 태그만 최신화
+      if (App.isSplit()) App.refreshPickerStatus(s); // 피커의 상태 태그만 최신화
       App.renderTopbar();
       App.renderComposerQueue(); // 보이는 패널 전부의 예약 목록 갱신
     });
@@ -123,7 +123,7 @@ const App = {
       let target = restoring.find((s) => s.id === saved) || restoring[restoring.length - 1];
       // 분할 복원 중: 저장된 활성 세션이 패널 배정에 없으면 배정된 세션을 우선한다
       // (activateSession 이 포커스 패널 배정을 덮어써 복원 레이아웃이 유실되는 것 방지)
-      if (App.split.mode !== 'single' && !App.splitVisiblePanes().includes(target.id)) {
+      if (App.isSplit() && !App.splitVisiblePanes().includes(target.id)) {
         const fallback = App.split.panes[App.split.focused] || App.splitVisiblePanes().find(Boolean);
         const alive = fallback && restoring.find((s) => s.id === fallback);
         if (alive) target = alive;
@@ -143,7 +143,7 @@ const App = {
     renderSidebar();
     App.renderTopbar();
     App.renderEmptyState();
-    if (App.split && App.split.mode !== 'single') { App.renderPanePickers(); App.renderPanePresets(); }
+    if (App.isSplit && App.isSplit()) { App.renderPanePickers(); App.renderPanePresets(); }
   },
 
   renderAll() {
@@ -222,7 +222,7 @@ const App = {
   renderEmptyState() {
     const el = document.getElementById('empty-state');
     // 분할 중에는 오버레이가 화면 전체(다른 패널 터미널)를 덮지 않게 포커스 패널 안으로 이동
-    const host = App.split.mode !== 'single'
+    const host = App.isSplit()
       ? document.getElementById('term-pane-' + App.split.focused)
       : document.getElementById('term-area');
     if (el.parentElement !== host) host.appendChild(el);
@@ -272,7 +272,7 @@ const App = {
     }
     if (!changed) return;
     App.renderTopbar();
-    if (App.split.mode !== 'single') App.renderPanePresets();
+    if (App.isSplit()) App.renderPanePresets();
   },
 
   // ── 코덱스 남은 사용량 (상단바 표시) ──
@@ -357,6 +357,9 @@ const App = {
     wi.classList.toggle('hidden', !waiting.length);
     if (waiting.length) wi.textContent = '허가 대기 ' + waiting.length;
     const el = document.getElementById('active-info');
+    // 분할 중에는 패널마다 헤더 바(상태·프로젝트명 — 세션명 ⎇브랜치)가 따로 붙으므로
+    // 루트 헤더의 활성 세션 표기는 생략한다 — 같은 정보를 두 곳에 중복해 두지 않는다.
+    if (App.isSplit && App.isSplit()) { el.textContent = ''; el.title = ''; return; }
     const s = App.state.sessions.find((x) => x.id === App.state.activeId);
     if (!s) { el.textContent = '세션 없음'; el.title = ''; return; }
     el.textContent = '';
@@ -377,7 +380,7 @@ const App = {
   // 최근 첨부 이미지 — 패널 작성기 안에 그린다 (창 하단 고정 스트립은 입력창을 가렸다)
   renderImageStrip() {
     let layoutChanged = false;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const c = TerminalView.composers[i];
       if (c && App.renderPaneImages(c, App.paneSessionId(i))) layoutChanged = true;
     }
@@ -424,7 +427,7 @@ const App = {
   activateSession(id, opts) {
     // 분할 중: 이미 다른 패널에 보이는 세션이면 그 패널로 포커스만 이동, 아니면 포커스 패널에 배정
     const sp = App.split;
-    if (sp && sp.mode !== 'single') {
+    if (App.isSplit && App.isSplit()) {
       const idx = App.splitVisiblePanes().indexOf(id);
       if (idx >= 0) sp.focused = idx;
       else sp.panes[sp.focused] = id;

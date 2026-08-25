@@ -1,18 +1,18 @@
 // xterm 인스턴스 관리. 세션별 holder 를 display 토글로 전환 —
 // 비활성 세션도 xterm 버퍼가 유지되므로 전환 시 리플로우/재렌더 비용이 없다.
 // WebGL 렌더러는 화면에 보이는 세션에만 부착한다 — 브라우저의 WebGL 컨텍스트 수 제한(~16)
-// 때문에 세션이 많아도 컨텍스트는 보이는 패널 수(단일 1, 분할 최대 4)만 쓰고,
+// 때문에 세션이 많아도 컨텍스트는 보이는 패널 수(단일 1, 분할 최대 6)만 쓰고,
 // 화면에 없는 세션은 어차피 렌더링되지 않으므로 손해가 없다.
 const TerminalView = {
   views: new Map(), // sessionId → { term, fit, holder, webgl, frozen, queue }
   area: null,
-  panes: [], // 분할 패널 컨테이너 (최대 2×2)
+  panes: [], // 분할 패널 컨테이너 (최대 3×2)
   paneBodies: [], // 패널별 터미널 영역 (holder 의 부모)
   composers: [], // 패널별 프롬프트 작성기 — 패널마다 독립된 입력/예약 목록
 
   init() {
     this.area = document.getElementById('term-area');
-    this.panes = [0, 1, 2, 3].map((i) => document.getElementById('term-pane-' + i));
+    this.panes = Array.from({ length: SPLIT_MAX_PANES }, (_, i) => document.getElementById('term-pane-' + i));
     this.buildPaneShells();
     window.addEventListener('resize', () => {
       this.resizeAllComposers();
@@ -25,7 +25,7 @@ const TerminalView = {
   buildPaneShells() {
     this.paneBodies = [];
     this.composers = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const pane = this.panes[i];
       const body = document.createElement('div');
       body.className = 'pane-body';
@@ -132,7 +132,7 @@ const TerminalView = {
 
   // 패널별 작성기 활성/잠금 + 그 패널 세션의 작성 중 텍스트 복원
   syncComposerStates(opts) {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const c = this.composers[i];
       if (!c) continue;
       const sid = App.paneSessionId(i);
@@ -147,7 +147,7 @@ const TerminalView = {
     }
     App.renderComposerQueue();
     if (opts && opts.noFocus) return;
-    const focused = App.split && App.split.mode !== 'single' ? App.split.focused : 0;
+    const focused = App.isSplit && App.isSplit() ? App.split.focused : 0;
     const fc = this.composers[focused];
     if (fc && !fc.input.disabled) fc.input.focus();
   },
@@ -759,10 +759,10 @@ const TerminalView = {
 
   // 분할 상태(App.split)에 맞춰 holder 의 패널 배치·표시·WebGL 부착을 재조정한다.
   // 단일 모드 = 활성 세션 1개만 표시, 분할 모드 = 각 패널에 배정된 세션 표시.
-  // WebGL 은 화면에 보이는 세션 전부에 부착 (최대 4개 — 컨텍스트 한도 ~16 대비 여유).
+  // WebGL 은 화면에 보이는 세션 전부에 부착 (최대 6개 — 컨텍스트 한도 ~16 대비 여유).
   syncLayout(opts) {
     const assign = new Map(); // sessionId → paneIdx
-    if (App.split && App.split.mode !== 'single') {
+    if (App.isSplit && App.isSplit()) {
       App.splitVisiblePanes().forEach((sid, i) => {
         if (sid && !assign.has(sid)) assign.set(sid, i);
       });

@@ -38,19 +38,10 @@
           <div id="waiting-indicator" class="hidden" title="클릭 시 허가 대기 중인 세션으로 이동"></div>
           <span id="panel-codex" class="hidden" title="코덱스 남은 사용량"></span>
           <span id="panel-mem" title="시스템 메모리 사용률"></span>
+          <!-- 분할 모드 드롭다운: 버튼 아이콘 = 현재 모드, 목록 = 8종 (아이콘은 split-view.js 가 그린다) -->
           <div id="split-controls" aria-label="화면 분할">
-            <button id="btn-split-single" class="split-btn" title="단일 화면">
-              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-            </button>
-            <button id="btn-split-h" class="split-btn" title="좌우 분할">
-              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="1.5" x2="8" y2="14.5" stroke="currentColor" stroke-width="1.5"/></svg>
-            </button>
-            <button id="btn-split-v" class="split-btn" title="상하 분할">
-              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="1.5" y1="8" x2="14.5" y2="8" stroke="currentColor" stroke-width="1.5"/></svg>
-            </button>
-            <button id="btn-split-grid" class="split-btn" title="2×2 분할">
-              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="1.5" x2="8" y2="14.5" stroke="currentColor" stroke-width="1.5"/><line x1="1.5" y1="8" x2="14.5" y2="8" stroke="currentColor" stroke-width="1.5"/></svg>
-            </button>
+            <button id="btn-split" class="split-btn" title="화면 분할" aria-haspopup="true" aria-expanded="false"></button>
+            <div id="split-menu" class="hidden" role="menu"></div>
           </div>
           <button id="btn-toggle-prompts" title="세션 기록·계획 문서·메모 패널 토글">☰</button>
         </div>
@@ -71,8 +62,13 @@
           <div class="term-pane" id="term-pane-1"></div>
           <div class="term-pane" id="term-pane-2"></div>
           <div class="term-pane" id="term-pane-3"></div>
-          <div id="split-divider-v" class="split-divider"></div>
-          <div id="split-divider-h" class="split-divider"></div>
+          <div class="term-pane" id="term-pane-4"></div>
+          <div class="term-pane" id="term-pane-5"></div>
+          <!-- 스플리터: 세로 최대 2개(3열) · 가로 최대 2개(3행) — 배치는 renderSplit 이 정한다 -->
+          <div id="split-divider-v0" class="split-divider v"></div>
+          <div id="split-divider-v1" class="split-divider v"></div>
+          <div id="split-divider-h0" class="split-divider h"></div>
+          <div id="split-divider-h1" class="split-divider h"></div>
           <div id="empty-state">
             <h2>프로젝트를 등록하고 터미널을 시작하세요</h2>
             <p>좌측 하단 <b>+ 프로젝트</b> → 프로젝트 클릭 한 번으로 해당 경로의 터미널이 열립니다.<br>

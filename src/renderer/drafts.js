@@ -58,7 +58,7 @@ Object.assign(App, {
 
   // 화면에 보이는 패널 전부의 예약·초안 목록을 각자의 입력창 위에 그린다
   renderComposerQueue() {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const c = TerminalView.composers[i];
       if (c) App.renderPaneComposerQueue(c, App.paneSessionId(i));
     }
