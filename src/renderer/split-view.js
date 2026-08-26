@@ -172,6 +172,37 @@ Object.assign(App, {
     App.activateSession(id);
   },
 
+  // 앞에서부터 훑은 첫 빈 패널 번호 (죽은 세션이 남은 자리도 빈 것으로 본다). 없으면 -1
+  firstEmptyPane() {
+    const n = App.splitPaneCount();
+    for (let i = 0; i < n; i++) {
+      const id = App.split.panes[i];
+      if (!id || !App.state.sessions.some((x) => x.id === id)) return i;
+    }
+    return -1;
+  },
+
+  // Tab = 다음(Shift+Tab = 이전) 패널로 순회 이동하며 그 패널 프롬프트 입력창에 커서.
+  // 세션이 없거나 죽은 패널은 입력창이 잠겨 있으므로 건너뛴다.
+  // 터미널 안에서의 Tab 은 셸 자동완성이라 가로채지 않는다.
+  cyclePaneFocus(dir) {
+    const s = App.split;
+    const n = App.splitPaneCount();
+    if (!App.isSplit()) return false;
+    const step = dir < 0 ? -1 : 1;
+    for (let k = 1; k <= n; k++) {
+      const i = ((s.focused + step * k) % n + n) % n;
+      const sid = s.panes[i];
+      if (!sid || !TerminalView.views.has(sid)) continue;
+      const c = TerminalView.composers[i];
+      if (!c || !c.input) continue;
+      App.focusPane(i); // 활성 세션·포커스 링 갱신 (입력창 포커스는 아래에서)
+      c.input.focus();
+      return true;
+    }
+    return false;
+  },
+
   // 패널 클릭(캡처) = 포커스 이동. 터미널 클릭·선택을 방해하지 않게 프롬프트 포커스는 뺏지 않는다.
   focusPane(paneIdx) {
     const s = App.split;

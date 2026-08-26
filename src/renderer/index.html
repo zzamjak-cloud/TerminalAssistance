@@ -38,7 +38,6 @@
     <aside id="sidebar">
       <div id="sidebar-head">
         <button id="btn-fold-left" class="fold-btn" title="사이드바 닫기 (Cmd/Ctrl+I)">⟨</button>
-        <span class="brand"><span id="app-version"></span></span>
         <button id="btn-add-project" title="프로젝트 추가">＋</button>
       </div>
       <div id="project-list"></div>
@@ -86,15 +85,12 @@
     </main>
     <div class="resize-handle" id="resize-right" title="드래그로 너비 조절"></div>
     <aside id="prompt-panel" class="hidden">
-      <!-- 패널 최상단 헤더: 접기 버튼만 (사용량 게이지는 상단바로 이동) -->
-      <div id="usage-head">
-        <span class="spacer"></span>
-        <button id="btn-fold-right" class="fold-btn" title="패널 접기 (Cmd/Ctrl+P)">⟩</button>
-      </div>
+      <!-- 패널 접기 버튼은 첫 섹션(세션) 헤더에 편입 — 전용 헤더 줄 하나를 줄인다 -->
       <section id="history-panel" class="panel-sec" data-sec="claude">
         <div class="sec-head">
           <span class="chevron open">❯</span><span class="sec-title">세션</span>
           <button id="btn-claude-refresh" title="목록 새로고침">↻</button>
+          <button id="btn-fold-right" class="fold-btn" title="패널 접기 (Cmd/Ctrl+P)">⟩</button>
         </div>
         <div id="claude-list" class="sec-body"></div>
       </section>

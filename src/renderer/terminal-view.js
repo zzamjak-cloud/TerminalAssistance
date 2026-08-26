@@ -77,6 +77,11 @@ const TerminalView = {
       ev.stopPropagation();
       if (ev.isComposing || ev.keyCode === 229) return;
       if (this.handleComposerEditKeys(input, ev)) return;
+      // Tab/Shift+Tab = 분할 패널 순회 — 다음 패널 입력창으로 커서를 옮긴다
+      if (ev.key === 'Tab' && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+        if (App.cyclePaneFocus(ev.shiftKey ? -1 : 1)) ev.preventDefault();
+        return;
+      }
       if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
         ev.preventDefault();
         App.sendComposerPrompt(target());

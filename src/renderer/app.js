@@ -41,8 +41,6 @@ const App = {
     App.restoreComposerTexts(); // 리로드·재시작 전 작성 중이던 프롬프트 복원
     // 리로드·종료 직전 작성 중 텍스트를 즉시 저장 (스로틀 대기분 포함)
     window.addEventListener('pagehide', () => App.flushComposerPersists());
-    // 사이드바 제목 우측 버전 표기
-    document.getElementById('app-version').textContent = st.version ? 'v' + st.version : '';
 
     // 웹뷰 리로드/크래시 복구: 백엔드에 살아있는 세션의 터미널 뷰를 먼저 frozen 으로 만들어
     // 리스너 등록 후 도착하는 라이브 출력을 큐에 담아 두고, 스크롤백 주입 뒤 이어붙인다.
@@ -213,6 +211,13 @@ const App = {
   },
 
   handleAppShortcut(ev, opts) {
+    // Tab/Shift+Tab = 분할 패널 순회 + 그 패널 프롬프트 입력창 포커스.
+    // 터미널 안에서는 셸 자동완성이 우선이므로 가로채지 않는다.
+    if (ev.key === 'Tab' && !ev.metaKey && !ev.ctrlKey && !ev.altKey
+        && !(opts && opts.fromTerminal) && !App.isShortcutBlocked(ev, opts)) {
+      if (App.cyclePaneFocus(ev.shiftKey ? -1 : 1)) { ev.preventDefault(); return true; }
+      return false;
+    }
     const mod = App.state.platform === 'macos' ? ev.metaKey : ev.ctrlKey;
     if (!mod || ev.altKey || ev.shiftKey) return false;
     if (App.isShortcutBlocked(ev, opts)) return false;
@@ -498,7 +503,15 @@ const App = {
     if (App.isSplit && App.isSplit()) {
       const idx = App.splitVisiblePanes().indexOf(id);
       if (idx >= 0) sp.focused = idx;
-      else sp.panes[sp.focused] = id;
+      else {
+        // 새로 보여줄 세션은 0번 패널부터 훑어 첫 빈 패널에 넣는다 —
+        // 포커스가 뒤쪽 패널에 있어도 화면이 앞에서부터 순서대로 채워진다.
+        // 빈 패널이 없을 때만 포커스 패널의 세션을 교체한다.
+        const slot = App.firstEmptyPane();
+        const target = slot >= 0 ? slot : sp.focused;
+        sp.panes[target] = id;
+        sp.focused = target;
+      }
       App.saveSplitState();
     }
     App.state.activeId = id;

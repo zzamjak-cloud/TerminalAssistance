@@ -685,6 +685,7 @@ fn recreate_main_window(app: &tauri::AppHandle) {
     }
     let Some(mut cfg) = app.config().app.windows.first().cloned() else { return };
     cfg.label = format!("main-r{}", RECREATE_SEQ.fetch_add(1, Ordering::Relaxed));
+    cfg.title = versioned_title(app); // 재생성 창도 버전 붙은 제목 유지
     let created = tauri::WebviewWindowBuilder::from_config(app, &cfg).and_then(|b| b.build());
     CRASH_RECREATING.store(false, Ordering::SeqCst);
     match created {
@@ -695,6 +696,20 @@ fn recreate_main_window(app: &tauri::AppHandle) {
             app.exit(1);
         }
     }
+}
+
+// 창 제목 = "Terminal Assistance v0.0.0".
+// 버전 표기를 사이드바에서 OS 타이틀바로 옮긴 것 — macOS·Windows 모두 네이티브 제목 줄에 붙는다.
+// 기준 문자열은 tauri.conf.json 의 창 title, 버전은 패키지 버전이라 릴리스 때 자동으로 따라간다.
+fn versioned_title(app: &tauri::AppHandle) -> String {
+    let base = app
+        .config()
+        .app
+        .windows
+        .first()
+        .map(|w| w.title.clone())
+        .unwrap_or_else(|| app.package_info().name.clone());
+    format!("{} v{}", base, app.package_info().version)
 }
 
 fn main() {
@@ -724,6 +739,10 @@ fn main() {
             app.manage(Mutex::new(Store::load(config_dir)));
             let ptys = app.state::<PtyManager>();
             ptys.start_status_thread(app.handle().clone());
+            let title = versioned_title(app.handle());
+            for win in app.webview_windows().values() {
+                let _ = win.set_title(&title);
+            }
             hooks::clean_state_dir(); // 이전 실행이 남긴 훅 상태 파일 정리
             hooks::refresh_hook_script(); // 설치된 훅 스크립트를 최신 임베드 버전으로 갱신
 
