@@ -1,7 +1,7 @@
 [package]
 name = "terminal-assistance"
-version = "0.11.9"
-description = "AI ?쒕???硫???꾨줈?앺듃 ?곕????뚰겕?ㅽ럹?댁뒪"
+version = "0.11.10"
+description = "AI 시대의 멀티 프로젝트 터미널 워크스페이스"
 authors = ["zzamjak-cloud"]
 license = "GPL-3.0-only"
 edition = "2021"

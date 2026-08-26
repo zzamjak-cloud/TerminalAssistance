@@ -248,7 +248,7 @@ Object.assign(App, {
   // 루트가 바뀌었으면 상태를 갈아끼우고, 아니면 캐시로 즉시 그린다 (renderAll 에서 호출)
   renderExplorer() {
     const ex = document.getElementById('explorer');
-    if (ex.classList.contains('collapsed')) return;
+    if (ex.classList.contains('hidden')) return;
     const root = App.explorerRoot();
     const t = App._tree;
     if ((root && normPath(root)) !== t.root) {
@@ -324,7 +324,7 @@ Object.assign(App, {
   // 주기 갱신 — 탐색기가 보이고 루트가 있을 때만 (트리는 지연 로딩이라 비용이 작다)
   pollExplorer() {
     const ex = document.getElementById('explorer');
-    if (ex.classList.contains('collapsed')) return;
+    if (ex.classList.contains('hidden')) return;
     if (!App._tree.root) return;
     App.refreshExplorer(false);
   },

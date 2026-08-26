@@ -8,10 +8,35 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- 상단바: 창 전체 폭 최상단 고정. 좌측 = 패널 토글 2종 + 활성 세션 정보, 우측 = 표시기·분할·우측 패널 토글 -->
+  <div id="topbar">
+    <div id="topbar-left">
+      <button id="btn-toggle-sidebar" class="panel-toggle" title="프로젝트 사이드바 토글 (Cmd/Ctrl+I)">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.7" y="2.7" width="12.6" height="10.6" rx="1.8"/><line x1="6.2" y1="2.7" x2="6.2" y2="13.3"/></svg>
+      </button>
+      <button id="btn-toggle-explorer" class="panel-toggle" title="탐색기 토글 (Cmd/Ctrl+O)">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><path d="M1.7 4.2a1.5 1.5 0 0 1 1.5-1.5h2.9l1.6 1.8h5.1a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5H3.2a1.5 1.5 0 0 1-1.5-1.5z"/></svg>
+      </button>
+      <div id="active-info">세션 없음</div>
+    </div>
+    <div id="topbar-actions">
+      <div id="waiting-indicator" class="hidden" title="클릭 시 허가 대기 중인 세션으로 이동"></div>
+      <span id="panel-codex" class="hidden" title="코덱스 남은 사용량"></span>
+      <span id="panel-mem" title="시스템 메모리 사용률"></span>
+      <!-- 분할 모드 드롭다운: 버튼 아이콘 = 현재 모드, 목록 = 8종 (아이콘은 split-view.js 가 그린다) -->
+      <div id="split-controls" aria-label="화면 분할">
+        <button id="btn-split" class="split-btn" title="화면 분할" aria-haspopup="true" aria-expanded="false"></button>
+        <div id="split-menu" class="hidden" role="menu"></div>
+      </div>
+      <button id="btn-toggle-prompts" class="panel-toggle" title="세션 기록·계획 문서·메모 패널 토글 (Cmd/Ctrl+P)">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.7" y="2.7" width="12.6" height="10.6" rx="1.8"/><line x1="9.8" y1="2.7" x2="9.8" y2="13.3"/></svg>
+      </button>
+    </div>
+  </div>
   <div id="layout">
     <aside id="sidebar">
       <div id="sidebar-head">
-        <button id="btn-fold-left" class="fold-btn" title="사이드바 접기/펼치기 (Cmd/Ctrl+I)">⟨</button>
+        <button id="btn-fold-left" class="fold-btn" title="사이드바 닫기 (Cmd/Ctrl+I)">⟨</button>
         <span class="brand"><span id="app-version"></span></span>
         <button id="btn-add-project" title="프로젝트 추가">＋</button>
         <button id="btn-settings" title="설정">⚙</button>
@@ -21,7 +46,7 @@
     <div class="resize-handle" id="resize-left" title="드래그로 너비 조절"></div>
     <aside id="explorer">
       <div id="explorer-head">
-        <button id="btn-fold-explorer" class="fold-btn" title="탐색기 접기/펼치기 (Cmd/Ctrl+O)">⟨</button>
+        <button id="btn-fold-explorer" class="fold-btn" title="탐색기 닫기 (Cmd/Ctrl+O)">⟨</button>
         <span id="explorer-title" class="sec-title">탐색기</span>
         <button id="btn-tree-refresh" title="파일 트리 새로고침">↻</button>
       </div>
@@ -29,20 +54,6 @@
     </aside>
     <div class="resize-handle" id="resize-explorer" title="드래그로 너비 조절"></div>
     <main id="main">
-      <div id="topbar">
-        <div id="active-info">세션 없음</div>
-        <div id="topbar-actions">
-          <div id="waiting-indicator" class="hidden" title="클릭 시 허가 대기 중인 세션으로 이동"></div>
-          <span id="panel-codex" class="hidden" title="코덱스 남은 사용량"></span>
-          <span id="panel-mem" title="시스템 메모리 사용률"></span>
-          <!-- 분할 모드 드롭다운: 버튼 아이콘 = 현재 모드, 목록 = 8종 (아이콘은 split-view.js 가 그린다) -->
-          <div id="split-controls" aria-label="화면 분할">
-            <button id="btn-split" class="split-btn" title="화면 분할" aria-haspopup="true" aria-expanded="false"></button>
-            <div id="split-menu" class="hidden" role="menu"></div>
-          </div>
-          <button id="btn-toggle-prompts" title="세션 기록·계획 문서·메모 패널 토글 (Cmd/Ctrl+P)">☰</button>
-        </div>
-      </div>
       <div id="term-search" class="hidden">
         <input id="term-search-input" type="text" placeholder="터미널 검색">
         <span id="term-search-count"></span>

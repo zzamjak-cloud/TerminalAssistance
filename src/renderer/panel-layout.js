@@ -1,4 +1,5 @@
-// 패널 레이아웃: 좌측 사이드바·탐색기·우측 프롬프트/작업 패널의 폴딩과 드래그 리사이즈.
+// 패널 레이아웃: 좌측 사이드바·탐색기·우측 프롬프트/작업 패널의 토글과 드래그 리사이즈.
+// 세 패널 모두 슬림 레일 없이 완전히 숨기는 방식 — 상단바 토글 버튼·패널 내부 접기 버튼으로 여닫는다.
 // 저장 키: ta-left-w / ta-explorer-w / ta-right-w / ta-left-fold / ta-explorer-fold /
 //          ta-prompt-panel / ta-sec-fold
 Object.assign(App, {
@@ -9,25 +10,39 @@ Object.assign(App, {
     localStorage.setItem('ta-prompt-panel', hidden ? '0' : '1');
     // 닫혀 있는 동안의 변경 반영
     if (!hidden) { App.renderClaudeList(); App.renderPlanList(); }
+    App._syncPanelToggles();
     setTimeout(() => TerminalView.fitActive(), PANEL_ANIM_MS); // 슬라이딩 종료 후 리핏
   },
 
   toggleLeftSidebar() {
     const sb = document.getElementById('sidebar');
-    const collapsed = sb.classList.toggle('collapsed');
-    document.getElementById('resize-left').style.display = collapsed ? 'none' : '';
-    localStorage.setItem('ta-left-fold', collapsed ? '1' : '0');
+    const hidden = sb.classList.toggle('hidden');
+    document.getElementById('resize-left').style.display = hidden ? 'none' : '';
+    localStorage.setItem('ta-left-fold', hidden ? '1' : '0');
+    App._syncPanelToggles();
     setTimeout(() => TerminalView.fitActive(), PANEL_ANIM_MS);
   },
 
-  // 탐색기 폴딩 — 사이드바와 같은 슬림 레일 방식
   toggleExplorer() {
     const ex = document.getElementById('explorer');
-    const collapsed = ex.classList.toggle('collapsed');
-    document.getElementById('resize-explorer').style.display = collapsed ? 'none' : '';
-    localStorage.setItem('ta-explorer-fold', collapsed ? '1' : '0');
-    if (!collapsed) App.renderExplorer(); // 접힌 동안의 프로젝트 전환 반영
+    const hidden = ex.classList.toggle('hidden');
+    document.getElementById('resize-explorer').style.display = hidden ? 'none' : '';
+    localStorage.setItem('ta-explorer-fold', hidden ? '1' : '0');
+    if (!hidden) App.renderExplorer(); // 숨겨져 있는 동안의 프로젝트 전환 반영
+    App._syncPanelToggles();
     setTimeout(() => TerminalView.fitActive(), PANEL_ANIM_MS);
+  },
+
+  // 상단바 토글 버튼의 켜짐 표시를 각 패널의 표시 상태와 동기화
+  _syncPanelToggles() {
+    const sync = (btnId, panelId) => {
+      const btn = document.getElementById(btnId);
+      const open = !document.getElementById(panelId).classList.contains('hidden');
+      if (btn) btn.classList.toggle('on', open);
+    };
+    sync('btn-toggle-sidebar', 'sidebar');
+    sync('btn-toggle-explorer', 'explorer');
+    sync('btn-toggle-prompts', 'prompt-panel');
   },
 
   // 패널 UI 초기화: 저장된 너비/폴딩 복원 + 리사이즈 핸들 배선
@@ -42,20 +57,22 @@ Object.assign(App, {
     if (ew >= 160) ex.style.width = ew + 'px';
     if (rw >= 200) pp.style.width = rw + 'px';
     if (localStorage.getItem('ta-left-fold') === '1') {
-      sb.classList.add('collapsed');
+      sb.classList.add('hidden');
       document.getElementById('resize-left').style.display = 'none';
     }
     if (localStorage.getItem('ta-explorer-fold') === '1') {
-      ex.classList.add('collapsed');
+      ex.classList.add('hidden');
       document.getElementById('resize-explorer').style.display = 'none';
     }
     document.getElementById('resize-right').style.display = pp.classList.contains('hidden') ? 'none' : '';
 
-    document.getElementById('btn-fold-left').onclick = (e) => { e.stopPropagation(); App.toggleLeftSidebar(); };
-    document.getElementById('btn-fold-explorer').onclick = (e) => { e.stopPropagation(); App.toggleExplorer(); };
+    // 상단바 토글 버튼 + 패널 내부 접기 버튼 배선
+    document.getElementById('btn-toggle-sidebar').onclick = () => App.toggleLeftSidebar();
+    document.getElementById('btn-toggle-explorer').onclick = () => App.toggleExplorer();
+    document.getElementById('btn-fold-left').onclick = () => App.toggleLeftSidebar();
+    document.getElementById('btn-fold-explorer').onclick = () => App.toggleExplorer();
     document.getElementById('btn-fold-right').onclick = () => App.togglePromptPanel();
-    sb.onclick = () => { if (sb.classList.contains('collapsed')) App.toggleLeftSidebar(); }; // 슬림 레일 클릭 = 펼치기
-    ex.onclick = () => { if (ex.classList.contains('collapsed')) App.toggleExplorer(); };
+    App._syncPanelToggles();
 
     // 드래그로 너비 조절 (드래그 중엔 트랜지션 끔)
     const wireResize = (handleId, panel, key, min, max, fromLeft) => {
