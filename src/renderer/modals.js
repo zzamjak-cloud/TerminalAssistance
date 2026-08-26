@@ -436,6 +436,15 @@ Object.assign(App, {
     // 연동 설치 여부는 외부 설정 파일(~/.claude, ~/.codex)이 진실 — 열 때마다 조회
     let hooks = { claude: false, codex: false };
     try { hooks = await ta.hooksStatus(); } catch (_) {}
+    // 설치된 셸 자동 감지 — 수동 입력 대신 드롭다운에서 선택
+    let shells = [{ label: 'OS 기본', value: '' }];
+    try { shells = await ta.listShells(); } catch (_) {}
+    // 과거 버전에서 직접 입력해 둔 값이 감지 목록에 없으면 보존용 항목으로 노출
+    if (st.shell && !shells.some((s) => s.value === st.shell)) {
+      shells.push({ label: `사용자 지정 (${st.shell})`, value: st.shell });
+    }
+    const shellOptions = shells.map((s) =>
+      `<option value="${escapeHtml(s.value)}"${s.value === (st.shell || '') ? ' selected' : ''}>${escapeHtml(s.label)}</option>`).join('');
     const themeChips = Theme.PRESETS.map((p) => `
       <button type="button" class="theme-chip${Theme.state.id === p.id ? ' selected' : ''}" data-theme-id="${p.id}" title="${p.bg} / ${p.accent}">
         <span class="theme-swatch" style="background:${p.bg}"><i class="theme-dot" style="background:${p.accent}"></i></span>
@@ -460,7 +469,8 @@ Object.assign(App, {
       <div class="range-row"><span>자간</span><input type="range" id="m-letter-spacing" min="0" max="4" step="0.5" value="${Number(st.letterSpacing) || 0}"><span id="m-letter-spacing-v"></span></div>
       <div class="range-row"><span>최소 대비</span><input type="range" id="m-min-contrast" min="1" max="7" step="0.5" value="${Number(st.minContrast) || 1}"><span id="m-min-contrast-v"></span></div>
       <div class="form-help">최소 대비는 Claude/Codex 가 즐겨 쓰는 흐린 회색·dim 출력이 배경에 묻힐 때 글자색만 배경 대비 기준까지 자동으로 끌어올립니다 (1 = 끔, 4.5 = WCAG AA).</div>
-      <label>셸 (비우면 OS 기본)</label><input type="text" id="m-shell" placeholder="${App.state.platform === 'windows' ? 'powershell.exe' : '/bin/zsh'}" value="${escapeHtml(st.shell || '')}">
+      <label>셸</label><select id="m-shell">${shellOptions}</select>
+      <div class="form-help">설치된 셸만 표시됩니다. 새로 만드는 세션부터 적용됩니다.</div>
       <div class="check"><input type="checkbox" id="m-notify" ${st.notifyOnDone ? 'checked' : ''}><label for="m-notify" style="margin:0">비활성 세션 작업 완료 시 알림</label></div>
       <div class="check"><input type="checkbox" id="m-notify-wait" ${st.notifyOnWaiting ? 'checked' : ''}><label for="m-notify-wait" style="margin:0">비활성 세션 허가 대기 시 알림</label></div>
       <label>AI 도구 연동 — 허가 대기(🟡) 감지</label>
@@ -527,7 +537,7 @@ Object.assign(App, {
           dropEscRestore();
           const patch = {
             fontSize: Math.max(9, Math.min(24, Number(m.querySelector('#m-font').value) || 13)),
-            shell: m.querySelector('#m-shell').value.trim(),
+            shell: m.querySelector('#m-shell').value,
             notifyOnDone: m.querySelector('#m-notify').checked,
             notifyOnWaiting: m.querySelector('#m-notify-wait').checked,
             lineHeight: Number(m.querySelector('#m-line-height').value),

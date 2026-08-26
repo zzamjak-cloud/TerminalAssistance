@@ -44,6 +44,9 @@
       minContrast: patch.minContrast ?? null
     }),
 
+    // 설치된 셸 자동 감지 목록 — [{ label, value }] (설정 드롭다운용, 빈 value = OS 기본)
+    listShells: () => invoke('list_shells'),
+
     // AI 도구 연동 상태 { claude, codex } / 설치·제거 (허가 대기 감지)
     hooksStatus: () => invoke('hooks_status'),
     setClaudeHooks: (enable) => invoke('set_claude_hooks', { enable }),

@@ -523,25 +523,24 @@ fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-// WebView2 렌더러 프로세스가 죽으면(메모리 부족 등) 자동 리로드해 화면을 복구한다.
-// 리로드 후 프론트 boot() 가 get_scrollback 으로 세션 내용을 복원하므로 데이터 손실이 없다.
-// (PTY 와 자식 프로세스는 Rust 쪽에 있어 렌더러 크래시의 영향을 받지 않는다)
-// 모든 ProcessFailed 이벤트는 종류·시각을 app_data_dir/crash-recovery.log 에 남긴다 —
+// WebView2 프로세스가 죽으면 자동 복구한다 — 종류별로:
+//  - 렌더러/GPU 사망: Reload (리로드 후 프론트 boot() 가 get_scrollback 으로 내용 복원)
+//  - 브라우저 프로세스 사망: Reload 불가(브라우저 자체가 소멸) → 창을 destroy 하고 같은
+//    설정으로 재생성. PTY·스크롤백은 Rust 쪽에 있어 새 창의 boot() 가 그대로 복원한다.
+// 모든 ProcessFailed 이벤트는 종류·시각·조치를 app_data_dir/crash-recovery.log 에 남긴다 —
 // "깜빡임"이 렌더러 크래시였는지, GPU 재시작이었는지 사후 판별용.
 #[cfg(windows)]
 fn install_crash_recovery(window: &tauri::WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2, ICoreWebView2ProcessFailedEventArgs, COREWEBVIEW2_PROCESS_FAILED_KIND,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED,
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
     };
     use webview2_com::ProcessFailedEventHandler;
 
-    let log_path = window
-        .app_handle()
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|d| d.join("crash-recovery.log"));
+    let app = window.app_handle().clone();
+    let log_path = app.path().app_data_dir().ok().map(|d| d.join("crash-recovery.log"));
 
     let _ = window.with_webview(move |webview| unsafe {
         let Ok(core) = webview.controller().CoreWebView2() else {
@@ -556,34 +555,51 @@ fn install_crash_recovery(window: &tauri::WebviewWindow) {
                 }
                 // 종류 라벨 (COREWEBVIEW2_PROCESS_FAILED_KIND 정수값 기준)
                 let label = match kind.0 {
-                    0 => "browser_exited",       // 브라우저 프로세스 사망 — 창 전체 소실, 리로드 불가
+                    0 => "browser_exited",       // 브라우저 프로세스 사망 — 아래에서 창 재생성
                     1 => "render_exited",        // 렌더러 사망 — 아래에서 자동 리로드
                     2 => "render_unresponsive",  // 무응답 — 스스로 회복 가능
                     3 => "frame_render_exited",
                     4 => "utility_exited",
                     5 => "sandbox_helper_exited",
-                    6 => "gpu_exited",           // GPU 재시작 — 화면 깜빡임의 다른 후보
+                    6 => "gpu_exited",           // GPU 사망 — 컴포지팅이 깨진 채 남을 수 있어 리로드
                     _ => "other",
                 };
+                let reload = kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                    || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED;
+                let recreate = kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED;
                 if let Some(p) = &log_path {
                     let secs = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
+                    let action = if reload { "reload" } else if recreate { "recreate" } else { "none" };
                     let _ = fs::OpenOptions::new()
                         .create(true)
                         .append(true)
                         .open(p)
                         .and_then(|mut f| {
                             use std::io::Write;
-                            writeln!(f, "{secs}\tkind={} ({label})", kind.0)
+                            writeln!(f, "{secs}\tkind={} ({label})\taction={action}", kind.0)
                         });
                 }
-                // 렌더러 프로세스 사망일 때만 리로드 (Unresponsive 등은 스스로 회복 가능)
-                if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
+                if reload {
                     if let Some(wv) = &sender {
                         let _ = wv.Reload();
                     }
+                }
+                if recreate {
+                    // 이 콜백은 메인 스레드에서 실행되고, run_on_main_thread 는 메인 스레드에서
+                    // 부르면 "즉시 동기 실행"이다(tauri-runtime-wry send_user_message). 그대로
+                    // 부르면 WebView2 이벤트 디스패치 안에서 재진입해 새 environment 초기화가
+                    // 끝나지 않는다(실측: 재생성 창이 about:blank 에서 멈춤) — 별도 스레드를
+                    // 거쳐 다음 이벤트 루프 턴으로 미룬다.
+                    CRASH_RECREATING.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let app_task = app.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        let a = app_task.clone();
+                        let _ = app_task.run_on_main_thread(move || recreate_main_window(&a));
+                    });
                 }
                 Ok(())
             },
@@ -593,13 +609,46 @@ fn install_crash_recovery(window: &tauri::WebviewWindow) {
     });
 }
 
+// 크래시 복구로 창을 재생성하는 동안 true — "마지막 창 닫힘 = 앱 종료" 판정을 막는 가드.
+// (destroy 와 재생성 사이에 창 개수가 0 이 되는 순간이 있다)
+#[cfg(windows)]
+static CRASH_RECREATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// 브라우저 프로세스 사망 시 창 재생성. 순서가 중요하다:
+//  1) 죽은 창(기존 WebView2 controller/environment 참조)을 먼저 전부 destroy 로 해제 —
+//     죽은 인스턴스 참조가 남은 채 새 environment 를 만들면 초기화가 끝나지 않아
+//     새 창이 about:blank 에서 멈춘다(실측). MS 권고 순서도 "전부 해제 후 재생성".
+//  2) 창 0개 순간의 종료 요청은 CRASH_RECREATING 가드(RunEvent 콜백)가 막는다.
+//  3) 같은 라벨은 destroy 완료 전 재사용이 불가해 매번 고유 라벨을 쓴다.
+#[cfg(windows)]
+fn recreate_main_window(app: &tauri::AppHandle) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static RECREATE_SEQ: AtomicU32 = AtomicU32::new(1);
+    for w in app.webview_windows().values() {
+        let _ = w.destroy();
+    }
+    let Some(mut cfg) = app.config().app.windows.first().cloned() else { return };
+    cfg.label = format!("main-r{}", RECREATE_SEQ.fetch_add(1, Ordering::Relaxed));
+    let created = tauri::WebviewWindowBuilder::from_config(app, &cfg).and_then(|b| b.build());
+    CRASH_RECREATING.store(false, Ordering::SeqCst);
+    match created {
+        Ok(win) => install_crash_recovery(&win),
+        Err(e) => {
+            // 재생성까지 실패하면 창 없는 좀비로 남지 않게 종료 (다음 실행에서 정상 복구)
+            eprintln!("크래시 복구: 창 재생성 실패 — {e}");
+            app.exit(1);
+        }
+    }
+}
+
 fn main() {
     let builder = tauri::Builder::default();
     // 단일 인스턴스(릴리즈 전용, 반드시 첫 번째로 등록) — 중복 실행 시 기존 창을 앞으로.
     // dev 빌드는 제외 — 같은 identifier 를 공유해 설치본이 떠 있으면 dev 실행이 차단된다.
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        if let Some(win) = app.get_webview_window("main") {
+        // 크래시 복구로 재생성된 창은 라벨이 "main" 이 아닐 수 있어 아무 창이나 찾는다
+        if let Some(win) = app.webview_windows().values().next().cloned() {
             let _ = win.unminimize();
             let _ = win.show();
             let _ = win.set_focus();
@@ -682,11 +731,22 @@ fn main() {
             codex::list_codex_sessions,
             codex::codex_session_messages,
             codex::codex_usage,
+            pty::list_shells,
             hooks::hooks_status,
             hooks::claude_session_of,
             hooks::set_claude_hooks,
             hooks::set_codex_hooks
         ])
-        .run(tauri::generate_context!())
-        .expect("Terminal Assistance 실행 실패");
+        .build(tauri::generate_context!())
+        .expect("Terminal Assistance 실행 실패")
+        .run(|_app, _event| {
+            // 크래시 복구 중(창 재생성 사이, 창 0개)의 자동 종료 요청만 무시 —
+            // 사용자 종료(X 버튼, app.exit)는 그대로 진행된다.
+            #[cfg(windows)]
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &_event {
+                if code.is_none() && CRASH_RECREATING.load(std::sync::atomic::Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
+        });
 }

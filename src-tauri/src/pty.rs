@@ -148,6 +148,118 @@ fn default_shell(override_shell: &str) -> String {
     }
 }
 
+/// 셸 지정 해석 결과 — Windows 의 git-bash 처럼 지정 문자열과 실제 실행 파일·인자가
+/// 다른 경우를 흡수한다
+struct ResolvedShell {
+    program: String,
+    args: Vec<&'static str>,
+    msys_bash: bool, // Git Bash(MSYS) 여부 — CHERE_INVOKE 등 전용 env 적용 근거
+}
+
+/// Windows 에서 Git Bash 실행 파일(bin\bash.exe)을 찾는다.
+/// spec 이 경로면 그 설치본 기준(런처 git-bash.exe → 같은 설치본의 bin\bash.exe),
+/// 이름뿐이면 표준 설치 위치와 PATH 의 git.exe 위치로부터 유추한다 (scoop 등 비표준 설치 대응).
+fn find_git_bash(spec: &str) -> Option<String> {
+    use std::path::{Path, PathBuf};
+    let existing = |pb: PathBuf| pb.is_file().then(|| pb.to_string_lossy().into_owned());
+    let p = Path::new(spec);
+    if p.components().count() > 1 {
+        let base = p.file_name()?.to_str()?.to_ascii_lowercase();
+        if base.starts_with("git-bash") {
+            return existing(p.parent()?.join("bin").join("bash.exe"));
+        }
+        return existing(p.to_path_buf());
+    }
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for var in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Ok(v) = std::env::var(var) {
+            roots.push(PathBuf::from(v).join("Git"));
+        }
+    }
+    if let Ok(v) = std::env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(v).join("Programs").join("Git"));
+    }
+    // git.exe 는 보통 Git\cmd\ 에 있어 PATH 에 잡힌다 → 그 부모가 설치 루트
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if dir.join("git.exe").is_file() {
+                if let Some(root) = dir.parent() {
+                    roots.push(root.to_path_buf());
+                }
+            }
+        }
+    }
+    roots.into_iter().find_map(|root| existing(root.join("bin").join("bash.exe")))
+}
+
+/// PATH 에서 실행 파일 존재 여부
+fn on_path(name: &str) -> bool {
+    std::env::var("PATH")
+        .ok()
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+}
+
+/// 설치된 셸 자동 감지 — 설정 UI 의 셸 드롭다운 항목.
+/// value 는 settings.shell 에 저장되는 문자열(빈 값 = OS 기본), label 은 표시용.
+/// 저장된 value 의 해석은 세션 생성 시 resolve_shell 이 담당한다.
+#[tauri::command]
+pub fn list_shells() -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut push =
+        |label: String, value: &str| out.push(serde_json::json!({ "label": label, "value": value }));
+    if cfg!(windows) {
+        push("OS 기본".into(), "");
+        push("PowerShell".into(), "powershell.exe");
+        if on_path("pwsh.exe") {
+            push("PowerShell 7 (pwsh)".into(), "pwsh.exe");
+        }
+        push("명령 프롬프트 (cmd)".into(), "cmd.exe");
+        if find_git_bash("git-bash").is_some() {
+            push("Git Bash".into(), "git-bash");
+        }
+    } else {
+        let sys = std::env::var("SHELL").unwrap_or_default();
+        let label = if sys.is_empty() { "OS 기본".into() } else { format!("OS 기본 ({})", sys) };
+        push(label, "");
+        for sh in ["/bin/zsh", "/bin/bash"] {
+            if sh != sys && std::path::Path::new(sh).is_file() {
+                push(sh.into(), sh);
+            }
+        }
+    }
+    out
+}
+
+/// 셸 설정 문자열을 실행 가능한 (프로그램, 인자) 로 해석한다.
+/// Windows 의 bash 계열 지정은 Git Bash 를 탐색해 실제 셸로 바꾼다 — GUI 런처(git-bash.exe)는
+/// PTY 에 붙지 않고 새 창을 띄우며, Git 의 bash.exe 는 보통 PATH 에 없어 이름만으론 못 찾는다.
+fn resolve_shell(override_shell: &str) -> Result<ResolvedShell, String> {
+    // 경로 복사 시 흔한 둘러싼 따옴표는 허용
+    let shell = default_shell(override_shell).trim_matches('"').to_string();
+    if !cfg!(windows) {
+        // 로그인 셸: 사용자 PATH·프롬프트 환경을 그대로 상속 (GUI 앱은 셸 env 를 못 받음)
+        return Ok(ResolvedShell { program: shell, args: vec!["-l"], msys_bash: false });
+    }
+    let base = shell.rsplit(['/', '\\']).next().unwrap_or(&shell).to_ascii_lowercase();
+    let bashish = matches!(base.as_str(), "bash" | "bash.exe" | "git-bash" | "git-bash.exe");
+    if !bashish {
+        return Ok(ResolvedShell { program: shell, args: Vec::new(), msys_bash: false });
+    }
+    if let Some(program) = find_git_bash(&shell) {
+        // System32 의 bash.exe 는 WSL 런처 — MSYS 전용 인자를 주지 않고 그대로 실행
+        if program.to_ascii_lowercase().contains("system32") {
+            return Ok(ResolvedShell { program, args: Vec::new(), msys_bash: false });
+        }
+        // --login: Git Bash 의 PATH·프롬프트 초기화, -i: 대화형 (Windows Terminal 프로필과 동일)
+        return Ok(ResolvedShell { program, args: vec!["--login", "-i"], msys_bash: true });
+    }
+    Err(format!(
+        "Git Bash 를 찾을 수 없습니다 — 설정의 셸에 bash.exe 전체 경로를 입력하세요 \
+         (예: C:\\Program Files\\Git\\bin\\bash.exe). 입력값: {}",
+        shell
+    ))
+}
+
 fn emit_status(app: &AppHandle, id: &str, status: Status, busy_ms: u128) {
     let _ = app.emit(
         "ta:status",
@@ -351,7 +463,7 @@ impl PtyManager {
         title: Option<String>,
     ) -> Result<SessionInfo, String> {
         let (id, created_at_ms) = (crate::store::new_id(), now_ms());
-        let shell = default_shell(shell_override);
+        let shell = resolve_shell(shell_override)?;
         let home = || std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_else(|_| ".".into());
         let mut cwd = cwd.unwrap_or_else(home);
         // cwd 가 사라졌으면(폴더 삭제·드라이브 미연결) 홈으로 폴백 — spawn 실패 방지
@@ -364,10 +476,13 @@ impl PtyManager {
             .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| e.to_string())?;
 
-        let mut cmd = CommandBuilder::new(&shell);
-        // 로그인 셸: 사용자 PATH·프롬프트 환경을 그대로 상속 (GUI 앱은 셸 env 를 못 받음)
-        if !cfg!(windows) {
-            cmd.arg("-l");
+        let mut cmd = CommandBuilder::new(&shell.program);
+        for a in &shell.args {
+            cmd.arg(a);
+        }
+        if shell.msys_bash {
+            // Git Bash 로그인 셸은 기본으로 홈으로 cd 한다 — 지정 cwd(프로젝트 폴더)를 유지시킨다
+            cmd.env("CHERE_INVOKE", "1");
         }
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
@@ -386,7 +501,7 @@ impl PtyManager {
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
         let title = title.unwrap_or_else(|| {
-            shell.rsplit(['/', '\\']).next().unwrap_or(&shell).to_string()
+            shell.program.rsplit(['/', '\\']).next().unwrap_or(&shell.program).to_string()
         });
         let now = Instant::now();
         let meta = SessionMeta {

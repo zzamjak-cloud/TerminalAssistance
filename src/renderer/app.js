@@ -561,10 +561,14 @@ const App = {
   // 작업 완료 시 커서를 그 패널의 프롬프트 입력창으로 — 완료 직후 이어서 치는
   // 텍스트가 터미널(xterm)로 새는 것을 막는다. 보고 있는(활성) 세션에만 적용하고,
   // 다른 입력 요소에서 작성 중이면 포커스를 뺏지 않는다.
-  // (xterm 의 숨은 textarea 는 '커서가 터미널에 있는' 상태이므로 입력창으로 옮겨 온다)
+  // (xterm 의 숨은 textarea 는 '커서가 터미널에 있는' 상태이므로 입력창으로 옮겨 오되,
+  //  사용자가 터미널에서 직접 타이핑 중이면 예외 — 타이핑 에코 출력만으로도
+  //  done 전이가 생기므로(800ms 무출력 판정) 최근 입력이 있으면 뺏지 않는다)
+  TERM_TYPING_GRACE_MS: 3000,
   focusComposerOnDone(s) {
     if (s.id !== App.state.activeId) return;
     if (App.isOverlayOpen('modal-backdrop')) return;
+    if (TerminalView.typedRecently(s.id, App.TERM_TYPING_GRACE_MS)) return;
     const c = TerminalView.composerForSession(s.id);
     if (!c || c.input.disabled) return;
     const ae = document.activeElement;
