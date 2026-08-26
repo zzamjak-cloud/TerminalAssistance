@@ -285,7 +285,7 @@ const Theme = {
     const link = document.getElementById('hljs-theme');
     if (link) link.href = this.state.isDark ? 'vendor/hljs-theme.css' : 'vendor/hljs-theme-light.css';
     if (window.TerminalView && TerminalView.applyTheme) TerminalView.applyTheme();
-    if (window.App && App.refreshThemedColors) App.refreshThemedColors();
+    if (typeof App !== 'undefined' && App.refreshThemedColors) App.refreshThemedColors();
   },
 
   set(id, bg, accent) {

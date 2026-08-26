@@ -149,6 +149,58 @@ async fn pick_folder(app: AppHandle) -> Option<String> {
         .map(|p| p.to_string())
 }
 
+/// 시스템 글꼴 폴더 — 글꼴 파일 선택 다이얼로그의 시작 위치
+fn system_font_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    return std::env::var("WINDIR")
+        .ok()
+        .map(|w| std::path::PathBuf::from(w).join("Fonts"));
+    #[cfg(target_os = "macos")]
+    return Some(std::path::PathBuf::from("/System/Library/Fonts"));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return Some(std::path::PathBuf::from("/usr/share/fonts"));
+}
+
+/// 글꼴 파일의 name 테이블에서 CSS 로 지정 가능한 패밀리 이름을 추출한다
+/// (16 = 조판용 패밀리 우선 — Bold 등 스타일이 빠진 순수 패밀리명, 없으면 1 = 기본 패밀리)
+fn font_family_name(data: &[u8]) -> Option<String> {
+    let face = ttf_parser::Face::parse(data, 0).ok()?;
+    let mut family = None;
+    for name in face.names() {
+        let decoded = match name.to_string() {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => continue,
+        };
+        if name.name_id == ttf_parser::name_id::TYPOGRAPHIC_FAMILY {
+            return Some(decoded);
+        }
+        if name.name_id == ttf_parser::name_id::FAMILY && family.is_none() {
+            family = Some(decoded);
+        }
+    }
+    family
+}
+
+/// 시스템 글꼴 폴더를 열어 사용자가 고른 글꼴 파일의 패밀리 이름을 돌려준다 (취소 시 None)
+#[tauri::command]
+async fn pick_font(app: AppHandle) -> Result<Option<String>, String> {
+    let mut dlg = app
+        .dialog()
+        .file()
+        .add_filter("글꼴 파일", &["ttf", "otf", "ttc"]);
+    if let Some(dir) = system_font_dir() {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(picked) = dlg.blocking_pick_file() else {
+        return Ok(None);
+    };
+    let data = std::fs::read(picked.to_string())
+        .map_err(|e| format!("글꼴 파일을 읽지 못했습니다: {e}"))?;
+    font_family_name(&data)
+        .map(Some)
+        .ok_or_else(|| "글꼴 이름(name 테이블)을 읽지 못했습니다".to_string())
+}
+
 // ── 프리셋 ──
 #[tauri::command]
 fn add_preset(
@@ -270,6 +322,7 @@ fn remove_recipe(store: StoreState, id: String) -> Result<(), String> {
 fn update_settings(
     store: StoreState,
     font_size: Option<u32>,
+    font_family: Option<String>,
     shell: Option<String>,
     notify_on_done: Option<bool>,
     notify_on_waiting: Option<bool>,
@@ -280,6 +333,9 @@ fn update_settings(
     let mut s = plock(&store);
     if let Some(v) = font_size {
         s.data.settings.font_size = v;
+    }
+    if let Some(v) = font_family {
+        s.data.settings.font_family = v.trim().to_string();
     }
     if let Some(v) = shell {
         s.data.settings.shell = v;
@@ -690,6 +746,7 @@ fn main() {
             reorder_projects,
             remove_project,
             pick_folder,
+            pick_font,
             add_preset,
             update_preset,
             reorder_presets,

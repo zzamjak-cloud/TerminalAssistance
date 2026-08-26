@@ -433,6 +433,14 @@ Object.assign(App, {
 
   async showSettingsModal() {
     const st = App.state.settings;
+    // 설치된 코딩 글꼴 감지 → 드롭다운. 과거 직접 입력값이 목록에 없으면 보존용으로 노출
+    const curFont = st.fontFamily || '';
+    const fonts = detectInstalledFonts(FONT_CANDIDATES);
+    if (curFont && !fonts.includes(curFont)) fonts.unshift(curFont);
+    const fontOptions = [`<option value="">기본 (Menlo · Consolas · D2Coding)</option>`]
+      .concat(fonts.map((f) =>
+        `<option value="${escapeHtml(f)}" style="font-family:'${escapeHtml(f)}'"${f === curFont ? ' selected' : ''}>${escapeHtml(f)}</option>`))
+      .join('');
     // 연동 설치 여부는 외부 설정 파일(~/.claude, ~/.codex)이 진실 — 열 때마다 조회
     let hooks = { claude: false, codex: false };
     try { hooks = await ta.hooksStatus(); } catch (_) {}
@@ -463,6 +471,12 @@ Object.assign(App, {
         <button id="m-theme-apply">적용</button>
       </div>
       <div class="form-help">배경 밝기로 라이트/다크를 판별해 글자·상태·프로젝트 색을 자동 보정합니다. 테마는 즉시 적용되며 저장 버튼과 무관하게 유지됩니다.</div>
+      <label>글꼴 (선택하면 터미널에 즉시 반영)</label>
+      <div class="font-row">
+        <select id="m-font-family">${fontOptions}</select>
+        <button type="button" id="m-font-pick" title="시스템 글꼴 폴더에서 파일 선택">파일에서 선택…</button>
+      </div>
+      <div class="form-help">목록은 자동 감지된 코딩 글꼴입니다. 다른 글꼴은 '파일에서 선택'으로 시스템 글꼴 폴더에서 고르세요. 지정 글꼴이 못 그리는 문자는 기본 글꼴로 대체됩니다.</div>
       <label>글꼴 크기</label><input type="number" id="m-font" min="9" max="24" value="${st.fontSize}">
       <label>가독성 (조절하면 터미널에 즉시 반영)</label>
       <div class="range-row"><span>줄 간격</span><input type="range" id="m-line-height" min="1" max="2" step="0.05" value="${Number(st.lineHeight) || 1}"><span id="m-line-height-v"></span></div>
@@ -502,6 +516,31 @@ Object.assign(App, {
           syncThemeInputs();
         };
 
+        // ── 글꼴: 선택 즉시 미리보기, 취소·Esc 시 원래 글꼴로 되돌린다 ──
+        const fontSel = m.querySelector('#m-font-family');
+        const fontBefore = curFont;
+        const selectedFont = () => fontSel.value.trim();
+        const previewFont = () => {
+          App.state.settings.fontFamily = selectedFont();
+          TerminalView.setFontFamily();
+        };
+        fontSel.onchange = previewFont;
+        // 시스템 글꼴 폴더에서 파일을 고르면 그 파일의 패밀리 이름을 목록에 넣고 즉시 미리보기
+        m.querySelector('#m-font-pick').onclick = async () => {
+          let name = null;
+          try { name = await ta.pickFont(); } catch (e) { alert('글꼴 읽기 실패: ' + e); return; }
+          if (!name) return;
+          if (![...fontSel.options].some((o) => o.value === name)) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            opt.style.fontFamily = `'${name}'`;
+            fontSel.add(opt, 1); // '기본' 바로 다음 위치
+          }
+          fontSel.value = name;
+          previewFont();
+        };
+
         // ── 가독성: 조절 즉시 터미널에 반영, 취소하면 원래 값으로 되돌린다 ──
         const readKeys = [
           ['#m-line-height', 'lineHeight', (n) => n.toFixed(2)],
@@ -528,7 +567,9 @@ Object.assign(App, {
         const dropEscRestore = () => document.removeEventListener('keydown', escRestore, true);
         const restoreRead = () => {
           Object.assign(App.state.settings, readBefore);
+          App.state.settings.fontFamily = fontBefore;
           TerminalView.applyReadability();
+          TerminalView.setFontFamily();
         };
         document.addEventListener('keydown', escRestore, true);
 
@@ -537,6 +578,7 @@ Object.assign(App, {
           dropEscRestore();
           const patch = {
             fontSize: Math.max(9, Math.min(24, Number(m.querySelector('#m-font').value) || 13)),
+            fontFamily: selectedFont(),
             shell: m.querySelector('#m-shell').value,
             notifyOnDone: m.querySelector('#m-notify').checked,
             notifyOnWaiting: m.querySelector('#m-notify-wait').checked,
@@ -554,9 +596,29 @@ Object.assign(App, {
           try { if (wantCodex !== hooks.codex) await ta.setCodexHooks(wantCodex); }
           catch (e) { alert('Codex 연동 실패: ' + e); }
           TerminalView.setFontSize(App.state.settings.fontSize);
+          TerminalView.setFontFamily();
           TerminalView.applyReadability();
           close();
         };
       });
   }
 });
+
+// 설정 팝업 글꼴 드롭다운 후보 — 널리 쓰이는 코딩·모노스페이스 글꼴 (설치된 것만 표시)
+const FONT_CANDIDATES = [
+  'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', 'D2Coding', 'D2Coding Ligature',
+  'Fira Code', 'Hack', 'IBM Plex Mono', 'Inconsolata', 'Intel One Mono', 'JetBrains Mono',
+  'Lucida Console', 'Menlo', 'MesloLGS NF', 'Monaspace Neon', 'Nanum Gothic Coding',
+  'Noto Sans Mono', 'Roboto Mono', 'Sarasa Mono K', 'Source Code Pro', 'Ubuntu Mono', 'Victor Mono'
+];
+
+// 설치된 글꼴 감지 — 후보 글꼴을 폴백(monospace/sans-serif)과 캔버스 폭으로 비교한다.
+// 어느 한쪽 폴백과라도 폭이 다르면 해당 글꼴이 실제로 렌더링된 것 → 설치됨으로 판정.
+function detectInstalledFonts(candidates) {
+  const ctx = document.createElement('canvas').getContext('2d');
+  const SAMPLE = 'mmmMMM111lliIWw한글코딩@#%';
+  const width = (font) => { ctx.font = `24px ${font}`; return ctx.measureText(SAMPLE).width; };
+  const base = { monospace: width('monospace'), 'sans-serif': width('sans-serif') };
+  return candidates.filter((name) =>
+    ['monospace', 'sans-serif'].some((fb) => width(`"${name}", ${fb}`) !== base[fb]));
+}

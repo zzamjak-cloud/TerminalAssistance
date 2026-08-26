@@ -1,6 +1,6 @@
 [package]
 name = "terminal-assistance"
-version = "0.11.10"
+version = "0.11.11"
 description = "AI 시대의 멀티 프로젝트 터미널 워크스페이스"
 authors = ["zzamjak-cloud"]
 license = "GPL-3.0-only"
@@ -22,6 +22,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # ~/.codex/config.toml 병합 설치용 — 사용자 설정의 포맷·주석을 보존한다
 toml_edit = "0.22"
+# 글꼴 파일(ttf/otf/ttc)에서 패밀리 이름 추출 — 설정 팝업 '파일에서 선택'
+ttf-parser = "0.25"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # ?쒖뒪??硫붾え由??꾪솴 ?쒖떆??(硫붾え由?議고쉶留??ъ슜)
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }

@@ -36,6 +36,7 @@
 
     updateSettings: (patch) => invoke('update_settings', {
       fontSize: patch.fontSize ?? null,
+      fontFamily: patch.fontFamily ?? null,
       shell: patch.shell ?? null,
       notifyOnDone: patch.notifyOnDone ?? null,
       notifyOnWaiting: patch.notifyOnWaiting ?? null,
@@ -46,6 +47,9 @@
 
     // 설치된 셸 자동 감지 목록 — [{ label, value }] (설정 드롭다운용, 빈 value = OS 기본)
     listShells: () => invoke('list_shells'),
+
+    // 시스템 글꼴 폴더에서 글꼴 파일 선택 → 패밀리 이름 (취소 시 null)
+    pickFont: () => invoke('pick_font'),
 
     // AI 도구 연동 상태 { claude, codex } / 설치·제거 (허가 대기 감지)
     hooksStatus: () => invoke('hooks_status'),

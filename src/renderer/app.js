@@ -9,7 +9,7 @@ const App = {
     presets: [],
     recipes: [],
     settings: {
-      fontSize: 13, shell: '', notifyOnDone: true, notifyOnWaiting: true,
+      fontSize: 13, fontFamily: '', shell: '', notifyOnDone: true, notifyOnWaiting: true,
       lineHeight: 1, letterSpacing: 0, minContrast: 1
     },
     sessions: [],   // { id, projectId, title, status, cwd }

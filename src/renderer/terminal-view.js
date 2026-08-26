@@ -406,7 +406,7 @@ const TerminalView = {
 
     const term = new Terminal(Object.assign({
       fontSize: fontSize || 13,
-      fontFamily: 'Menlo, Consolas, "D2Coding", "Cascadia Mono", monospace',
+      fontFamily: this.fontFamilyOption(),
       theme: Theme.termTheme(),
       scrollback: 5000,
       cursorBlink: true
@@ -1069,11 +1069,30 @@ const TerminalView = {
     this.fitActive();
   },
 
+  // 기본 글꼴 체인 — 사용자 지정 글꼴이 글리프를 못 그릴 때의 폴백으로도 쓰인다
+  DEFAULT_FONT: 'Menlo, Consolas, "D2Coding", "Cascadia Mono", monospace',
+
+  // 설정의 fontFamily → xterm fontFamily 문자열. 빈 값이면 기본 체인 그대로.
+  fontFamilyOption() {
+    const st = (typeof App !== 'undefined' && App.state && App.state.settings) || {};
+    const f = String(st.fontFamily || '').replace(/["']/g, '').trim();
+    return f ? `"${f}", ${this.DEFAULT_FONT}` : this.DEFAULT_FONT;
+  },
+
+  // 셀 치수가 바뀌므로 적용 후 리핏 → PTY 리사이즈까지 이어진다
+  setFontFamily() {
+    const f = this.fontFamilyOption();
+    for (const v of this.views.values()) {
+      try { v.term.options.fontFamily = f; } catch (_) {}
+    }
+    this.fitActive();
+  },
+
   // 가독성 설정 → xterm 옵션. 저장값이 없으면 xterm 기본과 같은 무보정 값.
   // minimumContrastRatio 는 Claude/Codex 가 많이 쓰는 dim·회색 출력이 배경에 묻히는 것을
   // 배경 대비 기준으로 자동 보정한다 (1 = 끔).
   readabilityOptions() {
-    const st = (window.App && App.state && App.state.settings) || {};
+    const st = (typeof App !== 'undefined' && App.state && App.state.settings) || {};
     const num = (v, def, lo, hi) => {
       const n = Number(v);
       return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : def;

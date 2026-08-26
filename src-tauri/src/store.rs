@@ -50,6 +50,9 @@ pub struct LaunchRecipe {
 pub struct Settings {
     #[serde(rename = "fontSize", default = "default_font_size")]
     pub font_size: u32,
+    /// 터미널 글꼴 이름 (빈 값이면 기본 글꼴 체인 사용)
+    #[serde(rename = "fontFamily", default)]
+    pub font_family: String,
     /// 빈 값이면 OS 기본 셸
     #[serde(default)]
     pub shell: String,
@@ -87,6 +90,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             font_size: 13,
+            font_family: String::new(),
             shell: String::new(),
             notify_on_done: true,
             notify_on_waiting: true,
