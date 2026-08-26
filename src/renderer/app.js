@@ -548,6 +548,7 @@ const App = {
     delete App.state.images[id];
     delete App.state.branches[id];
     App.clearDoneTimers(id);
+    App._lastNotifyAt.delete(id);
     App.releasePaneSession(id); // 분할 패널 배정 해제 — 빈 패널은 피커로 복귀
     TerminalView.dispose(id);
     if (App.state.activeId === id) {
@@ -591,6 +592,11 @@ const App = {
     c.input.focus();
   },
 
+  // 같은 세션에 이 간격 안에서 완료 알림을 두 번 보내지 않는다 — 백엔드가 상태를
+  // 오판했더라도(짧은 running↔done 왕복) 팝업이 연달아 뜨는 것을 막는 안전망.
+  NOTIFY_GAP_MS: 15000,
+  _lastNotifyAt: new Map(), // sessionId → 마지막 완료 알림 시각
+
   // 작업 완료: 확인 추적 시작 + 보고 있지 않은 세션이면 데스크톱 알림
   onDone(s, busyMs) {
     App.clearDoneTimers(s.id);
@@ -600,7 +606,10 @@ const App = {
     });
     App.checkDoneViewed(s.id); // 이미 보고 있으면 곧장 열람 카운트다운
     const watching = s.id === App.state.activeId && document.hasFocus();
-    if (!watching && App.state.settings.notifyOnDone) {
+    const now = Date.now();
+    const last = App._lastNotifyAt.get(s.id) || 0;
+    if (!watching && App.state.settings.notifyOnDone && now - last >= App.NOTIFY_GAP_MS) {
+      App._lastNotifyAt.set(s.id, now);
       const secs = Math.round((busyMs || 0) / 1000);
       void ta.notify('작업 완료 — ' + App.sessionLabel(s), secs + '초 동안 실행되던 작업이 끝났습니다.')
         .catch((error) => console.warn('완료 알림 전송 실패:', error));

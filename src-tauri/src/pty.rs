@@ -1,6 +1,10 @@
 // PTY 세션 수명주기 + 상태 머신 (portable-pty).
-// 상태 감지는 출력 활동 휴리스틱: 출력 수신 → busy, 800ms 무출력 → idle.
-// 3초 이상 busy 였다가 멈추면 'done'(작업 완료)으로 승격해 프론트에 통지한다.
+// 상태 감지는 훅 신호 우선 + 출력 활동 휴리스틱 보조:
+//   - 훅(Claude Code)이 붙은 세션은 Stop 훅만이 '완료'의 근거다. 도구 실행·응답 대기로
+//     출력이 잠깐 끊겨도 완료로 승격하지 않는다 (작업 중 오알림의 원인이었다).
+//   - 훅이 없는 세션(codex·셸)은 출력 휴리스틱: 출력 수신 → busy, DONE_QUIET_MS 무출력 +
+//     DONE_MIN_MS 이상 busy 였으면 'done'. TUI 가 1초 간격으로 경과 시간을 다시 그리는
+//     구간을 완료로 오판하지 않도록 무출력 판정을 넉넉히 잡는다.
 // 폴링은 앱 전체에 500ms 스레드 1개뿐 — 세션 수와 무관하게 가볍다.
 //
 // 출력 경로 (웹뷰 과부하/OOM 방지 3단 방어):
@@ -25,6 +29,12 @@ use tauri::{AppHandle, Emitter};
 
 const BUSY_HOLD_MS: u128 = 800; // 마지막 출력 후 이 시간 동안은 busy 유지
 const DONE_MIN_MS: u128 = 3000; // 이보다 오래 busy 였다가 멈추면 '완료'로 간주
+// 훅 없는 세션의 완료 판정 무출력 시간. TUI 의 초 단위 재그리기(≈1s)보다 충분히 길어야
+// 작업 중 공백을 완료로 오판하지 않는다.
+const DONE_QUIET_MS: u128 = 5000;
+// 훅 세션에서 Stop 신호 없이 이만큼 조용하면 판정을 포기하고 idle 로 내린다 —
+// 인터럽트(Esc)·훅 유실로 Running 에 갇히는 것을 막되, 근거 없는 완료 알림은 보내지 않는다.
+const HOOK_STALE_MS: u128 = 20_000;
 
 const COALESCE_MS: u64 = 16; // 버스트 수집 최대 지연 (~60fps 하한)
 const QUIET_MS: u64 = 2; // 버스트 종료 판정 공백 — 이 시간 동안 새 출력이 없으면 방출
@@ -41,7 +51,7 @@ fn now_ms() -> u64 {
 }
 
 /// 세션 상태. serde 직렬화 결과는 소문자 문자열 — 프론트의 기존 비교 문자열과 동일
-#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Idle,
@@ -64,6 +74,10 @@ pub struct SessionMeta {
     pub created_at_ms: u64, // 생성 시각 — 목록 정렬·재시작 복원 순서 보존용
     pub waiting: bool,      // 허가 대기 신호 (훅 상태 파일 또는 OSC 알림)
     pub waiting_cleared_ms: u64, // 마지막 사용자 입력 시각 — 이보다 낡은 훅 waiting 은 무시
+    pub hook_seen: bool,    // 이 세션의 훅 상태 파일이 살아 있는가 (= 완료를 훅으로 판정)
+    pub hook_done: bool,    // 마지막 훅 이벤트가 Stop(완료) 인가
+    pub hook_done_ts: u64,  // 그 Stop 신호의 시각
+    pub hook_done_used_ts: u64, // 이미 완료로 소비한 Stop 신호 — 같은 신호로 두 번 알리지 않는다
 }
 
 #[derive(Serialize, Clone)]
@@ -260,6 +274,46 @@ fn resolve_shell(override_shell: &str) -> Result<ResolvedShell, String> {
     ))
 }
 
+/// 상태 전이 판정 (순수 함수 — 테스트 가능하게 분리).
+/// `hook_fresh_done` 은 "아직 소비하지 않은 Stop 훅 신호가 있는가".
+fn decide_status(
+    cur: Status,
+    waiting: bool,
+    quiet_ms: u128,
+    busy_ms: u128,
+    hook_seen: bool,
+    hook_fresh_done: bool,
+) -> Status {
+    if waiting {
+        return Status::Waiting;
+    }
+    if quiet_ms < BUSY_HOLD_MS {
+        return Status::Running;
+    }
+    if cur == Status::Running {
+        if hook_seen {
+            // 훅 세션: Stop 훅이 유일한 완료 근거 — 도구 실행 중 출력 공백으로는 알리지 않는다.
+            if hook_fresh_done {
+                Status::Done
+            } else if quiet_ms >= HOOK_STALE_MS {
+                Status::Idle // 인터럽트·훅 유실 — 조용히 유휴로 (근거 없는 완료 알림 금지)
+            } else {
+                Status::Running
+            }
+        } else if busy_ms < DONE_MIN_MS {
+            Status::Idle // 짧은 출력(에코 등)
+        } else if quiet_ms >= DONE_QUIET_MS {
+            Status::Done
+        } else {
+            Status::Running // TUI 재그리기 간격일 수 있어 판정 보류
+        }
+    } else if cur == Status::Waiting {
+        Status::Idle // waiting 해제 후 무출력 — 승인 직후 잠깐의 공백
+    } else {
+        cur
+    }
+}
+
 fn emit_status(app: &AppHandle, id: &str, status: Status, busy_ms: u128) {
     let _ = app.emit(
         "ta:status",
@@ -409,33 +463,48 @@ impl PtyManager {
                         if m.exited {
                             continue;
                         }
-                        // 훅 신호 병합 — 사용자 입력(waiting_cleared_ms)보다 낡은 신호는 무시
-                        if let Some(h) = hook_states.get(&m.id) {
-                            if h.ts > m.waiting_cleared_ms {
-                                match h.state.as_str() {
-                                    "waiting" => m.waiting = true,
-                                    "busy" | "done" => {
-                                        m.waiting = false;
-                                        m.waiting_cleared_ms = h.ts;
+                        // 훅 신호 병합 — 상태 파일은 항상 '가장 최근 이벤트' 하나만 담으므로
+                        // 완료 여부는 매 폴링마다 파일 내용에서 직접 읽는다(누적 상태를 두지 않는다).
+                        // waiting 만 사용자 입력(waiting_cleared_ms)보다 낡으면 무시한다.
+                        match hook_states.get(&m.id) {
+                            Some(h) => {
+                                m.hook_seen = true;
+                                m.hook_done = h.state == "done";
+                                if m.hook_done {
+                                    m.hook_done_ts = h.ts;
+                                }
+                                if h.ts > m.waiting_cleared_ms {
+                                    match h.state.as_str() {
+                                        "waiting" => m.waiting = true,
+                                        "busy" | "done" => {
+                                            m.waiting = false;
+                                            m.waiting_cleared_ms = h.ts;
+                                        }
+                                        _ => {}
                                     }
-                                    _ => {}
                                 }
                             }
+                            // 파일 없음 = 훅 미설치이거나 SessionEnd 로 정리됨 → 출력 휴리스틱으로
+                            None => {
+                                m.hook_seen = false;
+                                m.hook_done = false;
+                            }
                         }
-                        let busy = now.duration_since(m.last_output).as_millis() < BUSY_HOLD_MS;
-                        let new_status = if m.waiting {
-                            Status::Waiting
-                        } else if busy {
-                            Status::Running
-                        } else if m.status == Status::Running {
-                            // 충분히 오래 돌던 작업이 멈춤 → 완료. 짧은 출력(에코 등)은 그냥 idle
-                            let busy_ms = now.duration_since(m.busy_since).as_millis();
-                            if busy_ms >= DONE_MIN_MS { Status::Done } else { Status::Idle }
-                        } else if m.status == Status::Waiting {
-                            Status::Idle // waiting 해제 후 무출력 — 승인 직후 잠깐의 공백
-                        } else {
-                            m.status
-                        };
+                        let quiet_ms = now.duration_since(m.last_output).as_millis();
+                        // 이미 소비한 Stop 신호로는 다시 완료가 되지 않는다 —
+                        // 완료 후의 화면 재그리기가 같은 신호로 또 알림을 띄우는 것을 막는다.
+                        let hook_fresh_done = m.hook_done && m.hook_done_ts > m.hook_done_used_ts;
+                        let new_status = decide_status(
+                            m.status,
+                            m.waiting,
+                            quiet_ms,
+                            now.duration_since(m.busy_since).as_millis(),
+                            m.hook_seen,
+                            hook_fresh_done,
+                        );
+                        if new_status == Status::Done && hook_fresh_done {
+                            m.hook_done_used_ts = m.hook_done_ts;
+                        }
                         if new_status != m.status {
                             let busy_ms = if new_status == Status::Done {
                                 now.duration_since(m.busy_since).as_millis()
@@ -516,6 +585,10 @@ impl PtyManager {
             created_at_ms,
             waiting: false,
             waiting_cleared_ms: 0,
+            hook_seen: false,
+            hook_done: false,
+            hook_done_ts: 0,
+            hook_done_used_ts: 0,
         };
         let info = meta.info();
 
@@ -547,7 +620,11 @@ impl PtyManager {
                             let mut map = plock(&metas);
                             if let Some(m) = map.get_mut(&sid) {
                                 let now = Instant::now();
-                                if now.duration_since(m.last_output).as_millis() > BUSY_HOLD_MS {
+                                // 작업 구간의 시작 시각. 진행 중(Running/Waiting)에는 갱신하지 않는다 —
+                                // 중간 공백마다 리셋되면 완료 알림의 소요 시간이 마지막 버스트만 세게 된다.
+                                if !matches!(m.status, Status::Running | Status::Waiting)
+                                    && now.duration_since(m.last_output).as_millis() > BUSY_HOLD_MS
+                                {
                                     m.busy_since = now; // idle → busy 진입 시각
                                 }
                                 m.last_output = now;
@@ -793,6 +870,80 @@ impl PtyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 상태 판정 (완료 알림의 근거) ──
+
+    #[test]
+    fn hook_session_stays_running_through_tool_gaps() {
+        // Claude Code 훅 세션: Stop 신호가 없으면 출력이 끊겨도 완료가 아니다.
+        // (작업 중인데 "작업 완료" 알림이 뜨던 원인)
+        for quiet in [BUSY_HOLD_MS, 2_000, DONE_QUIET_MS, HOOK_STALE_MS - 1] {
+            assert_eq!(
+                decide_status(Status::Running, false, quiet, 60_000, true, false),
+                Status::Running,
+                "quiet={quiet}"
+            );
+        }
+    }
+
+    #[test]
+    fn hook_session_done_only_on_stop_signal() {
+        assert_eq!(
+            decide_status(Status::Running, false, 900, 60_000, true, true),
+            Status::Done
+        );
+        // 짧은 작업이어도 Stop 훅이 왔으면 완료 — 훅이 출력 휴리스틱보다 정확하다
+        assert_eq!(
+            decide_status(Status::Running, false, 900, 100, true, true),
+            Status::Done
+        );
+    }
+
+    #[test]
+    fn hook_session_falls_back_to_idle_when_signal_missing() {
+        // 인터럽트·훅 유실로 Stop 이 오지 않으면 Running 에 갇히지 않고 조용히 유휴로 —
+        // 근거 없는 완료 알림은 보내지 않는다
+        assert_eq!(
+            decide_status(Status::Running, false, HOOK_STALE_MS, 60_000, true, false),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn plain_session_needs_long_quiet_before_done() {
+        // 훅 없는 세션(codex·셸): TUI 가 1초 간격으로 경과 시간을 다시 그리는 구간을
+        // 완료로 오판하지 않는다
+        assert_eq!(
+            decide_status(Status::Running, false, 1_200, 30_000, false, false),
+            Status::Running
+        );
+        assert_eq!(
+            decide_status(Status::Running, false, DONE_QUIET_MS, 30_000, false, false),
+            Status::Done
+        );
+        // 짧은 출력(명령 에코 등)은 완료가 아니다
+        assert_eq!(
+            decide_status(Status::Running, false, DONE_QUIET_MS, DONE_MIN_MS - 1, false, false),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn waiting_and_recent_output_take_priority() {
+        assert_eq!(
+            decide_status(Status::Running, true, 60_000, 60_000, true, true),
+            Status::Waiting
+        );
+        assert_eq!(
+            decide_status(Status::Idle, false, 0, 0, false, false),
+            Status::Running
+        );
+        // 완료 배지가 붙은 세션은 조용한 동안 그대로 — 재판정으로 다시 완료가 되지 않는다
+        assert_eq!(
+            decide_status(Status::Done, false, 60_000, 60_000, true, true),
+            Status::Done
+        );
+    }
 
     #[test]
     fn osc_scanner_handles_chunk_split() {
