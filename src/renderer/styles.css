@@ -364,6 +364,14 @@ button:disabled:hover { border-color: var(--border); }
 .split-divider.h { cursor: row-resize; }
 .term-holder { position: absolute; inset: 4px 0 0 8px; display: none; }
 .term-holder.active { display: block; }
+/* ── 터미널 스크롤바: 평소엔 숨기고 터미널 호버 시에만 가는 막대 표시 ──
+   ::-webkit-scrollbar 의사요소는 조상 :hover 변화에 다시 그려지지 않는 Chromium
+   캐시 문제가 있어(호버해도 안 나타남), 동적 갱신이 정상 동작하는 표준
+   scrollbar-width/scrollbar-color 속성을 쓴다. thin ≈ 11px — 기본(17px)보다 좁다. */
+.xterm-viewport { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.term-holder:hover .xterm-viewport { scrollbar-color: rgba(136, 136, 136, .55) transparent; }
+/* 중간클릭 팬 스크롤 중 — 상하 스크롤 커서로 모드 표시 */
+.term-holder.pan-scrolling, .term-holder.pan-scrolling * { cursor: ns-resize !important; }
 /* 세션 미배정 패널의 세션 선택 피커 */
 .pane-picker {
   position: absolute; inset: 0; z-index: 4;
@@ -694,6 +702,30 @@ button:disabled:hover { border-color: var(--border); }
 }
 .memo-modal-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-fill); }
 .memo-modal-editor:empty::before { content: attr(data-placeholder); color: var(--fg-dim); pointer-events: none; }
+/* 메모 수정 팝업 — Markdown 원문 편집 textarea */
+.memo-edit-body {
+  width: 100%; min-height: 220px; max-height: 52vh; resize: vertical;
+  padding: 10px 11px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--fg); outline: none;
+  font-size: 13px; line-height: 1.55; font-family: inherit;
+  overflow-wrap: anywhere;
+}
+.memo-edit-body:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-fill); }
+/* 터미널 우클릭 컨텍스트 메뉴 (선택 텍스트: 복사 · 메모에 등록하기) */
+.term-context-menu {
+  position: fixed; z-index: 60;
+  min-width: 150px; padding: 4px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.term-context-item {
+  border: none; background: none; color: var(--fg);
+  text-align: left; padding: 6px 10px; font-size: 12px; border-radius: 5px;
+  white-space: nowrap;
+}
+.term-context-item:hover { background: var(--bg-hover-hi); }
 .form-error { min-height: 18px; margin-top: 7px; color: var(--exited); font-size: 11px; line-height: 1.5; }
 #modal .row { display: flex; gap: 8px; }
 #modal .row > * { flex: 1; }

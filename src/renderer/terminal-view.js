@@ -49,7 +49,7 @@ const TerminalView = {
     input.rows = 2;
     input.spellcheck = false;
     input.disabled = true;
-    input.placeholder = '프롬프트 입력 (Enter 줄바꿈 · Cmd/Ctrl+Enter 전송)';
+    input.placeholder = '프롬프트 입력 (Enter 줄바꿈 · Cmd/Ctrl+Enter 전송 · Shift+Enter 예약)';
     input.setAttribute('aria-label', '터미널 프롬프트 입력');
     const actions = document.createElement('div');
     actions.className = 'pane-prompt-actions';
@@ -85,6 +85,12 @@ const TerminalView = {
       if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
         ev.preventDefault();
         App.sendComposerPrompt(target());
+        return;
+      }
+      // Shift+Enter = 예약 발송 (진행 중이면 완료 후 전송) — 예약 버튼과 동일
+      if (ev.key === 'Enter' && ev.shiftKey && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+        ev.preventDefault();
+        App.scheduleComposerPrompt(target());
       }
     });
     // 텍스트 붙여넣기는 기본 동작에 맡기고(실행 취소 이력 보존), 텍스트가 없을 때만
@@ -403,6 +409,130 @@ const TerminalView = {
     }
   },
 
+  // ── 드래그 선택 자동 스크롤 틱 (50ms interval) ──
+  // 포인터가 holder 위/아래로 벗어난 거리에 비례해 스크롤하고, xterm 내부 selection
+  // service 의 선택 끝을 뷰포트 경계로 확장한다 (xterm _dragScroll 과 같은 규칙).
+  _dragSelectionAutoScroll(id, state) {
+    const v = this.views.get(id);
+    if (!v || !state.active) return;
+    const term = v.term;
+    let svc = null;
+    try { svc = term._core && term._core._selectionService; } catch (_) {}
+    // 드래그 "선택" 중일 때만 — 단순 클릭·포커스 이동·스크롤바 드래그에는 개입하지 않는다.
+    // _dragScrollIntervalTimer 는 선택 mousedown 에 설정되고 mouseup 에 undefined 로
+    // 리셋되므로, 이전 선택이 남은 채 다른 드래그를 할 때의 오동작을 막는 정확한 신호다.
+    if (!svc || !svc._model || !svc._model.selectionStart) return;
+    if (svc._dragScrollIntervalTimer === undefined) return;
+    if (svc._dragScrollAmount) return; // 내장 자동 스크롤이 이미 동작 중 — 이중 스크롤 방지
+    const rect = v.holder.getBoundingClientRect();
+    let over = 0;
+    if (state.y > rect.bottom) over = state.y - rect.bottom;
+    else if (state.y < rect.top) over = state.y - rect.top;
+    if (!over) return;
+    // 벗어난 거리 50px 상한, 틱당 최대 15줄 — xterm 내장과 같은 가감속
+    const t = Math.min(Math.max(over, -50), 50) / 50;
+    const amount = (t > 0 ? 1 : -1) + Math.round(14 * t);
+    const b = term.buffer && term.buffer.active;
+    if (!b) return;
+    try {
+      term.scrollLines(amount);
+      svc._model.selectionEnd = amount > 0
+        ? [term.cols, Math.min(b.viewportY + term.rows, b.baseY + term.rows - 1)]
+        : [0, b.viewportY];
+      svc.refresh();
+    } catch (_) {}
+  },
+
+  // ── 파일 경로 링크 감지 ──
+  // ① 구분자를 포함한 경로(상대·절대·Windows 드라이브), ② 알려진 확장자의 단독 파일명
+  // (terminal-view.js 처럼 경로 없이 언급된 파일), ③ :줄번호가 붙은 임의 확장자 파일명.
+  // 한글 등 유니코드 파일명 허용. URL(://) 은 WebLinksAddon 담당이므로 제외한다.
+  FILE_LINK_RE: (() => {
+    const seg = '[\\p{L}\\p{N}._$@%+~=-]';
+    // 단독 파일명은 알려진 확장자만 — 일반 단어·도메인(example.com 등) 오탐 방지
+    const exts = '(?:jsx?|mjs|cjs|tsx?|py|rs|go|java|kt|c|h|cpp|cc|cxx|hpp|cs|swift|rb|php|lua'
+      + '|css|scss|less|html?|xml|svg|json|jsonl|yaml|yml|toml|ini|sh|bash|zsh|bat|ps1|sql|pl'
+      + '|diff|patch|md|markdown|txt|log|csv|lock|env|gitignore'
+      + '|png|jpe?g|gif|bmp|webp|ico|avif|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|aac|flac)';
+    return new RegExp(
+      `(?:[A-Za-z]:[\\\\/]|\\\\\\\\|\\.{1,2}[\\\\/])?${seg}+(?:[\\\\/]${seg}+)+(?::\\d+(?::\\d+)?)?` +
+      `|${seg}+\\.${exts}(?!\\.?[\\p{L}\\p{N}])(?::\\d+(?::\\d+)?)?` +
+      `|${seg}+\\.[A-Za-z][A-Za-z0-9]{0,9}:\\d+(?::\\d+)?`,
+      'giu'
+    );
+  })(),
+
+  fileLinkProvider(term, sessionId) {
+    return {
+      provideLinks: (lineNo, cb) => {
+        let links = null;
+        try { links = this._computeFileLinks(term, sessionId, lineNo); } catch (_) {}
+        cb(links && links.length ? links : undefined);
+      }
+    };
+  },
+
+  // 물리 줄이 아니라 래핑을 잇댄 논리 줄 전체에서 경로를 찾는다 (긴 경로가 줄바꿈돼도 인식).
+  // 와이드 문자(한글)는 셀 2칸을 차지해 문자열 인덱스 ≠ 열 이므로,
+  // 코드유닛마다 (행, 열) 좌표를 기록해 정확한 버퍼 범위로 되돌린다.
+  _computeFileLinks(term, sessionId, lineNo) {
+    const buf = term.buffer && term.buffer.active;
+    if (!buf) return null;
+    const row0 = lineNo - 1;
+    let start = row0;
+    while (start > 0) {
+      const line = buf.getLine(start);
+      if (!line || !line.isWrapped) break;
+      start--;
+    }
+    let end = row0;
+    while (end + 1 < buf.length) {
+      const line = buf.getLine(end + 1);
+      if (!line || !line.isWrapped) break;
+      end++;
+    }
+    if (end - start > 40) return null; // 비정상적으로 긴 논리 줄은 비용 때문에 건너뛴다
+    let text = '';
+    const map = []; // text 코드유닛 인덱스 → { y, x } (0-based 버퍼 좌표)
+    const cell = typeof buf.getNullCell === 'function' ? buf.getNullCell() : null;
+    for (let y = start; y <= end; y++) {
+      const line = buf.getLine(y);
+      if (!line) break;
+      for (let x = 0; x < line.length; x++) {
+        const c = cell ? line.getCell(x, cell) : line.getCell(x);
+        if (!c) continue;
+        if ((typeof c.getWidth === 'function' ? c.getWidth() : 1) === 0) continue;
+        const chars = (c.getChars && c.getChars()) || ' ';
+        for (let k = 0; k < chars.length; k++) map.push({ y, x });
+        text += chars;
+      }
+    }
+    const links = [];
+    const re = this.FILE_LINK_RE;
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      const matched = m[0].replace(/[.,;'"”’]+$/, ''); // 문장 끝 문장부호 꼬리 제거
+      if (matched.length < 3 || !/\p{L}/u.test(matched)) continue;
+      // 직전에 공백 없이 URL 스킴(://)이 이어지면 URL 의 일부 — WebLinksAddon 에 맡긴다
+      const before = text.slice(Math.max(0, m.index - 64), m.index);
+      if (/[A-Za-z][\w+.-]*:\/\/\S*$/.test(before)) continue;
+      const startIdx = m.index;
+      const endIdx = m.index + matched.length - 1;
+      if (!map[startIdx] || !map[endIdx]) continue;
+      links.push({
+        range: {
+          start: { x: map[startIdx].x + 1, y: map[startIdx].y + 1 },
+          end: { x: map[endIdx].x + 1, y: map[endIdx].y + 1 }
+        },
+        text: matched,
+        decorations: { pointerCursor: true, underline: true },
+        activate: (_ev, linkText) => App.openFileLinkPreview(sessionId, linkText)
+      });
+    }
+    return links;
+  },
+
   // opts.frozen: 복구(스크롤백 주입) 완료 전까지 라이브 출력을 큐에 보관
   create(session, fontSize, opts) {
     const holder = document.createElement('div');
@@ -448,6 +578,161 @@ const TerminalView = {
     window.addEventListener('pointerup', rememberFinishedSelection, true);
     window.addEventListener('mouseup', rememberFinishedSelection, true);
 
+    // ── 드래그 선택 자동 스크롤 ──
+    // 선택 드래그 중 포인터가 터미널 위/아래 경계를 벗어나면 벗어난 거리에 비례해
+    // 스크롤하며 선택 끝을 함께 확장한다. xterm 내장 자동 스크롤이 동작하는 환경에서는
+    // (_dragScrollAmount 가 이미 설정됨) 이중 스크롤을 피하기 위해 개입하지 않는다.
+    // window 리스너는 캡처 단계 필수 — xterm 의 document mousemove 핸들러가
+    // stopImmediatePropagation 을 호출해 버블 단계 리스너에는 이벤트가 오지 않는다.
+    const autoScroll = { active: false, y: 0, timer: null };
+    const dragScrollMove = (ev) => { autoScroll.y = ev.clientY; };
+    const dragScrollStop = () => {
+      autoScroll.active = false;
+      if (autoScroll.timer) { clearInterval(autoScroll.timer); autoScroll.timer = null; }
+      window.removeEventListener('mousemove', dragScrollMove, true);
+    };
+    const dragScrollStart = (ev) => {
+      if (ev.button !== 0) return;
+      dragScrollStop();
+      autoScroll.active = true;
+      autoScroll.y = ev.clientY;
+      window.addEventListener('mousemove', dragScrollMove, true);
+      autoScroll.timer = setInterval(() => this._dragSelectionAutoScroll(session.id, autoScroll), 50);
+    };
+    holder.addEventListener('mousedown', dragScrollStart, true);
+    window.addEventListener('mouseup', dragScrollStop, true);
+
+    // ── 마우스 중간(휠) 클릭 팬 스크롤 (토글 방식) ──
+    // 중간 클릭 = 시작, 다시 중간 클릭 = 종료. 버튼을 놓아도 유지된다 — 시작/종료가
+    // 오직 중간 클릭 토글이어야 "멈추려는 클릭"이 새 팬 시작으로 오인되지 않는다.
+    // 활성 중에는 누른 지점(기준점) 대비 포인터의 위/아래 거리에 비례해 스크롤한다.
+    // 다른 버튼 클릭이나 (반동 유예 후) 휠 조작도 종료 신호다.
+    const panScroll = { active: false, originY: 0, y: 0, timer: null, startedAt: 0 };
+    const panMove = (ev) => { panScroll.y = ev.clientY; };
+    const panStop = () => {
+      if (!panScroll.active) return;
+      panScroll.active = false;
+      if (panScroll.timer) { clearInterval(panScroll.timer); panScroll.timer = null; }
+      window.removeEventListener('mousemove', panMove, true);
+      holder.classList.remove('pan-scrolling');
+    };
+    const panTick = () => {
+      const delta = panScroll.y - panScroll.originY;
+      if (Math.abs(delta) <= 8) return; // 기준점 근처 데드존 — 정지
+      const lines = Math.max(-40, Math.min(40, Math.round(delta / 15)));
+      if (lines) { try { term.scrollLines(lines); } catch (_) {} }
+    };
+    const panStart = (ev) => {
+      if (ev.button !== 1) return;
+      ev.preventDefault();
+      ev.stopPropagation(); // xterm 의 중간클릭 처리(TUI 마우스 전달 등) 차단 — 팬 스크롤 전용
+      if (panScroll.active) { panStop(); return; } // 토글 종료
+      panScroll.active = true;
+      panScroll.startedAt = Date.now();
+      panScroll.originY = ev.clientY;
+      panScroll.y = ev.clientY;
+      window.addEventListener('mousemove', panMove, true);
+      panScroll.timer = setInterval(panTick, 50);
+      holder.classList.add('pan-scrolling');
+    };
+    // 다른 버튼 클릭은 팬 종료 (중간 버튼 토글은 panStart 가 처리)
+    const panWindowDown = (ev) => { if (ev.button !== 1 && panScroll.active) panStop(); };
+    // 휠 클릭 직후의 미세한 휠 굴림(클릭 반동)에 즉시 종료되면 팬이 죽은 것처럼 보인다
+    // — 시작 후 400ms 는 휠 이벤트를 무시하고, 그 뒤의 휠 조작만 종료 신호로 본다.
+    const panWheel = () => {
+      if (panScroll.active && Date.now() - panScroll.startedAt > 400) panStop();
+    };
+    holder.addEventListener('mousedown', panStart, true);
+    window.addEventListener('mousedown', panWindowDown, true);
+    window.addEventListener('wheel', panWheel, { capture: true, passive: true });
+
+    // ── TUI 마우스 트래킹 중에도 스크롤백은 휠로 볼 수 있게 ──
+    // 트래킹이 켜지면 xterm 은 휠을 마우스 리포트로 바꿔 TUI 로 보내고 화면은 움직이지
+    // 않는다. 일반 버퍼에서 위로 굴리거나 이미 스크롤백을 보는 중이면 앱이 직접 뷰포트를
+    // 스크롤한다 (대체 버퍼(alt) TUI 의 휠 동작은 그대로 보존).
+    const wheelHandler = (ev) => {
+      try {
+        const b = term.buffer && term.buffer.active;
+        if (!b || b.type !== 'normal') return;
+        const mouseSvc = term._core && term._core.coreMouseService;
+        if (!mouseSvc || !mouseSvc.areMouseEventsActive) return;
+        if (b.viewportY < b.baseY || ev.deltaY < 0) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const lines = Math.sign(ev.deltaY) * Math.max(1, Math.round(Math.abs(ev.deltaY) / 40));
+          term.scrollLines(lines);
+        }
+      } catch (_) {}
+    };
+    holder.addEventListener('wheel', wheelHandler, { capture: true, passive: false });
+
+    // ── Shift+클릭 확장 선택 ──
+    // 시작 지점 클릭(앵커 기억) → 스크롤 → Shift+클릭으로 그 지점까지 한 번에 선택.
+    // xterm 내장 incremental click 에 맡길 수 없는 이유: TUI 가 마우스 트래킹을 켜면
+    // (_enabled=false) 일반 클릭은 앵커를 남기지 않고, shift+클릭은 "강제 새 선택"으로
+    // 처리되며 stopPropagation 까지 걸린다. → 캡처 단계에서 클릭 좌표를 직접 기억하고
+    // shift+클릭 시 선택 모델을 앱이 구성한다 (xterm 의 mousedown 처리는 차단).
+    const shiftClick = { anchor: null };
+    const shiftClickHandler = (ev) => {
+      if (ev.button !== 0) return;
+      let svc = null;
+      try { svc = term._core && term._core._selectionService; } catch (_) {}
+      if (!svc || !svc._model) return;
+      let coords = null;
+      try { coords = svc._getMouseBufferCoords(ev) || null; } catch (_) {}
+      if (!ev.shiftKey) {
+        shiftClick.anchor = coords; // 일반 클릭 = 앵커 갱신 (화면 표시는 없지만 기억한다)
+        // 일반 클릭은 기존 선택을 해제한다 (표준 동작). TUI 마우스 트래킹 중에는 xterm 의
+        // 클릭 처리(_handleSingleClick)가 실행되지 않고, 마우스 리포트를 사용자 입력에서
+        // 제외하면서 리포트 경유 해제도 사라졌으므로 앱이 직접 재현해야 한다.
+        // term.clearSelection() 만 호출 — 최근 선택 캐시(계획 저장·메뉴용)는 보존한다.
+        if (typeof term.hasSelection === 'function' && term.hasSelection()) {
+          try { term.clearSelection(); } catch (_) {}
+        }
+        return;
+      }
+      // 드래그 선택이 남긴 시작점이 있으면 그것을, 없으면 직전 클릭 앵커를 사용
+      const anchor = svc._model.selectionStart || shiftClick.anchor;
+      if (!anchor || !coords) return;
+      ev.preventDefault();
+      ev.stopPropagation(); // xterm 의 mousedown(새 선택 시작·TUI 마우스 전달)이 덮지 않게
+      try {
+        svc._model.isSelectAllActive = false;
+        svc._model.selectionStartLength = 0;
+        svc._activeSelectionMode = 0;
+        svc._model.selectionStart = anchor;
+        svc._model.selectionEnd = coords;
+        svc.refresh(true);
+      } catch (_) {}
+      // preventDefault 로 막힌 포커스 이동을 직접 수행 — 일반 클릭과 같은 활성 선택 색으로
+      // 렌더되고, 곧바로 Ctrl+C 복사도 동작한다.
+      try { term.focus(); } catch (_) {}
+      this.rememberSelectionSoon(session.id, { markAttempt: true });
+    };
+    holder.addEventListener('mousedown', shiftClickHandler, true);
+
+    // 선택이 있는 상태의 우클릭은 컨텍스트 메뉴 전용 — xterm(TUI 마우스 리포트)으로
+    // 보내지 않는다. contextmenu 이벤트는 별개로 발생하므로 메뉴는 정상 표시된다.
+    const rightDownHandler = (ev) => {
+      if (ev.button !== 2) return;
+      if (typeof term.hasSelection === 'function' && term.hasSelection()) ev.stopPropagation();
+    };
+    holder.addEventListener('mousedown', rightDownHandler, true);
+
+    // ── 우클릭 컨텍스트 메뉴 (복사 · 메모에 등록하기) ──
+    const contextMenuHandler = (ev) => {
+      ev.preventDefault();
+      this.rememberSelection(session.id, {});
+      App.showTerminalContextMenu(ev, session.id);
+    };
+    holder.addEventListener('contextmenu', contextMenuHandler);
+
+    // ── 파일 경로 링크: 클릭하면 미리보기 팝업 (URL 은 WebLinksAddon 이 처리) ──
+    let linkDisposable = null;
+    try {
+      linkDisposable = term.registerLinkProvider(this.fileLinkProvider(term, session.id));
+    } catch (_) {}
+
     // ── 한글 등 IME 조합 입력 보정 (xterm 5.5.0) ──
     // xterm 은 조합 커밋 텍스트를 "compositionend 후 setTimeout 에 textarea 를 substring"
     // 하는 방식으로 보내는데, 이 방식은 두 웹뷰 엔진의 이벤트 순서에서 모두 깨진다.
@@ -460,6 +745,22 @@ const TerminalView = {
     // 이후 도착하는 같은 텍스트의 지연 insertText(WebView2)는 중복으로 차단하고,
     // macOS 는 _keyDownSeen 가드를 우회해 insertText 를 직접 전송한다.
     const core = term._core;
+
+    // ── 마우스 리포트는 "사용자 입력"으로 치지 않는다 ──
+    // xterm 은 사용자 입력마다 선택을 지운다(onUserInput → clearSelection). 그런데 TUI 가
+    // 마우스 트래킹을 켜면 마우스 이동/버튼 리포트도 사용자 입력으로 집계돼, 드래그·
+    // Shift+클릭으로 만든 선택이 마우스만 움직이거나 우클릭해도 즉시 사라진다.
+    // 리포트(X10 \x1b[M…, SGR \x1b[<…)는 wasUserInput=false 로 통과시킨다 — TUI 전달은
+    // 그대로 유지되고, 선택 해제와 "입력 시 바닥으로 스크롤"만 건너뛴다.
+    if (core && core.coreService && typeof core.coreService.triggerDataEvent === 'function') {
+      const coreSvc = core.coreService;
+      const origTrigger = coreSvc.triggerDataEvent.bind(coreSvc);
+      coreSvc.triggerDataEvent = (data, wasUserInput) => {
+        const isMouseReport = typeof data === 'string' && /^\x1b\[(?:M|<)/.test(data);
+        return origTrigger(data, wasUserInput && !isMouseReport);
+      };
+    }
+
     let imeCommit = null; // { text, at } — 직전 조합 커밋 (중복/합성 keypress 판별용)
     // ── textarea 미러 보정 (macOS 전용, 아래 IME 블록에서 실제 동작 부여) ──
     // differ 는 textarea 를 터미널 입력 라인의 미러로 쓴다. 그런데 xterm 이 처리하고
@@ -738,6 +1039,17 @@ const TerminalView = {
           mirrorInvalidate();
         }
       }
+      // Ctrl+C: 선택이 있으면 복사만 하고 선택을 유지한다 — ^C 인터럽트는 선택이 없을 때만.
+      // (기존에는 항상 ^C 가 PTY 로 전송돼 TUI 재렌더로 선택이 즉시 사라졌다)
+      // execCommand('copy') 는 holder 의 copy 핸들러를 태워 색상 보존(rich) 복사가 된다.
+      // macOS 는 Cmd+C 가 복사이므로 Ctrl+C 를 인터럽트로 유지한다.
+      if (App.state.platform !== 'macos' && ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.shiftKey
+          && ev.key.toLowerCase() === 'c'
+          && typeof term.hasSelection === 'function' && term.hasSelection()) {
+        ev.preventDefault();
+        try { document.execCommand('copy'); } catch (_) {}
+        return false;
+      }
       // Cmd/Ctrl+V: 클립보드에 이미지가 있으면 경로 첨부로 대체, 아니면 텍스트 붙여넣기
       if (mod && !ev.altKey && !ev.shiftKey && ev.key.toLowerCase() === 'v') {
         ev.preventDefault();
@@ -793,7 +1105,19 @@ const TerminalView = {
       selectionMoveHandler: markSelectionMove,
       selectionHandler: rememberFinishedSelection,
       selectionFinishHandler: rememberFinishedSelection,
-      richCopyHandler
+      richCopyHandler,
+      autoScrollState: autoScroll,
+      dragScrollStartHandler: dragScrollStart,
+      dragScrollStopHandler: dragScrollStop,
+      panStartHandler: panStart,
+      panWindowDownHandler: panWindowDown,
+      panWheelHandler: panWheel,
+      panStop,
+      wheelHandler,
+      shiftClickHandler,
+      rightDownHandler,
+      contextMenuHandler,
+      linkDisposable
     };
     this.views.set(session.id, view);
     if (typeof term.onSelectionChange === 'function') {
@@ -1148,6 +1472,24 @@ const TerminalView = {
         window.removeEventListener('mouseup', v.selectionFinishHandler, true);
       }
       if (v.richCopyHandler) v.holder.removeEventListener('copy', v.richCopyHandler, true);
+      if (v.dragScrollStopHandler) {
+        v.dragScrollStopHandler(); // 진행 중이던 자동 스크롤 interval·mousemove 리스너 정리
+        window.removeEventListener('mouseup', v.dragScrollStopHandler, true);
+      }
+      if (v.dragScrollStartHandler) v.holder.removeEventListener('mousedown', v.dragScrollStartHandler, true);
+      if (v.panStop) {
+        v.panStop(); // 진행 중이던 팬 스크롤 interval·mousemove 리스너 정리
+        v.holder.removeEventListener('mousedown', v.panStartHandler, true);
+        window.removeEventListener('mousedown', v.panWindowDownHandler, true);
+        window.removeEventListener('wheel', v.panWheelHandler, { capture: true });
+      }
+      if (v.wheelHandler) v.holder.removeEventListener('wheel', v.wheelHandler, { capture: true });
+      if (v.shiftClickHandler) v.holder.removeEventListener('mousedown', v.shiftClickHandler, true);
+      if (v.rightDownHandler) v.holder.removeEventListener('mousedown', v.rightDownHandler, true);
+      if (v.contextMenuHandler) v.holder.removeEventListener('contextmenu', v.contextMenuHandler);
+      if (v.linkDisposable) {
+        try { v.linkDisposable.dispose(); } catch (_) {}
+      }
       this._detachWebgl(v);
       v.term.dispose();
       v.holder.remove();

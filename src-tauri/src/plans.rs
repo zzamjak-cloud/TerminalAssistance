@@ -901,6 +901,43 @@ fn create_memo_file(
     }))
 }
 
+fn update_memo_file(
+    cwd: &str,
+    id: &str,
+    title: &str,
+    markdown: &str,
+    timestamp: u64,
+) -> Result<PlanMeta, String> {
+    if !valid_memo_id(id) {
+        return Err("메모 식별자가 올바르지 않습니다".into());
+    }
+    let title = normalize_memo_title(title)?;
+    let markdown = normalize_memo_markdown(markdown)?;
+    let Some((doc, path)) = scan_memo_docs(cwd)?
+        .into_iter()
+        .find(|(doc, _)| doc.id == id)
+    else {
+        return Err("수정할 메모를 찾을 수 없습니다".into());
+    };
+    // 파일명은 유지한다 — 제목이 바뀌어도 id 로 찾으므로 rename 위험을 감수할 이유가 없다.
+    let content = format!(
+        "{}\n\n{}",
+        memo_header(id, &title, doc.created_ms, timestamp),
+        markdown
+    );
+    atomic_write_memo(&path, &content)?;
+    Ok(plan_meta(&PlanDoc {
+        id: id.to_string(),
+        session_id: String::new(),
+        created_ms: doc.created_ms,
+        title,
+        text: markdown,
+        path: doc.path,
+        kind: MEMO_KIND.into(),
+        updated_ms: timestamp,
+    }))
+}
+
 fn delete_memo_file(cwd: &str, id: &str) -> Result<(), String> {
     if !valid_memo_id(id) {
         return Err("메모 식별자가 올바르지 않습니다".into());
@@ -1124,6 +1161,17 @@ pub async fn create_memo_doc(
     legacy_id: Option<String>,
 ) -> Result<PlanMeta, String> {
     create_memo_file(&cwd, &title, &markdown, legacy_id.as_deref(), now_ms())
+}
+
+/// 기존 메모의 제목·본문을 수정한다. 생성 시각은 보존하고 수정 시각만 갱신한다.
+#[tauri::command]
+pub async fn update_memo_doc(
+    cwd: String,
+    id: String,
+    title: String,
+    markdown: String,
+) -> Result<PlanMeta, String> {
+    update_memo_file(&cwd, &id, &title, &markdown, now_ms())
 }
 
 /// 계획 문서는 삭제할 수 없고, 메모 전용 디렉터리에서 식별자가 일치한 파일만 제거한다.
@@ -1583,6 +1631,28 @@ mod tests {
         assert!(delete_memo_file(&cwd, "없는-plan-id").is_err());
         delete_memo_file(&cwd, "legacy-abc_123").unwrap();
         assert!(scan_memo_docs(&cwd).unwrap().is_empty());
+        let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn memo_update_replaces_content_and_keeps_created_ms() {
+        let project = temp_project("update");
+        let cwd = project.to_string_lossy().into_owned();
+        let created = create_memo_file(&cwd, "원래 제목", "원래 본문이다.", None, 100).unwrap();
+        let updated =
+            update_memo_file(&cwd, &created.id, "고친 제목", "고친 본문이다.", 200).unwrap();
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.created_ms, 100);
+        assert_eq!(updated.updated_ms, 200);
+        let docs = scan_memo_docs(&cwd).unwrap();
+        assert_eq!(docs.len(), 1); // 파일명 유지 — 새 파일이 생기지 않는다
+        assert_eq!(docs[0].0.title, "고친 제목");
+        assert_eq!(docs[0].0.text, "고친 본문이다.");
+        assert_eq!(docs[0].0.created_ms, 100);
+        // 존재하지 않는 메모·잘못된 식별자·빈 본문은 거부
+        assert!(update_memo_file(&cwd, "없는-id", "제목", "본문", 1).is_err());
+        assert!(update_memo_file(&cwd, "../escape", "제목", "본문", 1).is_err());
+        assert!(update_memo_file(&cwd, &created.id, "제목", "   ", 1).is_err());
         let _ = fs::remove_dir_all(project);
     }
 

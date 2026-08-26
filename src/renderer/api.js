@@ -74,6 +74,7 @@
     createMemoDoc: (cwd, title, markdown, legacyId) => invoke('create_memo_doc', {
       cwd, title, markdown, legacyId: legacyId || null
     }),
+    updateMemoDoc: (cwd, id, title, markdown) => invoke('update_memo_doc', { cwd, id, title, markdown }),
     deleteMemoDoc: (cwd, id) => invoke('delete_memo_doc', { cwd, id }),
     // 탐색기: 디렉토리 1단계 목록 [{ name, path, isDir }] (지연 로딩)
     listDir: (path) => invoke('list_dir', { path }),
@@ -81,6 +82,8 @@
     gitStatus: (cwd) => invoke('git_status', { cwd }),
     // 미리보기용 텍스트 읽기 { content, truncated, size } — 바이너리면 reject
     readTextFile: (path) => invoke('read_text_file', { path }),
+    // 터미널 파일 링크 해석: cwd/rel 직접 대응 → 단독 파일명이면 프로젝트 내 검색 (없으면 null)
+    resolveProjectFile: (cwd, rel) => invoke('resolve_project_file', { cwd, rel }),
     write: (id, data) => invoke('write_session', { id, data }),
     resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
     closeSession: (id) => invoke('close_session', { id }),

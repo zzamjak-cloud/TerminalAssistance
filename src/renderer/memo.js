@@ -230,8 +230,82 @@ Object.assign(App, {
     editor.dispatchEvent(new Event('input', { bubbles: true }));
   },
 
-  showMemoModal() {
-    const session = App.state.sessions.find((item) => item.id === App.state.activeId);
+  // ── 터미널 우클릭 컨텍스트 메뉴 (선택 텍스트 기반: 복사 · 메모에 등록하기) ──
+  _termMenu: null, // { el, cleanup }
+
+  closeTerminalContextMenu() {
+    const menu = App._termMenu;
+    if (!menu) return;
+    App._termMenu = null;
+    menu.cleanup();
+    menu.el.remove();
+  },
+
+  showTerminalContextMenu(ev, sessionId) {
+    App.closeTerminalContextMenu();
+    // 라이브 선택이 사라진 직후라도 최근 선택(30초 캐시)이 있으면 메뉴를 띄운다
+    const selection = TerminalView.getSelection(sessionId, { allowCached: true });
+    if (!selection) return; // 항목이 전부 선택 기반 — 빈 메뉴는 띄우지 않는다
+    const menu = document.createElement('div');
+    menu.className = 'term-context-menu';
+    const mkItem = (label, fn) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'term-context-item';
+      btn.textContent = label;
+      // mousedown 기본 동작(포커스 이동)이 터미널 선택을 지우지 않게 막는다
+      btn.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); };
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        App.closeTerminalContextMenu();
+        fn();
+      };
+      menu.appendChild(btn);
+    };
+    mkItem('복사', () => {
+      const v = TerminalView.views.get(sessionId);
+      // 라이브 선택이 있으면 터미널에 포커스 후 복사 명령 → rich copy 핸들러 경유(색상 보존)
+      if (v && typeof v.term.hasSelection === 'function' && v.term.hasSelection()) {
+        try {
+          v.term.focus();
+          document.execCommand('copy');
+          return;
+        } catch (_) {}
+      }
+      // 선택이 이미 사라졌으면 캐시된 텍스트를 평문으로 복사
+      try { void navigator.clipboard.writeText(selection); } catch (_) {}
+    });
+    mkItem('메모에 등록하기', () => {
+      App.showMemoModal({ prefillText: selection, sessionId });
+    });
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = Math.max(0, Math.min(ev.clientX, window.innerWidth - rect.width - 6)) + 'px';
+    menu.style.top = Math.max(0, Math.min(ev.clientY, window.innerHeight - rect.height - 6)) + 'px';
+    const closeOnOutside = (e) => { if (!menu.contains(e.target)) App.closeTerminalContextMenu(); };
+    const closeOnKey = (e) => { if (e.key === 'Escape') App.closeTerminalContextMenu(); };
+    const closeNow = () => App.closeTerminalContextMenu();
+    document.addEventListener('mousedown', closeOnOutside, true);
+    document.addEventListener('keydown', closeOnKey, true);
+    window.addEventListener('blur', closeNow);
+    window.addEventListener('wheel', closeNow, { passive: true });
+    App._termMenu = {
+      el: menu,
+      cleanup: () => {
+        document.removeEventListener('mousedown', closeOnOutside, true);
+        document.removeEventListener('keydown', closeOnKey, true);
+        window.removeEventListener('blur', closeNow);
+        window.removeEventListener('wheel', closeNow);
+      }
+    };
+  },
+
+  // opts.prefillText: 본문 미리 채우기 (터미널 선택 등록) — 제목 입력에 커서를 둔다.
+  // opts.sessionId: 저장할 프로젝트를 결정할 세션 (기본: 활성 세션)
+  showMemoModal(opts) {
+    const o = opts || {};
+    const sid = o.sessionId || App.state.activeId;
+    const session = App.state.sessions.find((item) => item.id === sid);
     const cwd = session && session.projectId ? session.cwd : null;
     if (!cwd) {
       alert('메모를 저장할 프로젝트 세션을 먼저 열어 주세요.');
@@ -269,6 +343,10 @@ Object.assign(App, {
       };
       editor.oninput = validate;
       editor.onpaste = (event) => App.handleMemoPaste(event, editor);
+      if (o.prefillText) {
+        App.insertMemoPlainText(editor, o.prefillText);
+        validate();
+      }
       editor.onkeydown = (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && validate()) {
           event.preventDefault();
@@ -311,6 +389,90 @@ Object.assign(App, {
         }
       };
       title.focus();
+    }, { wide: true });
+  },
+
+  // 저장된 메모 수정 팝업 — 본문은 Markdown 원문 그대로 편집한다 (추가·삭제·수정 자유).
+  showMemoEditModal(cwd, doc) {
+    App.modal(`
+      <h3>메모 수정</h3>
+      <div class="modal-sub"></div>
+      <label for="memo-title">제목</label>
+      <input id="memo-title" type="text" maxlength="80" autocomplete="off" placeholder="메모 제목">
+      <label for="memo-edit-body">본문</label>
+      <textarea id="memo-edit-body" class="memo-edit-body" spellcheck="false" placeholder="메모 내용을 입력하세요"></textarea>
+      <div id="memo-error" class="form-error" role="alert" aria-live="polite"></div>
+      <div class="modal-actions">
+        <button id="m-delete" class="danger">삭제</button>
+        <button id="m-cancel">취소</button><button id="m-save">저장</button>
+      </div>`,
+    (m, close) => {
+      m.querySelector('.modal-sub').textContent =
+        '메모 · ' + new Date(doc.updatedMs || doc.createdMs).toLocaleString() +
+        (doc.path ? ' · ' + doc.path : '');
+      const title = m.querySelector('#memo-title');
+      const body = m.querySelector('#memo-edit-body');
+      const error = m.querySelector('#memo-error');
+      const cancel = m.querySelector('#m-cancel');
+      const save = m.querySelector('#m-save');
+      const remove = m.querySelector('#m-delete');
+      title.value = doc.title;
+      body.value = doc.text;
+      let busy = false;
+      const validate = () => {
+        const valid = title.value.trim() && body.value.trim();
+        if (!busy) save.disabled = !valid;
+        return !!valid;
+      };
+      validate();
+      title.oninput = validate;
+      body.oninput = validate;
+      title.onkeydown = (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          body.focus();
+        }
+      };
+      body.onkeydown = (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && validate()) {
+          event.preventDefault();
+          save.click();
+        }
+      };
+      cancel.onclick = close;
+      remove.onclick = () => App.removeDocument(cwd, doc, { button: remove, close });
+      save.onclick = async () => {
+        if (busy || !validate()) {
+          error.textContent = '제목과 본문을 모두 입력해 주세요.';
+          return;
+        }
+        busy = true;
+        save.disabled = true;
+        cancel.disabled = true;
+        remove.disabled = true;
+        save.textContent = '저장 중…';
+        error.textContent = '';
+        try {
+          const saved = await ta.updateMemoDoc(cwd, doc.id, title.value.trim(), body.value);
+          const existing = App._planCache[cwd] ? App._planCache[cwd].items : [];
+          App._planCache[cwd] = {
+            at: Date.now(),
+            items: [saved, ...existing.filter((item) => item.id !== saved.id)]
+          };
+          close();
+          void App.renderPlanList(true);
+        } catch (e) {
+          busy = false;
+          cancel.disabled = false;
+          remove.disabled = false;
+          save.textContent = '저장';
+          validate();
+          error.textContent = '메모 저장 실패: ' + e;
+        }
+      };
+      // "내용에 더 추가"가 가장 흔한 편집 — 커서를 본문 끝에 둔다
+      body.focus();
+      body.setSelectionRange(body.value.length, body.value.length);
     }, { wide: true });
   },
 

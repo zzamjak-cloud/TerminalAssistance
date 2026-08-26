@@ -55,6 +55,65 @@ pub async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(out)
 }
 
+/// 터미널 파일 링크용: cwd 기준 상대 경로를 실제 파일로 해석한다.
+/// ① cwd/rel 이 존재하면 그대로. ② 구분자 없는 단독 파일명이면 프로젝트를 너비 우선
+/// 탐색해 가장 얕은 동명 파일을 찾는다 (숨김 폴더·의존성/빌드 폴더 제외, 비용 상한 있음).
+#[tauri::command]
+pub async fn resolve_project_file(cwd: String, rel: String) -> Option<String> {
+    let root = Path::new(&cwd);
+    if !root.is_dir() || rel.is_empty() {
+        return None;
+    }
+    let direct = root.join(&rel);
+    if direct.is_file() {
+        return Some(direct.to_string_lossy().into_owned());
+    }
+    // 구분자가 있는 경로는 직접 대응이 전부 — 파일명 검색은 단독 이름만 수행한다
+    if rel.contains('/') || rel.contains('\\') {
+        return None;
+    }
+    let want = rel.to_lowercase();
+    const SKIP_DIRS: &[&str] = &[
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        "out",
+        "vendor",
+        "library", // Unity Library/Temp/Obj — 대형 생성물 폴더
+        "temp",
+        "obj",
+        "logs",
+    ];
+    const MAX_DEPTH: usize = 6;
+    const MAX_ENTRIES: usize = 30_000;
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0usize));
+    let mut seen = 0usize;
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > MAX_ENTRIES {
+                return None; // 대형 프로젝트 안전판 — 못 찾은 것으로 처리
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                if depth < MAX_DEPTH
+                    && !name.starts_with('.')
+                    && !SKIP_DIRS.contains(&name.to_lowercase().as_str())
+                {
+                    queue.push_back((e.path(), depth + 1));
+                }
+            } else if name.to_lowercase() == want {
+                return Some(e.path().to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
 /// OS 콘솔 창이 깜빡이지 않게 git 프로세스를 실행 (windows_subsystem 빌드 대응)
 fn git_cmd(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
     let mut cmd = Command::new("git");

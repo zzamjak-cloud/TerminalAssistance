@@ -34,6 +34,23 @@ function previewExt(path) {
 }
 
 Object.assign(App, {
+  // 터미널 파일 링크 클릭 진입점: :줄번호 꼬리 제거 → 세션 cwd 기준 절대경로 해석 → 미리보기.
+  // 상대 경로는 백엔드에서 실제 파일로 해석한다 — 단독 파일명(terminal-view.js 등)은
+  // cwd 직속에 없으면 프로젝트를 검색해 찾는다.
+  async openFileLinkPreview(sessionId, linkText) {
+    const raw = String(linkText || '').trim().replace(/(?::\d+)+$/, '');
+    if (!raw) return;
+    const session = App.state.sessions.find((x) => x.id === sessionId);
+    const base = (session && session.cwd) || App.claudeCwd();
+    const isAbs = /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\') || raw.startsWith('/');
+    if (isAbs) return App.showFilePreview(raw);
+    if (!base) return;
+    const rel = raw.replace(/^\.[\\/]/, '');
+    let resolved = null;
+    try { resolved = await ta.resolveProjectFile(base, rel); } catch (_) {}
+    return App.showFilePreview(resolved || `${String(base).replace(/[\\/]+$/, '')}/${rel}`);
+  },
+
   // 파일 형식에 따라 알맞은 미리보기 팝업을 연다 (탐색기 진입점)
   async showFilePreview(path) {
     const name = normPath(path).split('/').pop();

@@ -169,7 +169,16 @@ Object.assign(App, {
       const cancel = document.createElement('button');
       cancel.className = 'composer-remove';
       cancel.textContent = '취소';
-      cancel.onclick = () => App.removeStoredDraft(queueKey, d.id);
+      cancel.title = '예약을 취소하고 내용을 입력창으로 되돌립니다';
+      cancel.onclick = () => {
+        void App.removeStoredDraft(queueKey, d.id);
+        // 취소는 대부분 내용을 더 추가·수정하려는 의도 — 입력창으로 되돌린다.
+        // 입력창에 작성 중이던 텍스트가 있으면 지우지 않고 줄바꿈으로 이어붙인다.
+        const current = App.composerText(id);
+        App.setComposerText(id, current.trim() ? `${current.replace(/\n+$/, '')}\n${d.text}` : d.text);
+        c.input.focus();
+        c.input.setSelectionRange(c.input.value.length, c.input.value.length);
+      };
       appendItem(d, `예약 ${index + 1}`, 'queued', [cancel]);
     });
 

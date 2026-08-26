@@ -280,7 +280,8 @@ Object.assign(App, {
         ? (it.path || '.terminal-assistance/memos')
         : (it.path ? '파일: ' + it.path : (it.id && it.id.startsWith('m') ? '선택 저장' : '세션 추출'));
       source.textContent = src;
-      row.title = it.title + '\n' + src + '\n' + new Date(it.updatedMs || it.createdMs).toLocaleString() + '\n클릭하면 문서 내용을 보여줍니다.';
+      row.title = it.title + '\n' + src + '\n' + new Date(it.updatedMs || it.createdMs).toLocaleString()
+        + (isMemo ? '\n클릭하면 메모를 수정할 수 있습니다.' : '\n클릭하면 문서 내용을 보여줍니다.');
       row.onclick = () => App.showPlanDoc(cwd, it);
       const remove = document.createElement('button');
       remove.className = 'doc-remove';
@@ -299,10 +300,15 @@ Object.assign(App, {
   },
 
   // 계획/메모 문서 열람 팝업. 메모 본문은 raw HTML 실행을 막기 위해 평문으로 표시한다.
+  // 사용자가 직접 등록한 메모는 열람 대신 곧바로 수정 팝업을 연다.
   async showPlanDoc(cwd, it) {
     let doc = null;
     try { doc = await ta.getPlanDoc(cwd, it.id); } catch (_) {}
     if (!doc) { alert('계획 문서를 불러오지 못했습니다.'); return; }
+    if (doc.kind === 'memo') {
+      App.showMemoEditModal(cwd, doc);
+      return;
+    }
     App.modal(`
       <h3></h3>
       <div class="modal-sub"></div>

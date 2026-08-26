@@ -263,7 +263,9 @@ const Theme = {
       foreground: vars['_termFg'],
       cursor: vars['--accent-strong'],
       cursorAccent: vars['_termBg'],
-      selectionBackground: vars['--accent-tint-hi']
+      selectionBackground: vars['--accent-tint-hi'],
+      // 포커스가 없어도 같은 색 — Shift+클릭 등 포커스 이동 없는 선택이 다른 색으로 보이지 않게
+      selectionInactiveBackground: vars['--accent-tint-hi']
     };
     return isDark ? base : Object.assign(base, this.LIGHT_ANSI);
   },
