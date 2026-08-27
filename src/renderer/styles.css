@@ -553,7 +553,15 @@ button:disabled:hover { border-color: var(--border); }
   overflow-x: auto;
 }
 .pane-prompt-images.hidden { display: none; }
+.pane-prompt-images.folded {
+  overflow-x: hidden;
+}
 .strip-label { font-size: 11px; color: var(--fg-dim); flex: none; }
+.strip-fold-btn {
+  flex: none;
+  padding: 2px 7px;
+  font-size: 11px;
+}
 .strip-thumb {
   height: 38px; border-radius: 4px; cursor: pointer;
   border: 1px solid var(--border); flex: none;

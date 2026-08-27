@@ -16,6 +16,7 @@ const App = {
     activeId: null,
     platform: '',   // 백엔드가 알려주는 OS (windows | macos | linux)
     images: {},     // sessionId → [{ path, src }] 최근 첨부 이미지
+    imageStripFolded: JSON.parse(localStorage.getItem('ta-image-strip-fold') || '{}'), // sessionId → 참조 이미지 접힘 상태
     branches: {},   // sessionId → git 브랜치명 (헤더 표시용, 2초 폴링)
     drafts: {},     // projectId/queued:<sessionId>, memo:<projectId>는 Markdown 이전 전 구버전 데이터
     projectEmptyId: null // 세션 없는 프로젝트 선택 시 '새 세션 시작' 화면 대상
@@ -257,6 +258,17 @@ const App = {
     return false;
   },
 
+  handleComposerShortcut(ev) {
+    if (ev.isComposing || ev.keyCode === 229) return false;
+    const mod = App.state.platform === 'macos' ? ev.metaKey : ev.ctrlKey;
+    if (!mod || ev.altKey || ev.shiftKey) return false;
+    if (ev.key.toLowerCase() !== 'p') return false;
+    ev.preventDefault();
+    ev.stopPropagation();
+    App.togglePromptPanel();
+    return true;
+  },
+
   bindPlanCaptureButton(id) {
     const btn = document.getElementById(id);
     const holdSelection = (ev) => {
@@ -455,14 +467,31 @@ const App = {
     const strip = c.images;
     strip.textContent = '';
     const imgs = (sessionId && App.state.images[sessionId]) || [];
+    const folded = !!(sessionId && App.state.imageStripFolded[sessionId]);
     const was = strip.classList.contains('hidden');
+    const wasFolded = strip.classList.contains('folded');
     strip.classList.toggle('hidden', !imgs.length);
-    const changed = was !== strip.classList.contains('hidden');
+    strip.classList.toggle('folded', folded);
+    const changed = was !== strip.classList.contains('hidden') || wasFolded !== folded;
     if (!imgs.length) return changed;
     const label = document.createElement('span');
     label.className = 'strip-label';
-    label.textContent = '최근 첨부:';
+    label.textContent = `참조 이미지 ${imgs.length}개`;
     strip.appendChild(label);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'strip-fold-btn';
+    toggle.textContent = folded ? '펼치기' : '접기';
+    toggle.title = folded ? '참조 이미지 펼치기' : '참조 이미지 접기';
+    toggle.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      App.state.imageStripFolded[sessionId] = !folded;
+      localStorage.setItem('ta-image-strip-fold', JSON.stringify(App.state.imageStripFolded));
+      App.renderImageStrip();
+    };
+    strip.appendChild(toggle);
+    if (folded) return changed;
     for (const im of imgs.slice(0, IMAGE_STRIP_MAX)) {
       const el = document.createElement('img');
       el.className = 'strip-thumb';

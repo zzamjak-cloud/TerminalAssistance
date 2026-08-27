@@ -74,6 +74,7 @@ const TerminalView = {
     const target = () => App.paneSessionId(paneIdx); // 전송 시점의 배정 세션을 그때그때 조회
     // xterm의 키/IME 보정과 완전히 분리해 일반 textarea의 편집 감각을 유지한다.
     input.addEventListener('keydown', (ev) => {
+      if (App.handleComposerShortcut(ev)) return;
       ev.stopPropagation();
       if (ev.isComposing || ev.keyCode === 229) return;
       if (this.handleComposerEditKeys(input, ev)) return;
@@ -715,9 +716,15 @@ const TerminalView = {
     // 보내지 않는다. contextmenu 이벤트는 별개로 발생하므로 메뉴는 정상 표시된다.
     const rightDownHandler = (ev) => {
       if (ev.button !== 2) return;
-      if (typeof term.hasSelection === 'function' && term.hasSelection()) ev.stopPropagation();
+      const target = ev.target;
+      if (!target || !holder.contains(target)) return;
+      if (typeof term.hasSelection === 'function' && term.hasSelection()) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
     };
-    holder.addEventListener('mousedown', rightDownHandler, true);
+    window.addEventListener('pointerdown', rightDownHandler, true);
+    window.addEventListener('mousedown', rightDownHandler, true);
 
     // ── 우클릭 컨텍스트 메뉴 (복사 · 메모에 등록하기) ──
     const contextMenuHandler = (ev) => {
@@ -1321,6 +1328,21 @@ const TerminalView = {
     });
   },
 
+  screenText(id, maxRows = 12) {
+    const v = this.views.get(id);
+    const b = v && v.term.buffer && v.term.buffer.active;
+    if (!v || !b) return '';
+    const rows = Math.max(1, Math.min(maxRows, v.term.rows || maxRows));
+    const start = Math.max(0, b.viewportY + (v.term.rows || rows) - rows);
+    const end = Math.min(b.length - 1, b.viewportY + (v.term.rows || rows) - 1);
+    const out = [];
+    for (let y = start; y <= end; y++) {
+      const line = b.getLine(y);
+      if (line) out.push(line.translateToString(true));
+    }
+    return out.join('\n');
+  },
+
   rememberSelection(id, opts) {
     const v = this.views.get(id);
     if (!v || typeof v.term.getSelection !== 'function') return '';
@@ -1485,7 +1507,10 @@ const TerminalView = {
       }
       if (v.wheelHandler) v.holder.removeEventListener('wheel', v.wheelHandler, { capture: true });
       if (v.shiftClickHandler) v.holder.removeEventListener('mousedown', v.shiftClickHandler, true);
-      if (v.rightDownHandler) v.holder.removeEventListener('mousedown', v.rightDownHandler, true);
+      if (v.rightDownHandler) {
+        window.removeEventListener('pointerdown', v.rightDownHandler, true);
+        window.removeEventListener('mousedown', v.rightDownHandler, true);
+      }
       if (v.contextMenuHandler) v.holder.removeEventListener('contextmenu', v.contextMenuHandler);
       if (v.linkDisposable) {
         try { v.linkDisposable.dispose(); } catch (_) {}

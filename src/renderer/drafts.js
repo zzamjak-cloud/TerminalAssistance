@@ -305,7 +305,11 @@ Object.assign(App, {
   deliverDraft(sessionId, text) {
     if (!text.trim() || !TerminalView.views.has(sessionId)) return;
     TerminalView.paste(sessionId, text);
-    ta.write(sessionId, '\r');
+    const isMultiline = /\r|\n/.test(text);
+    const isCodex = /\bCodex\b/i.test(TerminalView.screenText(sessionId, 999));
+    // Codex TUI는 긴 줄바꿈 입력에서 plan 오버레이가 뜨면 입력만 남기고 대기할 수 있다.
+    // Esc로 오버레이를 닫은 뒤 Enter를 보내 전송 버튼의 "즉시 실행" 의미를 유지한다.
+    ta.write(sessionId, isMultiline && isCodex ? '\x1b\r' : '\r');
   },
 
   showComposerFanout(sessionId) {
