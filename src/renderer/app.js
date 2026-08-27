@@ -77,6 +77,8 @@ const App = {
       const paths = payload && payload.paths ? payload.paths : [];
       if (paths.length) App.handleDrop(paths, payload.position);
     });
+    // 데스크톱 알림 클릭 → 창은 백엔드가 이미 앞으로 올렸고, 여기서 세션을 화면에 띄운다
+    ta.onActivateSession((sessionId) => App.revealSession(sessionId));
     // 다른 앱에 있다가 돌아온 경우 — 활성 세션이 완료 상태면 그 시점부터 열람 카운트다운
     window.addEventListener('focus', () => App.checkDoneViewed(App.state.activeId));
     // 허가 대기 배지 클릭 → 대기 중인 세션으로 점프 (여러 개면 클릭할 때마다 순환)
@@ -640,7 +642,7 @@ const App = {
     if (!watching && App.state.settings.notifyOnDone && now - last >= App.NOTIFY_GAP_MS) {
       App._lastNotifyAt.set(s.id, now);
       const secs = Math.round((busyMs || 0) / 1000);
-      void ta.notify('작업 완료 — ' + App.sessionLabel(s), secs + '초 동안 실행되던 작업이 끝났습니다.')
+      void ta.notify('작업 완료 — ' + App.sessionLabel(s), secs + '초 동안 실행되던 작업이 끝났습니다.', s.id)
         .catch((error) => console.warn('완료 알림 전송 실패:', error));
     }
   },
@@ -664,11 +666,20 @@ const App = {
     }
   },
 
+  // 알림 클릭으로 지목된 세션 띄우기 — 이미 닫힌 세션이면 무시한다.
+  // toBottom: 완료·허가 프롬프트가 보이도록 바닥으로 붙인다.
+  revealSession(sessionId) {
+    if (!sessionId) return;
+    const s = App.state.sessions.find((x) => x.id === sessionId);
+    if (!s) return;
+    App.activateSession(sessionId, { toBottom: true });
+  },
+
   // 허가 대기: 보고 있는 세션은 화면에 이미 프롬프트가 떠 있으므로 비활성 세션만 알림
   onWaiting(s) {
     const watching = s.id === App.state.activeId && document.hasFocus();
     if (!watching && App.state.settings.notifyOnWaiting) {
-      void ta.notify('허가 대기 — ' + App.sessionLabel(s), 'AI 도구가 실행 허가를 기다리고 있습니다.')
+      void ta.notify('허가 대기 — ' + App.sessionLabel(s), 'AI 도구가 실행 허가를 기다리고 있습니다.', s.id)
         .catch((error) => console.warn('허가 대기 알림 전송 실패:', error));
     }
   },

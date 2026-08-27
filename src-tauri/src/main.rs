@@ -16,8 +16,9 @@ use std::fs;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{new_id, LaunchRecipe, Preset, Project, Store};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+#[cfg(not(any(windows, target_os = "macos")))]
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use util::{plock, reorder_by_ids};
@@ -569,8 +570,102 @@ async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Re
 }
 
 // ── 데스크톱 알림 — 종류별(완료/허가 대기) 게이트는 프론트가 각 설정으로 판단한다 ──
+// tauri-plugin-notification 의 show() 는 알림을 띄우기만 하고 클릭 콜백을 주지 않는다.
+// 그래서 알림을 눌러도 앱이 앞으로 나오지 않았다 — 플랫폼 알림 API 를 직접 써서
+// "클릭 → 창 복원·포커스 → 알림을 띄운 세션 활성화"까지 잇는다.
 #[tauri::command]
-fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
+fn notify(
+    app: AppHandle,
+    title: String,
+    body: String,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    show_clickable_notification(&app, title, body, session_id)
+}
+
+// 알림 클릭 처리 — 창을 복원·포커스하고 프론트에 대상 세션을 알린다.
+// 크래시 복구로 재생성된 창은 라벨이 "main" 이 아닐 수 있어 아무 창이나 찾는다.
+fn reveal_session(app: &AppHandle, session_id: Option<String>) {
+    if let Some(win) = app.webview_windows().values().next().cloned() {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    if let Some(id) = session_id {
+        let _ = app.emit("ta:activate-session", id);
+    }
+}
+
+// Windows: 토스트의 Activated 이벤트로 클릭을 받는다. AppUserModelID 는 설치본에서만
+// 유효하므로(시작 메뉴 바로가기가 등록한다) 개발 빌드는 PowerShell AUMID 로 대체한다 —
+// 플러그인이 app_id 를 붙이는 조건과 동일하게 맞춘다.
+#[cfg(windows)]
+fn show_clickable_notification(
+    app: &AppHandle,
+    title: String,
+    body: String,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    use tauri_winrt_notification::Toast;
+
+    let exe_dir = tauri::utils::platform::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let dev_build =
+        exe_dir.ends_with(r"\target\debug") || exe_dir.ends_with(r"\target\release");
+    let app_id = if dev_build {
+        Toast::POWERSHELL_APP_ID.to_string()
+    } else {
+        app.config().identifier.clone()
+    };
+
+    let handle = app.clone();
+    Toast::new(&app_id)
+        .title(&title)
+        .text1(&body)
+        .on_activated(move |_action| {
+            reveal_session(&handle, session_id.clone());
+            Ok(())
+        })
+        .show()
+        .map_err(|e| e.to_string())
+}
+
+// macOS: 클릭 응답을 받으려면 wait_for_click 로 보내야 하는데, 그러면 사용자가 누르거나
+// 알림이 사라질 때까지 전송 호출이 블록된다. mac-notification-sys 는 메인 스레드 밖
+// 호출을 지원하므로(콜백은 메인 런루프가 받아 조건변수로 깨운다) 전용 스레드에서 보낸다.
+#[cfg(target_os = "macos")]
+fn show_clickable_notification(
+    app: &AppHandle,
+    title: String,
+    body: String,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    let handle = app.clone();
+    let identifier = app.config().identifier.clone();
+    std::thread::spawn(move || {
+        // 번들 식별자 지정 — 내부적으로 최초 1회만 적용되고 이후 호출은 무시된다
+        let _ = mac_notification_sys::set_application(&identifier);
+        let mut n = mac_notification_sys::Notification::new();
+        n.title(title.as_str())
+            .message(body.as_str())
+            .wait_for_click(true);
+        if let Ok(mac_notification_sys::NotificationResponse::Click) = n.send() {
+            reveal_session(&handle, session_id);
+        }
+    });
+    Ok(())
+}
+
+// 그 외 플랫폼: 클릭 처리 없이 기존 플러그인 경로를 그대로 쓴다
+#[cfg(not(any(windows, target_os = "macos")))]
+fn show_clickable_notification(
+    app: &AppHandle,
+    title: String,
+    body: String,
+    _session_id: Option<String>,
+) -> Result<(), String> {
     app.notification()
         .builder()
         .title(title)

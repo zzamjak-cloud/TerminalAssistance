@@ -1,6 +1,6 @@
 [package]
 name = "terminal-assistance"
-version = "0.12.1"
+version = "0.12.2"
 description = "AI 시대의 멀티 프로젝트 터미널 워크스페이스"
 authors = ["zzamjak-cloud"]
 license = "GPL-3.0-only"
@@ -31,6 +31,12 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # WebView2 ?뚮뜑???щ옒???먮룞 蹂듦뎄??(wry 媛 ?곕뒗 踰꾩쟾怨??쇱튂?댁빞 COM ??낆씠 ?명솚??
 [target."cfg(windows)".dependencies]
 webview2-com = "0.38"
+# 데스크톱 알림 직접 발행 — 플러그인의 show() 는 클릭 콜백이 없어 토스트 Activated 를 못 받는다
+tauri-winrt-notification = "0.7"
+
+# macOS 알림 직접 발행 — 클릭 응답(wait_for_click)을 받기 위해 플러그인 대신 직접 쓴다
+[target."cfg(target_os = \"macos\")".dependencies]
+mac-notification-sys = "0.6"
 
 [profile.release]
 # 諛고룷 諛붿씠?덈━ 理쒖냼??strip = true

@@ -110,12 +110,15 @@
     clipboardImage: () => invoke('clipboard_image'),
     clipboardText: () => invoke('clipboard_text'),
     openPath: (p) => invoke('open_path', { path: p }),
-    notify: (title, body) => invoke('notify', { title, body }),
+    // sessionId 를 함께 넘기면 알림 클릭 시 그 세션으로 창을 열어 준다
+    notify: (title, body, sessionId) => invoke('notify', { title, body, sessionId: sessionId || null }),
     fileSrc: (p) => convertFileSrc(p),
 
     onData: (cb) => listen('ta:data', (e) => cb(e.payload)),
     onStatus: (cb) => listen('ta:status', (e) => cb(e.payload)),
     onExit: (cb) => listen('ta:exit', (e) => cb(e.payload)),
+    // 데스크톱 알림 클릭 → 백엔드가 창을 앞으로 올린 뒤 대상 세션 id 를 보낸다
+    onActivateSession: (cb) => listen('ta:activate-session', (e) => cb(e.payload)),
     // Tauri 는 파일 드롭을 웹뷰 대신 네이티브 이벤트로 준다 (실제 경로 포함)
     onFileDrop: (cb) => listen('tauri://drag-drop', (e) => cb(e.payload))
   };

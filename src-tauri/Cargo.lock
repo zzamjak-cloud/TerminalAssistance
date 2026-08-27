@@ -4471,9 +4471,10 @@ dependencies = [
 
 [[package]]
 name = "terminal-assistance"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "image",
+ "mac-notification-sys",
  "portable-pty",
  "serde",
  "serde_json",
@@ -4486,6 +4487,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tauri-winrt-notification",
  "toml_edit 0.22.27",
  "ttf-parser",
  "webview2-com",
