@@ -430,19 +430,43 @@ button:disabled:hover { border-color: var(--border); }
 .ppl-name {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 1px 4px; border: 1px solid transparent; border-radius: 4px;
-  cursor: text;
+  cursor: pointer;
 }
-/* 호버 = 흐린 입력필드 프리뷰 (더블클릭으로 이름 변경 가능함을 암시) */
-.ppl-name:hover { background: var(--bg); border-color: var(--border); }
-/* 패널 헤더의 세션 이름 인라인 편집 입력 */
-.ppl-rename {
-  flex: 0 1 auto; min-width: 110px; max-width: 240px;
-  background: var(--bg); color: var(--fg);
-  border: 1px solid var(--accent); border-radius: 4px;
-  padding: 1px 5px; font-size: 11px; font-family: inherit; font-weight: 400;
-}
-.ppl-rename:focus { outline: none; }
+.ppl-name:hover, .ppl-name.open { background: var(--bg); border-color: var(--border); }
 .ppl-branch { flex: none; font-weight: 400; opacity: .72; }
+/* 프로젝트/세션 전환 드롭다운 — 제목 클릭으로 열린다 */
+.pane-session-menu {
+  position: absolute; top: calc(100% + 4px); left: 8px; z-index: 13;
+  width: min(360px, calc(100vw - 32px)); max-height: 320px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 1px; padding: 5px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.pane-session-menu.hidden { display: none; }
+.pane-session-group {
+  padding: 7px 8px 3px;
+  color: var(--fg-dim); font-size: 10px; font-weight: 800;
+  text-transform: uppercase;
+}
+.pane-session-item {
+  display: flex; align-items: center; gap: 7px;
+  border: none; background: none; color: var(--fg);
+  text-align: left; padding: 6px 8px; font-size: 11px; border-radius: 5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pane-session-item:hover { background: var(--bg-hover-hi); }
+.pane-session-item.active {
+  background: var(--accent-fill); color: var(--accent-on-fill);
+}
+.pane-session-item.empty { color: var(--fg-dim); font-style: italic; }
+.pane-session-add {
+  border: none; background: none; color: var(--fg-dim);
+  text-align: left; padding: 7px 8px 5px; font-size: 11px; border-radius: 0 0 5px 5px;
+  border-top: 1px solid var(--border); margin-top: 3px;
+  white-space: nowrap;
+}
+.pane-session-add:hover { color: var(--fg); background: var(--bg-hover-hi); }
 /* 프리셋 드롭다운 — 헤더 우측 정렬, 오렌지 배경으로 눈에 띄게 */
 .pane-preset-dd { position: relative; flex: none; margin-left: auto; }
 .pane-preset-toggle {
@@ -495,6 +519,7 @@ button:disabled:hover { border-color: var(--border); }
 .pane-prompt-compose { display: flex; align-items: stretch; gap: 8px; }
 .pane-prompt-input {
   flex: 1; min-width: 0; resize: none;
+  min-height: calc(13px * 1.45 * 3 + 16px);
   overflow-y: hidden; padding: 7px 9px;
   border: 1px solid var(--border); border-radius: 6px;
   /* 터미널 배경보다 밝은 회색 — 입력창이 터미널과 구분되어 보이게 (오입력 방지) */
@@ -813,14 +838,6 @@ button:disabled:hover { border-color: var(--border); }
 }
 .chevron.folded { opacity: .35; }                    /* 접힘 ❯ : 희미하게 */
 .chevron.open { opacity: 1; transform: rotate(90deg); } /* 펼침 : 90도 회전 + 선명 */
-.session-rename {
-  flex: 1; min-width: 0;
-  background: var(--bg); color: var(--fg);
-  border: 1px solid var(--accent); border-radius: 4px;
-  padding: 1px 5px; font-size: 12px; font-family: inherit;
-}
-.session-rename:focus { outline: none; }
-
 /* 하단 중앙 토스트 — 복구 알림 등 가벼운 공지. 클릭을 막지 않는다 */
 #app-toast {
   position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 8px);
