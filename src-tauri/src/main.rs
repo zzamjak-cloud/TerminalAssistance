@@ -644,6 +644,13 @@ fn show_clickable_notification(
 ) -> Result<(), String> {
     let handle = app.clone();
     let identifier = app.config().identifier.clone();
+    let app_icon = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("icon.icns"))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned());
     std::thread::spawn(move || {
         // 번들 식별자 지정 — 내부적으로 최초 1회만 적용되고 이후 호출은 무시된다
         let _ = mac_notification_sys::set_application(&identifier);
@@ -651,6 +658,9 @@ fn show_clickable_notification(
         n.title(title.as_str())
             .message(body.as_str())
             .wait_for_click(true);
+        if let Some(icon) = app_icon.as_deref() {
+            n.app_icon(icon);
+        }
         if let Ok(mac_notification_sys::NotificationResponse::Click) = n.send() {
             reveal_session(&handle, session_id);
         }

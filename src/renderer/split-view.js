@@ -372,8 +372,6 @@ Object.assign(App, {
     for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const pane = document.getElementById('term-pane-' + i);
       let bar = pane.querySelector('.pane-preset-bar');
-      // 이름 인라인 편집 중에는 재생성하지 않는다 — 편집 중이던 입력이 날아가는 것 방지
-      if (bar && bar.querySelector('.ppl-rename')) continue;
       const sid = i < n ? App.paneSessionId(i) : null; // 단일 화면은 0번 = 활성 세션
       const sess = sid ? App.state.sessions.find((x) => x.id === sid) : null;
       if (!sess) {
@@ -387,7 +385,10 @@ Object.assign(App, {
       const projs = App.state.presets.filter((p) => p.projectId && p.projectId === sess.projectId);
       // 내용이 같으면 재생성하지 않는다 — mousedown~click 사이 재렌더는 클릭을 씹고,
       // 열려 있는 드롭다운도 닫혀 버린다. 상태는 서명에서 제외하고 태그만 교체한다(refreshPickerStatus).
-      const sig = [sid, App.sessionLabel(sess), branch, (proj && proj.color) || '', Theme.state.id,
+      const switchSig = App.state.projects.map((p) => `${p.id}:${p.name}:${p.color || ''}`)
+        .concat(App.state.sessions.map((s) => `${s.id}:${s.projectId || ''}:${s.title}:${s.status}`))
+        .join(',');
+      const sig = [sid, App.sessionLabel(sess), branch, (proj && proj.color) || '', Theme.state.id, switchSig,
         globals.concat(projs).map((p) => p.id + ':' + p.label + ':' + p.command).join(',')].join('|');
       if (bar && bar.dataset.sig === sig) continue;
       if (!bar) {
@@ -409,9 +410,11 @@ Object.assign(App, {
       const nameEl = document.createElement('span');
       nameEl.className = 'ppl-name';
       nameEl.textContent = App.sessionLabel(sess);
-      // 더블클릭 = 세션 이름 인라인 변경 — 사이드바를 접어 둔 상태에서도 수정할 수 있다
-      nameEl.title = '더블클릭으로 세션 이름 변경';
-      nameEl.ondblclick = (e) => { e.stopPropagation(); App.startPaneRename(nameEl, sid); };
+      nameEl.title = '프로젝트 및 세션 변경';
+      nameEl.onclick = (e) => {
+        e.stopPropagation();
+        App.toggleSessionSwitchMenu(bar, i);
+      };
       label.appendChild(nameEl);
       if (branch) {
         const brEl = document.createElement('span');
@@ -422,56 +425,109 @@ Object.assign(App, {
       bar.appendChild(label);
 
       // ── 프리셋 드롭다운 (전역 + 프로젝트 전용, 우측 정렬) ──
+      bar.appendChild(App.buildSessionSwitchMenu(i, sid));
       bar.appendChild(App.buildPanePresetMenu(globals, projs, sid, sess.projectId));
     }
     if (layoutChanged) TerminalView.fitActive(); // 바 유무가 holder 높이를 바꾼다
   },
 
-  // 패널 헤더 제목의 인라인 이름 변경 — 사이드바(startRename)와 같은 규칙:
-  // Enter/포커스 이탈 = 확정, Esc = 취소, 빈 값 = 원복. 편집 대상은 세션 제목(title)만.
-  startPaneRename(nameEl, sid) {
-    const sess = App.state.sessions.find((x) => x.id === sid);
-    if (!sess) return;
-    const bar = nameEl.closest('.pane-preset-bar');
-    if (bar && bar.querySelector('.ppl-rename')) return; // 이미 편집 중
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'ppl-rename';
-    input.value = sess.title;
-    input.maxLength = 40;
-    nameEl.replaceWith(input);
-    input.focus();
-    input.select();
-    // 편집 중 클릭이 패널 포커스 이동/드래그로 새지 않게
-    input.onclick = (ev) => ev.stopPropagation();
-    input.onmousedown = (ev) => ev.stopPropagation();
-    let done = false; // Enter → blur 이중 확정 방지
-    const finish = async (commit) => {
-      if (done) return;
-      done = true;
-      const title = input.value.trim();
-      // 입력 요소를 먼저 제거해야 renderPanePresets 의 '편집 중 재생성 금지' 가드
-      // (.ppl-rename 존재 시 스킵)가 풀려 제목 span 으로 복원된다 — 안 지우면 편집 화면에 갇힌다
-      input.remove();
-      if (commit && title && title !== sess.title) {
-        try {
-          await ta.renameSession(sid, title);
-          sess.title = title;
-          renderSidebar();
-          App.renderTopbar();
-        } catch (err) {
-          console.warn('세션 이름 변경 실패:', err);
-        }
-      }
-      if (bar) delete bar.dataset.sig; // 서명을 지워 강제 재생성 (Esc/실패 시 원래 제목으로 복원)
-      App.renderPanePresets();
+  buildSessionSwitchMenu(paneIdx, activeSid) {
+    const menu = document.createElement('div');
+    menu.className = 'pane-session-menu hidden';
+    menu.dataset.pane = String(paneIdx);
+
+    const addItem = (label, title, onclick, opts) => {
+      const item = document.createElement('button');
+      item.className = 'pane-session-item' + (opts && opts.active ? ' active' : '') + (opts && opts.empty ? ' empty' : '');
+      item.textContent = label;
+      item.title = title || label;
+      item.onclick = (e) => {
+        e.stopPropagation();
+        App.closeSessionSwitchMenus();
+        onclick();
+      };
+      menu.appendChild(item);
+      return item;
     };
-    input.onkeydown = (ev) => {
-      ev.stopPropagation(); // 전역 단축키(Cmd+1~9 등)로 새지 않게
-      if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); finish(true); }
-      else if (ev.key === 'Escape') finish(false);
+    const appendSession = (sess) => {
+      const item = addItem(App.sessionLabel(sess), sess.cwd, () => App.switchPaneSession(paneIdx, sess.id), {
+        active: sess.id === activeSid
+      });
+      item.dataset.sid = sess.id;
+      item.prepend(statusTag(sess.status));
     };
-    input.onblur = () => finish(true);
+
+    const knownProjects = new Set(App.state.projects.map((p) => p.id));
+    const homeSessions = App.state.sessions.filter((s) => !s.projectId || !knownProjects.has(s.projectId));
+    const homeGroup = document.createElement('div');
+    homeGroup.className = 'pane-session-group';
+    homeGroup.textContent = '일반 터미널';
+    menu.appendChild(homeGroup);
+    if (homeSessions.length) homeSessions.forEach(appendSession);
+    else addItem('새 일반 터미널', '홈 디렉토리에서 새 세션 시작', () => App.createPaneSession(paneIdx, null), { empty: true });
+
+    for (const p of App.state.projects) {
+      const group = document.createElement('div');
+      group.className = 'pane-session-group';
+      group.textContent = p.name;
+      if (p.color) group.style.color = Theme.adjustText(p.color);
+      menu.appendChild(group);
+      const mySessions = App.state.sessions.filter((s) => s.projectId === p.id);
+      if (mySessions.length) mySessions.forEach(appendSession);
+      else addItem('새 세션 시작', p.path, () => App.createPaneSession(paneIdx, p.id), { empty: true });
+    }
+
+    const footer = document.createElement('button');
+    footer.className = 'pane-session-add';
+    footer.textContent = '+ 현재 프로젝트에 새 세션';
+    footer.onclick = (e) => {
+      e.stopPropagation();
+      App.closeSessionSwitchMenus();
+      const sess = App.state.sessions.find((s) => s.id === activeSid);
+      App.createPaneSession(paneIdx, sess ? sess.projectId || null : null);
+    };
+    menu.appendChild(footer);
+    return menu;
+  },
+
+  toggleSessionSwitchMenu(bar, paneIdx) {
+    const menu = bar && bar.querySelector(`.pane-session-menu[data-pane="${paneIdx}"]`);
+    if (!menu) return;
+    const willOpen = menu.classList.contains('hidden');
+    App.closePanePresetMenus();
+    App.closeSessionSwitchMenus();
+    menu.classList.toggle('hidden', !willOpen);
+    const label = bar.querySelector('.ppl-name');
+    if (label) label.classList.toggle('open', willOpen);
+  },
+
+  closeSessionSwitchMenus() {
+    document.querySelectorAll('.pane-session-menu').forEach((m) => m.classList.add('hidden'));
+    document.querySelectorAll('.ppl-name.open').forEach((el) => el.classList.remove('open'));
+  },
+
+  switchPaneSession(paneIdx, sid) {
+    if (!sid || !App.state.sessions.some((s) => s.id === sid)) return;
+    if (App.isSplit()) {
+      const duplicate = App.split.panes.findIndex((id, i) => id === sid && i !== paneIdx);
+      if (duplicate >= 0) App.split.panes[duplicate] = null;
+      App.split.panes[paneIdx] = sid;
+      App.split.focused = paneIdx;
+      App.saveSplitState();
+    }
+    App.activateSession(sid);
+  },
+
+  async createPaneSession(paneIdx, projectId) {
+    const sess = await App.createSession(projectId);
+    if (sess && App.isSplit()) {
+      App.split.panes[paneIdx] = sess.id;
+      App.split.focused = paneIdx;
+      App.saveSplitState();
+      App.renderSplit();
+      TerminalView.syncLayout();
+    }
+    return sess;
   },
 
   // 프리셋 드롭다운 (패널 헤더용) — 전역(파랑 배경, 맨앞) + 프로젝트 전용 + '+ 프리셋 추가'.
@@ -605,7 +661,7 @@ Object.assign(App, {
   // 상태 전이 시 피커·패널 헤더의 해당 세션 태그만 교체 — 전체 재생성은 진행 중인 클릭을 씹는다
   refreshPickerStatus(s) {
     document.querySelectorAll(
-      `.pane-pick-item[data-sid="${s.id}"] .status-tag, .pane-preset-label[data-sid="${s.id}"] .status-tag`
+      `.pane-pick-item[data-sid="${s.id}"] .status-tag, .pane-preset-label[data-sid="${s.id}"] .status-tag, .pane-session-item[data-sid="${s.id}"] .status-tag`
     ).forEach((tag) => tag.replaceWith(statusTag(s.status)));
   },
 
@@ -615,20 +671,28 @@ Object.assign(App, {
     document.addEventListener('mousedown', (e) => {
       if (!e.target.closest('#split-controls')) App.closeSplitMenu();
     }, true);
-    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') App.closeSplitMenu(); });
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        App.closeSplitMenu();
+        App.closeSessionSwitchMenus();
+      }
+    });
     for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       document.getElementById('term-pane-' + i).addEventListener('mousedown', (e) => {
         // 피커/프리셋 드롭다운 클릭은 assignPaneSession·runPreset 이 포커스까지 처리한다.
         // 여기서 focusPane → renderSplit 을 타면 대상이 재생성돼 mousedown 타깃이 분리되고
         // click 이 발화하지 않아 첫 클릭이 씹힌다. (드롭다운이 아닌 헤더 바 여백은 포커스 이동 허용 —
         // sig 가 같아 바는 재생성되지 않으므로 안전)
-        if (e.target.closest('.pane-picker') || e.target.closest('.pane-preset-dd')) return;
+        if (e.target.closest('.pane-picker') || e.target.closest('.pane-preset-dd') || e.target.closest('.pane-session-menu') || e.target.closest('.ppl-name')) return;
         App.focusPane(i);
       }, true);
     }
     // 드롭다운 바깥 클릭 = 닫기 (캡처 단계에서 받아 패널 포커스 이동과 순서 무관하게 동작)
     document.addEventListener('mousedown', (e) => {
       if (!e.target.closest('.pane-preset-dd')) App.closePanePresetMenus();
+    }, true);
+    document.addEventListener('mousedown', (e) => {
+      if (!e.target.closest('.pane-session-menu') && !e.target.closest('.ppl-name')) App.closeSessionSwitchMenus();
     }, true);
     // 스플리터 드래그 — QuickFolder 와 같이 컨테이너 rect 기준 비율 계산, 0.2~0.8 클램프
     // 스플리터 드래그 — 컨테이너 rect 기준 비율 계산.
