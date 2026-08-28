@@ -551,10 +551,11 @@ Object.assign(App, {
       picker.textContent = '';
       const taken = App.splitVisiblePanes().filter(Boolean);
       const candidates = App.state.sessions.filter((x) => !taken.includes(x.id));
+      const emptyProjects = App.state.projects.filter((p) => !App.state.sessions.some((s) => s.projectId === p.id));
       const h = document.createElement('h3');
-      h.textContent = candidates.length ? '표시할 세션 선택' : '세션이 없습니다';
+      h.textContent = candidates.length || emptyProjects.length ? '표시할 세션 선택' : '세션이 없습니다';
       picker.appendChild(h);
-      if (candidates.length) {
+      if (candidates.length || emptyProjects.length) {
         const list = document.createElement('div');
         list.className = 'pane-picker-list';
         for (const sess of candidates) {
@@ -569,6 +570,24 @@ Object.assign(App, {
           btn.appendChild(name);
           btn.appendChild(statusTag(sess.status));
           btn.onclick = ((paneIdx, sid) => () => App.assignPaneSession(paneIdx, sid))(i, sess.id);
+          list.appendChild(btn);
+        }
+        for (const proj of emptyProjects) {
+          const btn = document.createElement('button');
+          btn.className = 'pane-pick-item';
+          const name = document.createElement('span');
+          name.className = 'pane-pick-name';
+          name.textContent = proj.name;
+          if (proj.color) name.style.color = Theme.adjustText(proj.color);
+          const tag = document.createElement('span');
+          tag.className = 'status-tag idle';
+          tag.textContent = '새 세션';
+          btn.title = proj.path;
+          btn.appendChild(name);
+          btn.appendChild(tag);
+          btn.onclick = ((paneIdx, projectId) => () => {
+            App.createSession(projectId, { paneIdx });
+          })(i, proj.id);
           list.appendChild(btn);
         }
         picker.appendChild(list);

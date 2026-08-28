@@ -107,6 +107,10 @@ Object.assign(App, {
     return c ? c.input.value : (App._composerTexts.get(id) || '');
   },
 
+  normalizeComposerSubmitText(text) {
+    return String(text || '').replace(/[ \t\r\n]+$/g, '');
+  },
+
   clearComposerText(sessionId) {
     App.setComposerText(sessionId, '');
   },
@@ -218,7 +222,7 @@ Object.assign(App, {
   // Cmd/Ctrl+Enter 또는 전송 버튼은 상태와 관계없이 그 패널의 세션에 즉시 실행한다.
   sendComposerPrompt(sessionId) {
     const id = sessionId || App.state.activeId;
-    const text = App.composerText(id);
+    const text = App.normalizeComposerSubmitText(App.composerText(id));
     if (!id || !text.trim() || !TerminalView.views.has(id)) return;
     App.deliverDraft(id, text);
     App.clearComposerText(id);
@@ -228,7 +232,7 @@ Object.assign(App, {
   // 진행중·허가 대기 상태만 예약한다. 이미 쉬는 세션은 기다릴 작업이 없으므로 즉시 전송한다.
   async scheduleComposerPrompt(sessionId) {
     const id = sessionId || App.state.activeId;
-    const text = App.composerText(id);
+    const text = App.normalizeComposerSubmitText(App.composerText(id));
     const session = App.state.sessions.find((s) => s.id === id);
     if (!session || !text.trim() || !TerminalView.views.has(id)) return;
     if (session.status === 'idle' || session.status === 'done') {
@@ -262,14 +266,15 @@ Object.assign(App, {
     const key = App.queueKey(sessionId);
     const before = App.state.drafts[key] || [];
     const nextDraft = before[0];
-    if (!nextDraft || !nextDraft.text.trim()) return;
+    const nextText = nextDraft ? App.normalizeComposerSubmitText(nextDraft.text) : '';
+    if (!nextText.trim()) return;
     App._queueDispatching.add(sessionId);
     const rest = before.slice(1);
     App.state.drafts[key] = rest;
     App.renderComposerQueue();
     try {
       await App.persistDraftList(key, rest);
-      App.deliverDraft(sessionId, nextDraft.text);
+      App.deliverDraft(sessionId, nextText);
     } catch (e) {
       const current = App.state.drafts[key] || [];
       if (!current.some((d) => d.id === nextDraft.id)) {
@@ -303,9 +308,10 @@ Object.assign(App, {
 
   // 세션 하나에 프롬프트 전달 + 즉시 실행. paste 경로로 bracketed paste를 유지한다.
   deliverDraft(sessionId, text) {
-    if (!text.trim() || !TerminalView.views.has(sessionId)) return;
-    TerminalView.paste(sessionId, text);
-    const isMultiline = /\r|\n/.test(text);
+    const submitText = App.normalizeComposerSubmitText(text);
+    if (!submitText.trim() || !TerminalView.views.has(sessionId)) return;
+    TerminalView.paste(sessionId, submitText);
+    const isMultiline = /\r|\n/.test(submitText);
     const isCodex = /\bCodex\b/i.test(TerminalView.screenText(sessionId, 999));
     // Codex TUI는 긴 줄바꿈 입력에서 plan 오버레이가 뜨면 입력만 남기고 대기할 수 있다.
     // Esc로 오버레이를 닫은 뒤 Enter를 보내 전송 버튼의 "즉시 실행" 의미를 유지한다.

@@ -144,12 +144,7 @@ Object.assign(App, {
       (m, close) => {
         const start = (projectId) => {
           close();
-          // 클릭한 패널이 여전히 빈 패널이면 그 자리에 배정되게 포커스를 옮겨 둔다
-          // (createSession 은 포커스 패널이 비어 있으면 그대로 쓴다)
-          if (App.isSplit() && paneIdx < App.splitPaneCount() && !App.split.panes[paneIdx]) {
-            App.split.focused = paneIdx;
-          }
-          App.createSession(projectId);
+          App.createSession(projectId, { paneIdx });
         };
         const list = m.querySelector('#sa-list');
         if (!projs.length) {

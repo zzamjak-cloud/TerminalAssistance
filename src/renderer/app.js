@@ -506,11 +506,19 @@ const App = {
   },
 
   // ── 세션 ──
-  async createSession(projectId) {
+  async createSession(projectId, opts) {
     try {
       const info = await ta.createSession(projectId);
       App.state.sessions.push(info);
       TerminalView.create(info, App.state.settings.fontSize);
+      const targetPane = opts && Number.isInteger(opts.paneIdx) ? opts.paneIdx : -1;
+      if (App.isSplit() && targetPane >= 0 && targetPane < App.splitPaneCount()) {
+        App.split.panes[targetPane] = info.id;
+        App.split.focused = targetPane;
+        App.saveSplitState();
+        App.activateSession(info.id);
+        return info; // AI 세션 재개 등 후속 입력용
+      }
       // 분할 중 새 세션은 빈 패널부터 채운다 — 포커스 패널이 이미 차 있으면 첫 빈 패널로
       // 포커스를 옮겨, activateSession 이 그 자리에 배정 + 선택하게 한다.
       // (포커스 패널 자체가 빈 패널이면 그대로 — 피커의 '+ 세션 추가'가 지정한 자리 유지)
