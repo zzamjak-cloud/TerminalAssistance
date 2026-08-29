@@ -214,6 +214,96 @@ Object.assign(App, {
     else App.renderSplit();
   },
 
+  // ── 헤더 제목 바 드래그로 패널 위치 변경 ──
+  // 삽입 위치는 파란 점선(.drop-indicator)으로 표시하고, 드롭하면 그 자리로 옮기며
+  // 사이의 패널들은 한 칸씩 밀린다(목록 정렬과 같은 규칙). 세션 없는 빈 패널도 대상이다.
+
+  // 포인터 아래 패널의 삽입 지점. 결과가 제자리인 위치는 null 로 걸러 표시도 하지 않는다.
+  paneDropTarget(x, y, srcIdx) {
+    const n = App.splitPaneCount();
+    const vertical = App.splitCols() > 1; // 열이 둘 이상이면 좌우 삽입(세로 점선)
+    for (let i = 0; i < n; i++) {
+      const r = document.getElementById('term-pane-' + i).getBoundingClientRect();
+      if (x < r.left || x >= r.right || y < r.top || y >= r.bottom) continue;
+      const before = vertical ? x < r.left + r.width / 2 : y < r.top + r.height / 2;
+      const insert = before ? i : i + 1;
+      if (insert === srcIdx || insert === srcIdx + 1) return null;
+      return { insert, before, rect: r, vertical };
+    }
+    return null;
+  },
+
+  startPaneDrag(paneIdx, e) {
+    if (e.button !== 0 || !App.isSplit()) return;
+    const bar = document.getElementById('term-pane-' + paneIdx).querySelector('.pane-preset-bar');
+    const startX = e.clientX, startY = e.clientY;
+    let dragging = false, indicator = null, drop = null;
+    e.preventDefault(); // 드래그 중 텍스트 선택 방지 (click 은 그대로 발생)
+
+    const move = (ev) => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < 6) return; // 클릭과 구분
+        dragging = true;
+        App.closeSessionSwitchMenus();
+        App.closePanePresetMenus();
+        if (bar) bar.classList.add('dragging');
+        document.body.classList.add('sorting');
+        indicator = document.createElement('div');
+        indicator.className = 'drop-indicator';
+        document.body.appendChild(indicator);
+      }
+      drop = App.paneDropTarget(ev.clientX, ev.clientY, paneIdx);
+      if (!drop) { indicator.style.display = 'none'; return; }
+      const r = drop.rect;
+      indicator.className = 'drop-indicator' + (drop.vertical ? ' vert' : '');
+      indicator.style.display = 'block';
+      if (drop.vertical) {
+        indicator.style.left = (drop.before ? r.left : r.right - 2) + 'px';
+        indicator.style.top = r.top + 'px';
+        indicator.style.height = r.height + 'px';
+        indicator.style.width = '0px';
+      } else {
+        indicator.style.left = r.left + 'px';
+        indicator.style.width = r.width + 'px';
+        indicator.style.top = (drop.before ? r.top : r.bottom - 2) + 'px';
+        indicator.style.height = '0px';
+      }
+    };
+
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      if (!dragging) return;
+      if (bar) bar.classList.remove('dragging');
+      if (indicator) indicator.remove();
+      document.body.classList.remove('sorting');
+      if (drop) App.movePaneSession(paneIdx, drop.insert);
+      // 드래그를 끝낸 mouseup 과 같은 틱의 click 만 삼킨다 — 제목 드롭다운이 열리지 않게
+      const swallow = (ce) => { ce.stopPropagation(); ce.preventDefault(); };
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
+    };
+
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  },
+
+  // from 패널의 배정을 insert 지점으로 옮긴다 (insert = 삽입 전 기준 인덱스)
+  movePaneSession(from, insert) {
+    const s = App.split;
+    const n = App.splitPaneCount();
+    const arr = s.panes.slice(0, n);
+    const [moved] = arr.splice(from, 1);
+    const at = from < insert ? insert - 1 : insert;
+    arr.splice(at, 0, moved);
+    s.panes = arr.concat(s.panes.slice(n));
+    s.focused = at;
+    App.saveSplitState();
+    if (moved) App.activateSession(moved, { noFocus: true }); // renderAll → renderSplit 포함
+    else App.renderSplit();
+    TerminalView.syncLayout();
+  },
+
   // 화면 좌표 아래 패널에 배정된 세션 id (단일 모드·패널 밖·미배정이면 null) — 드롭 대상 판별용
   sessionAtPoint(x, y) {
     if (!App.isSplit()) return null;
@@ -406,6 +496,8 @@ Object.assign(App, {
       label.dataset.sid = sid; // 상태 전이 시 태그만 교체하기 위한 좌표
       if (proj && proj.color) label.style.color = Theme.adjustText(proj.color);
       label.title = [App.sessionLabel(sess), branch && '⎇ ' + branch, sess.cwd].filter(Boolean).join('\n');
+      label.title += '\n(제목 바를 끌어 패널 위치 변경)';
+      label.addEventListener('mousedown', (e) => App.startPaneDrag(i, e));
       label.appendChild(statusTag(sess.status));
       const nameEl = document.createElement('span');
       nameEl.className = 'ppl-name';
@@ -518,12 +610,11 @@ Object.assign(App, {
     App.activateSession(sid);
   },
 
+  // 대상 패널을 createSession 에 넘겨야 한다 — 생략하면 배정 로직이 포커스 패널(다른 패널)의
+  // 세션을 새 세션으로 갈아끼운 뒤 이 자리에도 넣어 같은 세션이 두 패널에 뜬다.
   async createPaneSession(paneIdx, projectId) {
-    const sess = await App.createSession(projectId);
+    const sess = await App.createSession(projectId, { paneIdx });
     if (sess && App.isSplit()) {
-      App.split.panes[paneIdx] = sess.id;
-      App.split.focused = paneIdx;
-      App.saveSplitState();
       App.renderSplit();
       TerminalView.syncLayout();
     }
