@@ -463,8 +463,9 @@ Object.assign(App, {
     homeGroup.className = 'pane-session-group';
     homeGroup.textContent = '일반 터미널';
     menu.appendChild(homeGroup);
-    if (homeSessions.length) homeSessions.forEach(appendSession);
-    else addItem('새 일반 터미널', '홈 디렉토리에서 새 세션 시작', () => App.createPaneSession(paneIdx, null), { empty: true });
+    homeSessions.forEach(appendSession);
+    // 세션이 이미 있어도 그룹 끝에 항상 새 세션 항목을 둔다 — 추가 생성 경로가 사라지지 않게.
+    addItem('+ 새 일반 터미널', '홈 디렉토리에서 새 세션 시작', () => App.createPaneSession(paneIdx, null), { empty: true });
 
     for (const p of App.state.projects) {
       const group = document.createElement('div');
@@ -472,9 +473,8 @@ Object.assign(App, {
       group.textContent = p.name;
       if (p.color) group.style.color = Theme.adjustText(p.color);
       menu.appendChild(group);
-      const mySessions = App.state.sessions.filter((s) => s.projectId === p.id);
-      if (mySessions.length) mySessions.forEach(appendSession);
-      else addItem('새 세션 시작', p.path, () => App.createPaneSession(paneIdx, p.id), { empty: true });
+      App.state.sessions.filter((s) => s.projectId === p.id).forEach(appendSession);
+      addItem('+ 새 세션 시작', p.path, () => App.createPaneSession(paneIdx, p.id), { empty: true });
     }
 
     const footer = document.createElement('button');

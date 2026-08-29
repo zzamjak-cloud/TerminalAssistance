@@ -107,8 +107,10 @@ Object.assign(App, {
     return c ? c.input.value : (App._composerTexts.get(id) || '');
   },
 
+  // 전송 직전 정규화 — 마지막 단어 뒤의 공백·줄바꿈은 모두 잘라낸다.
+  // \s 로 처리해 IME 가 넣는 전각 공백(U+3000)·NBSP 까지 포함시킨다.
   normalizeComposerSubmitText(text) {
-    return String(text || '').replace(/[ \t\r\n]+$/g, '');
+    return String(text || '').replace(/\s+$/g, '');
   },
 
   clearComposerText(sessionId) {
@@ -306,16 +308,20 @@ Object.assign(App, {
     await Promise.all(stale.map((key) => App.clearQueuedPrompts(key.slice(7))));
   },
 
+  // 붙여넣기 처리가 끝난 뒤 Enter 가 도착하도록 두는 간격(ms)
+  SUBMIT_ENTER_DELAY_MS: 120,
+
   // 세션 하나에 프롬프트 전달 + 즉시 실행. paste 경로로 bracketed paste를 유지한다.
   deliverDraft(sessionId, text) {
     const submitText = App.normalizeComposerSubmitText(text);
     if (!submitText.trim() || !TerminalView.views.has(sessionId)) return;
     TerminalView.paste(sessionId, submitText);
-    const isMultiline = /\r|\n/.test(submitText);
-    const isCodex = /\bCodex\b/i.test(TerminalView.screenText(sessionId, 999));
-    // Codex TUI는 긴 줄바꿈 입력에서 plan 오버레이가 뜨면 입력만 남기고 대기할 수 있다.
-    // Esc로 오버레이를 닫은 뒤 Enter를 보내 전송 버튼의 "즉시 실행" 의미를 유지한다.
-    ta.write(sessionId, isMultiline && isCodex ? '\x1b\r' : '\r');
+    // Enter 는 붙여넣기와 분리된 별도 write 로 보낸다.
+    // - ESC+CR 을 한 번에 쓰면 TUI(crossterm)가 Alt+Enter 로 읽어 줄바꿈만 삽입하고 대기한다.
+    // - Codex/Claude TUI 는 붙여넣기 직후 도착한 Enter 를 붙여넣기의 일부로 삼키므로 한 틱 늦춘다.
+    setTimeout(() => {
+      if (TerminalView.views.has(sessionId)) ta.write(sessionId, '\r');
+    }, App.SUBMIT_ENTER_DELAY_MS);
   },
 
   showComposerFanout(sessionId) {
