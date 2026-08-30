@@ -456,7 +456,7 @@ const TerminalView = {
       + '|diff|patch|md|markdown|txt|log|csv|lock|env|gitignore'
       + '|png|jpe?g|gif|bmp|webp|ico|avif|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|aac|flac)';
     return new RegExp(
-      `(?:[A-Za-z]:[\\\\/]|\\\\\\\\|\\.{1,2}[\\\\/])?${seg}+(?:[\\\\/]${seg}+)+(?::\\d+(?::\\d+)?)?` +
+      `(?:[A-Za-z]:[\\\\/]|\\\\\\\\|\\.{1,2}[\\\\/]|[\\\\/])?${seg}+(?:[\\\\/]${seg}+)+(?::\\d+(?::\\d+)?)?` +
       `|${seg}+\\.${exts}(?!\\.?[\\p{L}\\p{N}])(?::\\d+(?::\\d+)?)?` +
       `|${seg}+\\.[A-Za-z][A-Za-z0-9]{0,9}:\\d+(?::\\d+)?`,
       'giu'
@@ -473,39 +473,122 @@ const TerminalView = {
     };
   },
 
-  // 물리 줄이 아니라 래핑을 잇댄 논리 줄 전체에서 경로를 찾는다 (긴 경로가 줄바꿈돼도 인식).
-  // 와이드 문자(한글)는 셀 2칸을 차지해 문자열 인덱스 ≠ 열 이므로,
-  // 코드유닛마다 (행, 열) 좌표를 기록해 정확한 버퍼 범위로 되돌린다.
-  _computeFileLinks(term, sessionId, lineNo) {
-    const buf = term.buffer && term.buffer.active;
-    if (!buf) return null;
-    const row0 = lineNo - 1;
-    let start = row0;
+  // 한 셀의 문자. 폭 0(와이드 문자의 뒷칸)은 '' , 빈 셀은 ' ' 로 돌려준다.
+  _cellChar(line, x, cell) {
+    const c = cell ? line.getCell(x, cell) : line.getCell(x);
+    if (!c) return '';
+    if ((typeof c.getWidth === 'function' ? c.getWidth() : 1) === 0) return '';
+    const s = (c.getChars && c.getChars()) || '';
+    return s === '' ? ' ' : s;
+  },
+
+  // 내용이 있는 마지막 열 (없으면 -1)
+  _lastContentCol(line, cell) {
+    for (let x = line.length - 1; x >= 0; x--) {
+      const ch = this._cellChar(line, x, cell);
+      if (ch && ch.trim()) return x;
+    }
+    return -1;
+  },
+
+  // 터미널 래핑이 아니라 TUI(Claude Code 등)가 스스로 끊어 출력한 긴 경로를 잇기 위한 판정.
+  // 앞 줄이 화면 폭 가까이에서 '/' 로 끝나고 다음 줄이 들여쓰기 뒤 경로 문자로 시작하면
+  // 이어진 경로로 보고, 다음 줄에서 건너뛸 셀 수(들여쓰기 폭)를 돌려준다. 아니면 -1.
+  _softJoinSkip(term, buf, aRow, bRow, cell) {
+    const a = buf.getLine(aRow);
+    const b = buf.getLine(bRow);
+    if (!a || !b) return -1;
+    const lastCol = this._lastContentCol(a, cell);
+    // 폭이 모자라 끊긴 줄만 대상 — 짧게 끝난 줄은 진짜 줄바꿈이다
+    if (lastCol < 0 || lastCol + 1 < Math.max(20, Math.floor(term.cols * 0.5))) return -1;
+    let tail = '';
+    for (let x = Math.max(0, lastCol - 128); x <= lastCol; x++) tail += this._cellChar(a, x, cell);
+    const m = tail.match(/[\p{L}\p{N}._$@%+~=:\\/-]+$/u);
+    if (!m || m[0].length < 4 || !/[\\/]$/.test(m[0]) || !/[\p{L}\p{N}]/u.test(m[0])) return -1;
+
+    let x = 0;
+    let indented = false;
+    while (x < b.length) {
+      const ch = this._cellChar(b, x, cell);
+      if (ch === '') { x++; continue; }
+      if (ch === ' ') { indented = true; x++; continue; }
+      break;
+    }
+    if (!indented || x >= b.length) return -1;
+    if ('│┃┆┊'.indexOf(this._cellChar(b, x, cell)) >= 0) { // 세로 장식선 한 칸은 건너뛴다
+      x++;
+      while (x < b.length) {
+        const ch = this._cellChar(b, x, cell);
+        if (ch === '' || ch === ' ') { x++; continue; }
+        break;
+      }
+    }
+    if (x >= b.length || !/[\p{L}\p{N}._$@%+~=\\/-]/u.test(this._cellChar(b, x, cell))) return -1;
+    return x;
+  },
+
+  // row 가 속한 래핑 논리 줄의 [첫 행, 끝 행]
+  _wrappedRange(buf, row) {
+    let start = row;
     while (start > 0) {
       const line = buf.getLine(start);
       if (!line || !line.isWrapped) break;
       start--;
     }
-    let end = row0;
+    let end = row;
     while (end + 1 < buf.length) {
       const line = buf.getLine(end + 1);
       if (!line || !line.isWrapped) break;
       end++;
     }
-    if (end - start > 40) return null; // 비정상적으로 긴 논리 줄은 비용 때문에 건너뛴다
+    return { start, end, skip: 0 };
+  },
+
+  // 물리 줄이 아니라 래핑을 잇댄 논리 줄 전체에서 경로를 찾는다 (긴 경로가 줄바꿈돼도 인식).
+  // TUI 가 직접 끊어 출력한 경로(줄 끝 '/' + 다음 줄 들여쓰기)도 한 덩어리로 잇는다.
+  // 와이드 문자(한글)는 셀 2칸을 차지해 문자열 인덱스 ≠ 열 이므로,
+  // 코드유닛마다 (행, 열) 좌표를 기록해 정확한 버퍼 범위로 되돌린다.
+  _computeFileLinks(term, sessionId, lineNo) {
+    const buf = term.buffer && term.buffer.active;
+    if (!buf) return null;
+    const cell = typeof buf.getNullCell === 'function' ? buf.getNullCell() : null;
+    const groups = [this._wrappedRange(buf, lineNo - 1)];
+    while (groups.length < 5) { // 아래쪽으로 이어붙이기
+      const last = groups[groups.length - 1];
+      const next = last.end + 1;
+      if (next >= buf.length) break;
+      const skip = this._softJoinSkip(term, buf, last.end, next, cell);
+      if (skip < 0) break;
+      const g = this._wrappedRange(buf, next);
+      g.skip = skip;
+      groups.push(g);
+    }
+    while (groups.length < 5) { // 위쪽으로 이어붙이기
+      const first = groups[0];
+      const prev = first.start - 1;
+      if (prev < 0) break;
+      const skip = this._softJoinSkip(term, buf, prev, first.start, cell);
+      if (skip < 0) break;
+      first.skip = skip;
+      groups.unshift(this._wrappedRange(buf, prev));
+    }
+    // 비정상적으로 긴 논리 줄은 비용 때문에 건너뛴다
+    if (groups[groups.length - 1].end - groups[0].start > 40) return null;
     let text = '';
     const map = []; // text 코드유닛 인덱스 → { y, x } (0-based 버퍼 좌표)
-    const cell = typeof buf.getNullCell === 'function' ? buf.getNullCell() : null;
-    for (let y = start; y <= end; y++) {
-      const line = buf.getLine(y);
-      if (!line) break;
-      for (let x = 0; x < line.length; x++) {
-        const c = cell ? line.getCell(x, cell) : line.getCell(x);
-        if (!c) continue;
-        if ((typeof c.getWidth === 'function' ? c.getWidth() : 1) === 0) continue;
-        const chars = (c.getChars && c.getChars()) || ' ';
-        for (let k = 0; k < chars.length; k++) map.push({ y, x });
-        text += chars;
+    for (const g of groups) {
+      for (let y = g.start; y <= g.end; y++) {
+        const line = buf.getLine(y);
+        if (!line) break;
+        // 이어붙인 줄의 들여쓰기와 줄 끝 여백은 빼야 경로가 끊기지 않는다
+        const from = y === g.start ? g.skip : 0;
+        const to = y === g.end ? this._lastContentCol(line, cell) : line.length - 1;
+        for (let x = from; x <= to; x++) {
+          const chars = this._cellChar(line, x, cell);
+          if (!chars) continue;
+          for (let k = 0; k < chars.length; k++) map.push({ y, x });
+          text += chars;
+        }
       }
     }
     const links = [];
@@ -516,7 +599,9 @@ const TerminalView = {
       const matched = m[0].replace(/[.,;'"”’]+$/, ''); // 문장 끝 문장부호 꼬리 제거
       if (matched.length < 3 || !/\p{L}/u.test(matched)) continue;
       // 직전에 공백 없이 URL 스킴(://)이 이어지면 URL 의 일부 — WebLinksAddon 에 맡긴다
-      const before = text.slice(Math.max(0, m.index - 64), m.index);
+      // 매치가 '/' 로 시작하면 그 슬래시까지 붙여서 본다 — https:/ + / 처럼 스킴이 쪼개지지 않게
+      const before = text.slice(Math.max(0, m.index - 64), m.index)
+        + (/^[\\/]/.test(matched) ? matched[0] : '');
       if (/[A-Za-z][\w+.-]*:\/\/\S*$/.test(before)) continue;
       const startIdx = m.index;
       const endIdx = m.index + matched.length - 1;
