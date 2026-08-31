@@ -463,6 +463,15 @@ const TerminalView = {
     );
   })(),
 
+  // 터미널 링크(본문 URL·OSC 8 하이퍼링크)를 시스템 기본 브라우저로 연다.
+  // http/https 만 허용 — 웹뷰가 임의 스킴 실행기를 여는 경로를 만들지 않는다.
+  openExternalUrl(url) {
+    let ok = false;
+    try { ok = ['http:', 'https:'].includes(new URL(String(url)).protocol); } catch (_) {}
+    if (!ok) return;
+    ta.openUrl(String(url)).catch((err) => console.warn('링크 열기 실패:', err));
+  },
+
   fileLinkProvider(term, sessionId) {
     return {
       provideLinks: (lineNo, cb) => {
@@ -630,13 +639,15 @@ const TerminalView = {
       fontFamily: this.fontFamilyOption(),
       theme: Theme.termTheme(),
       scrollback: 5000,
-      cursorBlink: true
+      cursorBlink: true,
+      // OSC 8 하이퍼링크(Codex 등이 쓰는 이스케이프)는 WebLinksAddon 이 아니라 xterm 내장
+      // OscLinkProvider 가 처리한다. linkHandler 를 주지 않으면 confirm() + window.open()
+      // 폴백으로 떨어져 Tauri 웹뷰에서는 아무것도 열리지 않는다 — 외부 브라우저로 연결한다.
+      linkHandler: { activate: (_ev, uri) => this.openExternalUrl(uri) }
     }, this.readabilityOptions()));
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon.WebLinksAddon((_, url) => {
-      ta.openUrl(url).catch((err) => console.warn('링크 열기 실패:', err));
-    }));
+    term.loadAddon(new WebLinksAddon.WebLinksAddon((_, url) => this.openExternalUrl(url)));
     term.open(holder);
     const richCopyHandler = (ev) => this.copySelectionAsHtml(term, ev);
     holder.addEventListener('copy', richCopyHandler, true);

@@ -725,6 +725,15 @@ const App = {
     el.focus();
   },
 
+  // 활성 세션의 프롬프트 입력창에 경로 삽입 — 입력창이 없거나 잠겨 있으면 터미널로 대체
+  insertPathToActiveInput(path) {
+    const id = App.state.activeId;
+    if (!id) return;
+    const composer = TerminalView.composerForSession(id);
+    if (composer && !composer.input.disabled) App.insertComposerText(composer, id, quotePath(path) + ' ');
+    else TerminalView.paste(id, quotePath(path) + ' ');
+  },
+
   // 화면 좌표 아래의 패널 작성기 (입력창·이미지 스트립 등 작성기 영역 전체)
   composerAtPoint(x, y) {
     const el = document.elementFromPoint(x, y);

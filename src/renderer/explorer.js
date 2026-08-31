@@ -57,9 +57,10 @@ Object.assign(App, {
         if (e.isDir) {
           App._toggleTreeDir(t.selected); // 폴더는 Enter 로도 접기/펼치기
         } else if (App.state.activeId) {
-          // 파일은 활성 터미널의 입력 라인(커서 위치 = 보통 끝)에 경로 삽입.
+          // 파일은 활성 화면의 프롬프트 입력창에, 입력창이 없으면 터미널 입력 라인에 삽입.
           // 포커스는 트리에 남긴다 — 여러 파일을 연달아 Enter 로 넣을 수 있게
-          TerminalView.paste(App.state.activeId, quotePath(e.path) + ' ');
+          App.insertPathToActiveInput(e.path);
+          tree.focus();
         }
         return;
       }
