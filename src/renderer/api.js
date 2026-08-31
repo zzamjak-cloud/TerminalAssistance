@@ -98,6 +98,11 @@
     getMemory: () => invoke('get_memory'),
     // 작업 폴더의 git 브랜치 (없으면 null)
     gitBranch: (cwd) => invoke('git_branch', { cwd }),
+    // 원격 대비 상태 { branch, hasUpstream, behind, ahead, fetchFailed } | null(=git 저장소 아님)
+    // fetch=true 는 네트워크를 타므로 세션 시작 등 명시적 시점에만 쓴다
+    gitRemoteState: (cwd, fetch) => invoke('git_remote_state', { cwd, fetch: !!fetch }),
+    // git pull --ff-only 실행 → { ok, message }
+    gitPull: (cwd) => invoke('git_pull', { cwd }),
     // 코덱스 사용량 { windows: [{windowMinutes, usedPercent, resetsAt}], plan, mtimeMs } | null
     codexUsage: () => invoke('codex_usage'),
     // 초안·예약 저장소. memo:<projectId>는 실제 Markdown 파일로 이전할 구버전 데이터다.

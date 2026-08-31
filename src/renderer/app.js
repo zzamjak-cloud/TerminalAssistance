@@ -18,6 +18,8 @@ const App = {
     images: {},     // sessionId → [{ path, src }] 최근 첨부 이미지
     imageStripFolded: JSON.parse(localStorage.getItem('ta-image-strip-fold') || '{}'), // sessionId → 참조 이미지 접힘 상태
     branches: {},   // sessionId → git 브랜치명 (헤더 표시용, 2초 폴링)
+    gitRemote: {},  // cwd → { branch, hasUpstream, behind, ahead, fetchFailed } | null(=git 저장소 아님)
+                    // 세션 시작 시 1회 fetch 로 채우고, Pull 성공 후 로컬 기준으로만 갱신한다
     drafts: {},     // projectId/queued:<sessionId>, memo:<projectId>는 Markdown 이전 전 구버전 데이터
     projectEmptyId: null // 세션 없는 프로젝트 선택 시 '새 세션 시작' 화면 대상
   },
@@ -141,6 +143,7 @@ const App = {
 
     App.renderAll();
     if (recovered) App.noteRecovery(); // UI 가 그려진 뒤 복구 사실을 알린다
+    App.refreshGitRemoteForSessions(restoring); // 복원된 세션도 시작 시점 1회 fetch
 
     // 자동 업데이트 확인 (백그라운드 — 실패는 조용히 무시)
     setTimeout(() => App.checkUpdate(), 2500);
@@ -352,6 +355,55 @@ const App = {
     App.renderPanePresets(); // 패널 헤더의 ⎇브랜치 갱신 (단일 화면 포함)
   },
 
+  // ── git 원격 상태 (패널 헤더 Pull 버튼) ──
+  // 세션 시작 시 1회만 fetch 한다 (네트워크 호출이라 폴링하지 않는다).
+  // 같은 프로젝트의 세션이 여러 개면 cwd 기준으로 결과를 공유한다.
+  async refreshGitRemote(cwd, opts) {
+    if (!cwd) return;
+    const fetch = !!(opts && opts.fetch);
+    App._gitRemoteInflight = App._gitRemoteInflight || new Map();
+    // 같은 cwd 를 동시에 조회하지 않는다 — fetch 는 느리고 결과도 같다
+    if (App._gitRemoteInflight.has(cwd)) return App._gitRemoteInflight.get(cwd);
+    const job = (async () => {
+      let st = null;
+      try { st = await ta.gitRemoteState(cwd, fetch); } catch (_) { return; } // 조회 실패 = 상태 유지
+      const prev = App.state.gitRemote[cwd];
+      App.state.gitRemote[cwd] = st || null;
+      if (JSON.stringify(prev) !== JSON.stringify(st || null)) App.renderPanePresets();
+    })();
+    App._gitRemoteInflight.set(cwd, job);
+    try { await job; } finally { App._gitRemoteInflight.delete(cwd); }
+  },
+
+  // 세션 시작(신규 생성 · 앱 시작 시 복원) 시점의 최신 상태 확인
+  refreshGitRemoteForSessions(sessions) {
+    const seen = new Set();
+    for (const s of sessions) {
+      if (!s || !s.cwd || seen.has(s.cwd)) continue;
+      seen.add(s.cwd);
+      void App.refreshGitRemote(s.cwd, { fetch: true });
+    }
+  },
+
+  // Pull 버튼 클릭 — 터미널에 명령을 흘리지 않고 백그라운드로 실행한 뒤 결과를 토스트로 알린다
+  async runGitPull(cwd) {
+    if (!cwd || App._gitPulling === cwd) return;
+    App._gitPulling = cwd;
+    App.renderPanePresets(); // 진행 중 표시
+    try {
+      const r = await ta.gitPull(cwd);
+      App.showToast((r && r.ok ? '⬇ Pull 완료 — ' : '⚠ Pull 실패 — ') + ((r && r.message) || ''));
+    } catch (e) {
+      App.showToast('⚠ Pull 실패 — ' + e);
+    } finally {
+      App._gitPulling = null;
+    }
+    // pull 직후는 이미 최신 원격 정보를 갖고 있으므로 fetch 없이 카운트만 다시 센다
+    await App.refreshGitRemote(cwd, { fetch: false });
+    App.refreshBranch();
+    App.renderPanePresets();
+  },
+
   // ── 코덱스 남은 사용량 (상단바 표시) ──
   // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 최근 12시간 내 기록이 있을 때만 표시.
   async pollCodexUsage() {
@@ -510,6 +562,7 @@ const App = {
     try {
       const info = await ta.createSession(projectId);
       App.state.sessions.push(info);
+      App.refreshGitRemoteForSessions([info]); // 세션 시작 시 1회 fetch → Pull 버튼 상태 결정
       TerminalView.create(info, App.state.settings.fontSize);
       const targetPane = opts && Number.isInteger(opts.paneIdx) ? opts.paneIdx : -1;
       if (App.isSplit() && targetPane >= 0 && targetPane < App.splitPaneCount()) {

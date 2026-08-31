@@ -469,6 +469,32 @@ button:disabled:hover { border-color: var(--border); }
   white-space: nowrap;
 }
 .pane-session-add:hover { color: var(--fg); background: var(--bg-hover-hi); }
+/* Pull 버튼 — 프리셋 드롭다운 왼쪽. 배지가 버튼 밖으로 나가야 하므로 wrap 이 좌표계를 잡는다 */
+.pane-pull { position: relative; flex: none; margin-left: auto; }
+/* Pull 이 있으면 우측 정렬은 Pull 이 맡고, 프리셋은 바로 옆에 붙는다 */
+.pane-pull + .pane-preset-dd { margin-left: 0; }
+.pane-pull-btn {
+  padding: 2px 10px; font-size: 11px; border-radius: 12px; font-weight: 700;
+  background: var(--bg); border-color: var(--border); color: var(--fg-dim);
+  white-space: nowrap;
+}
+/* 받을 커밋이 있을 때만 초록으로 살아난다 (최신 상태면 비활성 회색) */
+.pane-pull-btn.has-updates {
+  background: #2f9e4f; border-color: #268241; color: #fff;
+}
+.pane-pull-btn.has-updates:hover { background: #37b85c; border-color: #37b85c; }
+.pane-pull-btn:disabled { opacity: .5; cursor: default; }
+/* 우측 상단 원형 배지 — pull 받아야 할 커밋 수 */
+.pane-pull-badge {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+  background: #e0453a; color: #fff;
+  font-size: 9px; font-weight: 800; line-height: 1;
+  border: 1px solid var(--bg-panel);
+  pointer-events: none;
+}
 /* 프리셋 드롭다운 — 헤더 우측 정렬, 오렌지 배경으로 눈에 띄게 */
 .pane-preset-dd { position: relative; flex: none; margin-left: auto; }
 .pane-preset-toggle {

@@ -909,6 +909,8 @@ fn main() {
             plans::delete_memo_doc,
             explorer::list_dir,
             explorer::git_status,
+            explorer::git_remote_state,
+            explorer::git_pull,
             explorer::read_text_file,
             explorer::resolve_project_file,
             codex::list_codex_sessions,

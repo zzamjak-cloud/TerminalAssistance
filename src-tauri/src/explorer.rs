@@ -118,6 +118,9 @@ pub async fn resolve_project_file(cwd: String, rel: String) -> Option<String> {
 fn git_cmd(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(cwd).args(args);
+    // 자격증명 입력 프롬프트로 프로세스가 멈추지 않게 한다 (fetch/pull 이 네트워크를 탄다)
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -179,6 +182,147 @@ pub async fn git_status(cwd: String) -> Option<GitStatus> {
         files.insert(path, status.to_string());
     }
     Some(GitStatus { root, files })
+}
+
+/// 원격 대비 로컬 브랜치 상태 (헤더 Pull 버튼 표시용)
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRemoteState {
+    /// 현재 브랜치명 (detached HEAD 면 빈 문자열)
+    pub branch: String,
+    /// 업스트림 추적 브랜치가 설정되어 있는지 (없으면 pull 대상이 없다)
+    pub has_upstream: bool,
+    /// 원격에만 있는 커밋 수 = pull 로 받아야 할 개수
+    pub behind: u32,
+    /// 로컬에만 있는 커밋 수 (툴팁 참고용)
+    pub ahead: u32,
+    /// fetch 를 시도했고 실패했는지 (오프라인·인증 필요 등)
+    pub fetch_failed: bool,
+}
+
+/// git 저장소 여부 + 원격과의 커밋 격차를 센다.
+/// 저장소가 아니거나 git 이 없으면 None — 프론트는 Pull 버튼 자체를 감춘다.
+/// `fetch=true` 면 네트워크를 타므로 세션 시작 등 명시적 시점에만 켠다.
+#[tauri::command]
+pub async fn git_remote_state(cwd: String, fetch: bool) -> Option<GitRemoteState> {
+    // git 호출은 블로킹이라 async 런타임 스레드를 잡지 않도록 분리한다
+    tauri::async_runtime::spawn_blocking(move || {
+        // 저장소 여부 먼저 판정 — 아니면 버튼 비표시
+        git_cmd(&cwd, &["rev-parse", "--is-inside-work-tree"])?;
+        let mut fetch_failed = false;
+        if fetch {
+            // 실패해도(오프라인·인증 필요) 로컬에 이미 받아둔 기준으로 카운트는 계속한다
+            fetch_failed = git_cmd(&cwd, &["fetch", "--quiet", "--no-tags"]).is_none();
+        }
+        let branch = git_cmd(&cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+            .unwrap_or_default();
+        let branch = if branch == "HEAD" { String::new() } else { branch };
+        // "<behind>	<ahead>" — 업스트림이 없으면 명령이 실패하므로 그대로 판정에 쓴다
+        let (has_upstream, behind, ahead) =
+            match git_cmd(&cwd, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]) {
+                Some(o) => {
+                    let s = String::from_utf8_lossy(&o);
+                    let mut it = s.split_whitespace();
+                    let b = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                    let a = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                    (true, b, a)
+                }
+                None => (false, 0, 0),
+            };
+        Some(GitRemoteState {
+            branch,
+            has_upstream,
+            behind,
+            ahead,
+            fetch_failed,
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Pull 실행 결과 (토스트 문구용)
+#[derive(Serialize)]
+pub struct GitPullResult {
+    pub ok: bool,
+    pub message: String,
+}
+
+/// `git pull --ff-only` 실행. 터미널 세션에 명령을 흘려보내지 않으므로
+/// AI 에이전트가 돌고 있는 패널에서도 프롬프트를 방해하지 않는다.
+#[tauri::command]
+pub async fn git_pull(cwd: String) -> GitPullResult {
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = Command::new("git");
+        // advice.* 안내문을 끄면 토스트에 실패 원인 한 줄만 남는다
+        cmd.arg("-C")
+            .arg(&cwd)
+            .args(["-c", "advice.diverging=false", "pull", "--ff-only"]);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        cmd.env("GCM_INTERACTIVE", "never");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        cmd.output()
+    })
+    .await;
+    let out = match res {
+        Ok(Ok(o)) => o,
+        _ => {
+            return GitPullResult {
+                ok: false,
+                message: "git 실행에 실패했습니다".into(),
+            }
+        }
+    };
+    let mut text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if text.is_empty() {
+        text = err;
+    } else if !err.is_empty() {
+        text = format!("{}
+{}", text, err);
+    }
+    // 토스트 한 줄용 — diffstat 수십 줄 대신 요약/오류 줄만 골라낸다
+    let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let keep: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| {
+            let low = l.to_lowercase();
+            low.starts_with("updating")
+                || low.starts_with("fast-forward")
+                || low.starts_with("already up to date")
+                || low.contains("files changed")
+                || low.contains("file changed")
+                || low.starts_with("error")
+                || low.starts_with("fatal")
+                || low.starts_with("conflict")
+        })
+        .collect();
+    // 아무것도 못 골랐으면 마지막 2줄로 대체 (예상 못 한 메시지도 보이게)
+    let picked = if keep.is_empty() {
+        lines[lines.len().saturating_sub(2)..].to_vec()
+    } else {
+        keep
+    };
+    let mut message = picked.join(" / ");
+    // 토스트 한 줄에 들어가도록 길이를 제한한다
+    if message.chars().count() > 220 {
+        message = message.chars().take(220).collect::<String>() + "…";
+    }
+    GitPullResult {
+        ok: out.status.success(),
+        message: if message.is_empty() {
+            "완료".into()
+        } else {
+            message
+        },
+    }
 }
 
 /// 미리보기용 텍스트 파일 읽기. 바이너리(NUL 포함)면 오류 — 프론트가 '미지원' 안내로 처리.

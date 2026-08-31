@@ -478,7 +478,12 @@ Object.assign(App, {
       const switchSig = App.state.projects.map((p) => `${p.id}:${p.name}:${p.color || ''}`)
         .concat(App.state.sessions.map((s) => `${s.id}:${s.projectId || ''}:${s.title}:${s.status}`))
         .join(',');
+      const git = App.state.gitRemote[sess.cwd];
+      // Pull 버튼 상태(저장소 여부·behind 개수·진행 중)도 서명에 넣어야 fetch 결과가 반영된다
+      const gitSig = git === undefined ? '?' : git === null ? 'none'
+        : [git.hasUpstream ? 1 : 0, git.behind, git.ahead, git.fetchFailed ? 1 : 0].join(':');
       const sig = [sid, App.sessionLabel(sess), branch, (proj && proj.color) || '', Theme.state.id, switchSig,
+        gitSig, App._gitPulling === sess.cwd ? 'pulling' : '',
         globals.concat(projs).map((p) => p.id + ':' + p.label + ':' + p.command).join(',')].join('|');
       if (bar && bar.dataset.sig === sig) continue;
       if (!bar) {
@@ -516,8 +521,10 @@ Object.assign(App, {
       }
       bar.appendChild(label);
 
-      // ── 프리셋 드롭다운 (전역 + 프로젝트 전용, 우측 정렬) ──
+      // ── Pull 버튼 (git 저장소일 때만) + 프리셋 드롭다운 (우측 정렬) ──
       bar.appendChild(App.buildSessionSwitchMenu(i, sid));
+      const pull = App.buildPullButton(sess.cwd, git);
+      if (pull) bar.appendChild(pull);
       bar.appendChild(App.buildPanePresetMenu(globals, projs, sid, sess.projectId));
     }
     if (layoutChanged) TerminalView.fitActive(); // 바 유무가 holder 높이를 바꾼다
@@ -619,6 +626,46 @@ Object.assign(App, {
       TerminalView.syncLayout();
     }
     return sess;
+  },
+
+  // Pull 버튼 — git 저장소인 세션에서만 렌더한다 (저장소가 아니면 null 을 돌려 아예 감춘다).
+  // 세션 시작 시 fetch 로 받아둔 상태를 그대로 쓴다: 받을 커밋이 없으면 비활성,
+  // 있으면 활성 + 우측 상단 원형 배지에 개수를 표시한다.
+  buildPullButton(cwd, git) {
+    if (!git) return null; // undefined(조회 전) / null(git 저장소 아님) 모두 비표시
+    const wrap = document.createElement('span');
+    wrap.className = 'pane-pull';
+
+    const btn = document.createElement('button');
+    btn.className = 'pane-pull-btn';
+    const pulling = App._gitPulling === cwd;
+    const behind = git.behind || 0;
+    btn.textContent = pulling ? 'Pull…' : 'Pull';
+    const disabled = pulling || !git.hasUpstream || behind === 0;
+    btn.disabled = disabled;
+    if (behind > 0 && git.hasUpstream) btn.classList.add('has-updates');
+
+    if (!git.hasUpstream) {
+      btn.title = '업스트림 브랜치가 없어 pull 대상이 없습니다' + (git.branch ? ` (${git.branch})` : '');
+    } else if (behind > 0) {
+      btn.title = `원격에 새 커밋 ${behind}개 — 클릭하면 git pull --ff-only 실행`
+        + (git.ahead ? `
+(로컬 앞선 커밋 ${git.ahead}개)` : '');
+    } else {
+      btn.title = git.fetchFailed
+        ? '원격 확인에 실패했습니다 (오프라인·인증) — 마지막으로 받아둔 기준으로는 최신입니다'
+        : '이미 최신 상태입니다';
+    }
+    btn.onclick = () => App.runGitPull(cwd);
+    wrap.appendChild(btn);
+
+    if (behind > 0 && git.hasUpstream) {
+      const badge = document.createElement('span');
+      badge.className = 'pane-pull-badge';
+      badge.textContent = behind > 99 ? '99+' : String(behind);
+      wrap.appendChild(badge);
+    }
+    return wrap;
   },
 
   // 프리셋 드롭다운 (패널 헤더용) — 전역(파랑 배경, 맨앞) + 프로젝트 전용 + '+ 프리셋 추가'.
