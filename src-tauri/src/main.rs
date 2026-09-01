@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod claude;
+mod claude_usage;
 mod codex;
 mod explorer;
 mod hooks;
@@ -921,6 +922,7 @@ fn main() {
             codex::list_codex_sessions,
             codex::codex_session_messages,
             codex::codex_usage,
+            claude_usage::claude_usage,
             pty::list_shells,
             hooks::hooks_status,
             hooks::claude_session_of,

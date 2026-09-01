@@ -115,6 +115,8 @@
     gitPull: (cwd) => invoke('git_pull', { cwd }),
     // 코덱스 사용량 { windows: [{windowMinutes, usedPercent, resetsAt}], plan, mtimeMs } | null
     codexUsage: () => invoke('codex_usage'),
+    // Claude Code 사용량 — 코덱스와 같은 모양 { windows, plan, mtimeMs } | null
+    claudeUsage: () => invoke('claude_usage'),
     // 초안·예약 저장소. memo:<projectId>는 실제 Markdown 파일로 이전할 구버전 데이터다.
     setDrafts: (key, drafts) => invoke('set_drafts', { key, drafts }),
 

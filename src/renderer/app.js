@@ -104,6 +104,9 @@ const App = {
     // 코덱스 사용량 폴링 (10초 — 파일 꼬리 읽기라 가볍지만 데이터 갱신 주기도 느리다)
     setInterval(() => App.pollCodexUsage(), 10000);
     App.pollCodexUsage();
+    // Claude Code 사용량 폴링 (30초 — 실제 API 호출은 Rust 쪽에서 1분 캐시로 묶인다)
+    setInterval(() => App.pollClaudeUsage(), 30000);
+    App.pollClaudeUsage();
     if (localStorage.getItem('ta-prompt-panel') === '1') {
       document.getElementById('prompt-panel').classList.remove('hidden');
     }
@@ -462,12 +465,12 @@ const App = {
     App.renderPanePresets();
   },
 
-  // ── 코덱스 남은 사용량 (상단바 표시) ──
-  // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 최근 12시간 내 기록이 있을 때만 표시.
-  async pollCodexUsage() {
-    const el = document.getElementById('panel-codex');
-    let u = null;
-    try { u = await ta.codexUsage(); } catch (_) { /* 조회 실패 = 미표시 */ }
+  // ── AI 도구 남은 사용량 (상단바 표시) ──
+  // 코덱스·Claude Code 각각 최근 사용 흔적이 있을 때만 표시한다. 조회 실패는 미표시.
+  // u 형태: { windows: [{windowMinutes, usedPercent, resetsAt}], plan, mtimeMs }
+  renderUsageGauge(elId, name, u) {
+    const el = document.getElementById(elId);
+    if (!el) return;
     if (!u || !u.windows.length || Date.now() - u.mtimeMs > 12 * 3600 * 1000) {
       el.className = 'hidden';
       return;
@@ -480,12 +483,27 @@ const App = {
     else if (worstLeft <= 25) cls = 'warn';
     else if (worstLeft <= 50) cls = 'mid';
     el.className = 'gauge ' + cls;
-    el.textContent = 'Codex ' + parts.join('·');
-    el.title = '남은 사용량:\n' + u.windows.map((w) =>
+    el.textContent = name + ' ' + parts.join('·');
+    el.title = name + ' 남은 사용량:\n' + u.windows.map((w) =>
       `${label(w.windowMinutes)} ${(100 - w.usedPercent).toFixed(1)}% 남음` +
       (w.resetsAt ? ` (리셋 ${new Date(w.resetsAt * 1000).toLocaleString()})` : '')
     ).join('\n') + (u.plan ? `\n플랜: ${u.plan}` : '') +
       `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleTimeString()}`;
+  },
+
+  // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 최근 12시간 내 기록이 있을 때만 표시.
+  async pollCodexUsage() {
+    let u = null;
+    try { u = await ta.codexUsage(); } catch (_) { /* 조회 실패 = 미표시 */ }
+    App.renderUsageGauge('panel-codex', 'Codex', u);
+  },
+
+  // Claude Code 는 사용률을 로컬에 남기지 않아 Rust 쪽에서 Anthropic 사용량 API 를 조회한다.
+  // 최근 12시간 내 Claude Code 사용 흔적이 없거나 토큰이 만료면 null → 미표시.
+  async pollClaudeUsage() {
+    let u = null;
+    try { u = await ta.claudeUsage(); } catch (_) { /* 조회 실패 = 미표시 */ }
+    App.renderUsageGauge('panel-claude', 'Claude', u);
   },
 
   // ── 시스템 메모리 폴링 (상단바 표시) ──

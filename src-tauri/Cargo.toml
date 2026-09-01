@@ -1,6 +1,6 @@
 [package]
 name = "terminal-assistance"
-version = "0.13.1"
+version = "0.14.0"
 description = "AI 시대의 멀티 프로젝트 터미널 워크스페이스"
 authors = ["zzamjak-cloud"]
 license = "GPL-3.0-only"
@@ -20,6 +20,8 @@ tauri-plugin-single-instance = "2"
 portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Anthropic 사용량 API 조회용 최소 HTTP 클라이언트 (rustls, 시스템 OpenSSL 불필요)
+ureq = "2"
 # ~/.codex/config.toml 병합 설치용 — 사용자 설정의 포맷·주석을 보존한다
 toml_edit = "0.22"
 # 글꼴 파일(ttf/otf/ttc)에서 패밀리 이름 추출 — 설정 팝업 '파일에서 선택'
