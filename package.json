@@ -9,6 +9,7 @@
     "build": "tauri build",
     "tauri": "tauri",
     "vendor": "node scripts/vendor.js",
+    "test": "node scripts/run-tests.js",
     "sign:mac": "bash scripts/macos-selfsign.sh all",
     "build:mac": "bash scripts/macos-selfsign.sh build"
   },
