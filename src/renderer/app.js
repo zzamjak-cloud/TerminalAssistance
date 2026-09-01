@@ -260,17 +260,68 @@ const App = {
       App.toggleExplorer();
       return true;
     }
+    // J: 현재 패널의 터미널 ↔ 프롬프트 입력창 커서 토글
+    if (key === 'j') {
+      ev.preventDefault();
+      App.toggleTerminalPromptFocus();
+      return true;
+    }
     return false;
   },
 
+  // 프롬프트 입력창(textarea) 안에서만 유효한 단축키 —
+  // 이 입력창의 keydown 은 xterm 과 섞이지 않게 stopPropagation 되므로
+  // 전역 핸들러가 보지 못한다. 여기서 화이트리스트로 직접 처리한다.
   handleComposerShortcut(ev) {
     if (ev.isComposing || ev.keyCode === 229) return false;
     const mod = App.state.platform === 'macos' ? ev.metaKey : ev.ctrlKey;
     if (!mod || ev.altKey || ev.shiftKey) return false;
-    if (ev.key.toLowerCase() !== 'p') return false;
+    const key = ev.key.toLowerCase();
+    if (key !== 'p' && key !== 'j') return false;
     ev.preventDefault();
     ev.stopPropagation();
-    App.togglePromptPanel();
+    if (key === 'p') App.togglePromptPanel();
+    else App.toggleTerminalPromptFocus();
+    return true;
+  },
+
+  // ── 터미널 ↔ 프롬프트 입력창 커서 토글 (Cmd/Ctrl+J) ──
+  // 대상은 항상 "현재 포커스된 패널"의 세션이다 (분할 모드의 패널 간 이동은 Tab 이 담당).
+  // 이 단축키의 본래 용도는 "터미널에 실수로 프롬프트를 치다가 아차 싶을 때" 라서,
+  // 터미널에서 넘어올 때는 커서만 옮기지 않고 치던 내용을 잘라내 입력창으로 가져온다.
+  // (잘라내기는 추적이 확실할 때만 — 확신이 없으면 터미널 내용을 건드리지 않고 커서만 옮긴다)
+  // 프롬프트 입력창에 있으면 터미널로 되돌리고, 그 밖(사이드바·탐색기 등)에 있으면
+  // 입력창으로 들여보낸다. 세션이 죽어 입력창이 잠긴 경우에만 터미널로 보낸다.
+  toggleTerminalPromptFocus() {
+    const id = (App.isSplit() ? App.paneSessionId(App.split.focused) : null) || App.state.activeId;
+    if (!id || !TerminalView.views.has(id)) return false;
+    const c = TerminalView.composerForSession(id);
+    const usable = !!(c && !c.input.disabled);
+    const ae = document.activeElement;
+    if (usable && ae === c.input) {
+      TerminalView.focusTerminal(id);
+      return true;
+    }
+    if (!usable) {
+      TerminalView.focusTerminal(id);
+      return true;
+    }
+    // 터미널 본문(xterm 헬퍼 textarea)에서 넘어올 때만 잘라내기 — 사이드바 등에서 누른
+    // Cmd/Ctrl+J 가 터미널 입력 라인을 지우면 의도와 다르다.
+    const fromTerminal = !!(ae && ae.classList && ae.classList.contains('xterm-helper-textarea'));
+    const cut = fromTerminal ? TerminalView.cutTypedLine(id) : '';
+    if (cut) {
+      App.insertComposerText(c, id, cut); // 커서 위치 삽입 + 입력창 포커스
+      App.showToast('✂ 터미널에 치던 내용을 프롬프트 입력창으로 옮겼습니다', 4000);
+      return true;
+    }
+    c.input.focus();
+    const why = fromTerminal ? TerminalView.cutFailReason(id) : '';
+    if (why === 'invalid') {
+      App.showToast('커서만 옮겼습니다 — 방향키·Tab 등으로 입력 라인을 따라갈 수 없어 터미널 내용은 그대로 뒀습니다', 5000);
+    } else if (why === 'mismatch') {
+      App.showToast('커서만 옮겼습니다 — 터미널 화면과 추적 내용이 달라 안전하게 그대로 뒀습니다', 5000);
+    }
     return true;
   },
 
@@ -890,7 +941,7 @@ const App = {
     const command = await App.expandPresetCommand(preset.command, undefined, id);
     if (command === null) return;
     TerminalView.paste(id, command);
-    if (execute) ta.write(id, '\r');
+    if (execute) { ta.write(id, '\r'); TerminalView.resetTypedLine(id); }
     // 프리셋 클릭 후에는 작성기가 아니라 터미널에 포커스를 둔다 —
     // /model 처럼 즉시 방향키 선택이 필요한 대화형 명령이 바로 조작 가능해야 한다.
     TerminalView.activate(id, { noFocus: true });
@@ -911,6 +962,7 @@ const App = {
       setTimeout(() => {
         TerminalView.paste(info.id, command);
         ta.write(info.id, '\r');
+        TerminalView.resetTypedLine(info.id);
       }, 600);
     }
   }

@@ -50,6 +50,7 @@ const TerminalView = {
     input.spellcheck = false;
     input.disabled = true;
     input.placeholder = '프롬프트 입력 (Enter 줄바꿈 · Cmd/Ctrl+Enter 전송 · Shift+Enter 예약)';
+    input.title = 'Cmd/Ctrl+J — 터미널에 치던 내용을 잘라 이 입력창으로 (다시 누르면 터미널로)';
     input.setAttribute('aria-label', '터미널 프롬프트 입력');
     const actions = document.createElement('div');
     actions.className = 'pane-prompt-actions';
@@ -194,6 +195,145 @@ const TerminalView = {
   composerForSession(sid) {
     const idx = App.paneIndexForSession(sid);
     return idx >= 0 ? this.composers[idx] || null : null;
+  },
+
+  // ── 터미널 입력 라인 추적 (Cmd/Ctrl+J 잘라내기용) ──
+  // 셸·TUI 의 입력 버퍼는 앱이 읽을 수 없으므로, PTY 로 나가는 사용자 입력을 그대로
+  // 누적해 "지금 입력 라인에 무엇을 쳤는가"를 따라간다. 라인 편집을 정확히 재현할 수
+  // 없는 입력(방향키·Tab 완성·기타 제어문자)이 오면 추적을 포기한다(invalid) —
+  // 잘라내기는 추적이 유효할 때만 하고, 확신이 없으면 커서만 옮긴다.
+  TYPED_LINE_LIMIT: 4000, // 이보다 길어지면 추적 포기 (백스페이스 폭탄 방지)
+
+  noteTypedData(id, data) {
+    const v = this.views.get(id);
+    if (!v || !data) return;
+    // 브래킷 붙여넣기는 감싼 시퀀스를 벗기고 본문만 본다 (붙여넣은 텍스트도 입력 라인의 일부)
+    const bracketed = /^\x1b\[200~([\s\S]*)\x1b\[201~$/.exec(data);
+    const text = bracketed ? bracketed[1] : data;
+    if (text === '\r' || text === '\n' || text === '\r\n') { this.resetTypedLine(id); return; }
+    if (text === '\x7f' || text === '\b') { // 한 글자 지우기
+      if (!v.typedValid) return;
+      const chars = Array.from(v.typedText);
+      chars.pop();
+      v.typedText = chars.join('');
+      return;
+    }
+    if (text === '\x15' || text === '\x03') { this.resetTypedLine(id); return; } // Ctrl+U/Ctrl+C = 라인 비움
+    if (/[\x00-\x1f\x7f]/.test(text)) { this.invalidateTypedLine(id); return; }
+    if (!v.typedValid) return;
+    v.typedText += text;
+    if (v.typedText.length > this.TYPED_LINE_LIMIT) this.invalidateTypedLine(id);
+  },
+
+  // 라인이 비워졌다(전송·Ctrl+U 등) — 빈 상태에서 다시 정확히 추적할 수 있다
+  resetTypedLine(id) {
+    const v = this.views.get(id);
+    if (!v) return;
+    v.typedText = '';
+    v.typedValid = true;
+  },
+
+  // 라인 상태를 알 수 없게 됐다 — 다음 전송(Enter)까지 잘라내기를 하지 않는다
+  invalidateTypedLine(id) {
+    const v = this.views.get(id);
+    if (!v) return;
+    v.typedText = '';
+    v.typedValid = false;
+  },
+
+  // 입력 라인에 치던 내용을 잘라낸다 — 터미널에서 지우고 그 문자열을 돌려준다.
+  // 추적이 유효하고 화면의 커서 줄 끝이 추적 내용과 맞을 때만 실행하며, 아니면 ''.
+  cutTypedLine(id) {
+    const v = this.views.get(id);
+    if (!v) return '';
+    v.cutFailReason = '';
+    if (!v.typedValid) { v.cutFailReason = 'invalid'; return ''; }
+    if (!v.typedText) return ''; // 추적상 입력 라인이 비어 있다 — 알릴 것도 없다
+    const text = v.typedText;
+    if (!this._typedLineOnScreen(v, text)) {
+      v.cutFailReason = 'mismatch';
+      // 진단용 — 무엇을 무엇과 비교했는지 남긴다 (F12 → Console 에서 '[ta-cut]' 검색)
+      try {
+        const b2 = v.term.buffer.active;
+        const rows2 = v.term.rows || 24;
+        const bottom2 = Math.min(b2.length - 1, b2.baseY + rows2 - 1);
+        const seen = [];
+        for (let y = bottom2; y >= Math.max(0, bottom2 - rows2 + 1) && seen.length < 8; y--) {
+          const ln = b2.getLine(y);
+          const t2 = ln ? ln.translateToString(true) : '';
+          if (t2.trim()) seen.push(t2);
+        }
+        console.warn('[ta-cut] 화면 불일치', JSON.stringify({
+          typed: text, cursorRow: b2.cursorY, baseY: b2.baseY, len: b2.length, lines: seen
+        }));
+      } catch (_) {}
+      return '';
+    }
+    // 커서는 항상 입력 끝에 있다 (방향키가 오면 추적을 포기했으므로) → 글자 수만큼 백스페이스
+    ta.write(id, '\x7f'.repeat(Array.from(text).length));
+    this.resetTypedLine(id);
+    return text;
+  },
+
+  // 마지막 cutTypedLine 이 잘라내지 못한 까닭 ('' = 잘라낼 것이 없었거나 성공)
+  cutFailReason(id) {
+    const v = this.views.get(id);
+    return v ? (v.cutFailReason || '') : '';
+  },
+
+  // 커서가 있는 논리 줄(래핑 포함)의 끝이 추적 문자열의 끝과 겹치는지 확인한다.
+  // 프롬프트 기호(`>`·`$`)는 앞쪽이라 비교에 걸리지 않고, TUI 입력 상자의 오른쪽
+  // 테두리(│)와 여백은 뒤에서 떼어낸다. 겹치지 않으면 이미 전송됐거나 화면이 바뀐 것.
+  _typedLineOnScreen(v, text) {
+    const b = v.term.buffer && v.term.buffer.active;
+    if (!b) return false;
+    // 줄 끝 공백은 화면에서 확인할 수 없다(줄 끝 여백과 구분 불가) → 비교는 공백을 뗀 값으로.
+    // 지우는 분량은 원본 그대로이므로 공백까지 함께 옮겨진다.
+    const probe = text.replace(/\s+$/, '');
+    if (!probe) return false; // 공백만 쳤다면 옮길 것이 없다
+    const rows = v.term.rows || 24;
+    const bottom = Math.min(b.length - 1, b.baseY + rows - 1);
+    const top = Math.max(0, bottom - rows + 1);
+    const cursorRow = b.baseY + b.cursorY;
+    // 셸이라면 입력 라인은 커서 줄이다. 그런데 Ink 계열 TUI(Claude Code·Codex)는 실제
+    // 커서를 숨기고 자체 커서를 그리며, 대체 버퍼 위쪽부터 프레임을 그려 화면 아래쪽이
+    // 빈 줄로 남는다 → 커서 줄을 먼저 보고, 이어서 화면 전체를 아래에서 위로 훑는다
+    // (아래쪽 일치를 먼저 채택 = 대화 기록보다 입력 상자를 우선).
+    if (cursorRow >= top && cursorRow <= bottom && this._rowMatchesTyped(b, cursorRow, probe)) return true;
+    for (let y = bottom; y >= top; y--) {
+      if (y !== cursorRow && this._rowMatchesTyped(b, y, probe)) return true;
+    }
+    return false;
+  },
+
+  _rowMatchesTyped(b, y, text) {
+    let start = y;
+    for (let k = 0; k < 8; k++) { // 래핑된 앞줄 잇기 (셸에서 긴 입력이 여러 줄로 접힐 때)
+      const line = b.getLine(start);
+      if (!line || !line.isWrapped || start === 0) break;
+      start--;
+    }
+    let joined = '';
+    for (let i = start; i <= y; i++) {
+      const line = b.getLine(i);
+      if (line) joined += line.translateToString(i === y); // 마지막 줄만 우측 공백 제거
+    }
+    const tail = joined.replace(/[\s─-╿|]+$/, '');
+    if (!tail) return false;
+    // ① 줄에 추적 내용 전체가 보이는 경우 — 바로 앞이 프롬프트 경계인지까지 본다.
+    //    출력 문자열의 끝 몇 글자가 우연히 맞아 엉뚱한 줄을 지우는 일을 막는다.
+    if (tail.endsWith(text)) {
+      const before = tail.slice(0, tail.length - text.length);
+      return /^\s*$/.test(before) || /[>$#%:❯›│|\]]\s*$/.test(before);
+    }
+    // ② TUI 입력 상자가 여러 줄로 접어 뒷부분만 보이는 경우 — 보이는 조각이 추적 내용의
+    //    끝과 이어지면 인정한다. 조각 앞머리의 상자 테두리·여백만 몇 글자 흘려 맞춰 본다.
+    const chars = Array.from(tail);
+    for (let skip = 1; skip <= 4 && skip < chars.length; skip++) {
+      const frag = chars.slice(skip).join('');
+      if (Array.from(frag).length >= 12 && text.endsWith(frag)) return true;
+    }
+    return false;
   },
 
   // 사용자가 이 세션 터미널에 직접 입력한 시각 기록 (App.focusComposerOnDone 억제 근거)
@@ -860,6 +1000,10 @@ const TerminalView = {
       const origTrigger = coreSvc.triggerDataEvent.bind(coreSvc);
       coreSvc.triggerDataEvent = (data, wasUserInput) => {
         const isMouseReport = typeof data === 'string' && /^\x1b\[(?:M|<)/.test(data);
+        // 입력 라인 추적은 "사용자 입력"만 먹인다 — 포커스 보고(\x1b[I/O)·커서 위치 응답·
+        // 장치 조회 응답은 wasUserInput=false 로 오고, 마우스 리포트는 위에서 걸러진다.
+        // (이 보고들을 사용자 입력으로 오인하면 마우스만 움직여도 추적이 깨졌다)
+        if (wasUserInput && !isMouseReport) this.noteTypedData(session.id, data);
         return origTrigger(data, wasUserInput && !isMouseReport);
       };
     }
@@ -1114,6 +1258,7 @@ const TerminalView = {
         if (ev.metaKey && !ev.altKey && horiz) {
           ev.preventDefault(); // 웹뷰의 히스토리 뒤로/앞으로 내비게이션 차단
           mirrorInvalidate();
+          this.invalidateTypedLine(session.id); // 커서가 입력 끝을 벗어난다 → 잘라내기 추적 포기
           const appMode = term.modes && term.modes.applicationCursorKeysMode;
           ta.write(session.id, ev.key === 'ArrowLeft'
             ? (appMode ? '\x1bOH' : '\x1b[H')
@@ -1123,6 +1268,7 @@ const TerminalView = {
         if (ev.altKey && !ev.metaKey && horiz) {
           ev.preventDefault(); // textarea 의 단어 단위 캐럿 이동 차단 — IME 삽입 위치 desync 방지
           mirrorInvalidate();
+          this.invalidateTypedLine(session.id); // 단어 단위 이동 — 커서 위치를 알 수 없다
           ta.write(session.id, ev.key === 'ArrowLeft' ? '\x1bb' : '\x1bf');
           return false;
         }
@@ -1132,6 +1278,9 @@ const TerminalView = {
           ev.preventDefault();
           mirrorClear(); // 단어/줄 삭제 뒤에는 터미널 커서 상태를 정확히 알 수 없으므로 새 기준으로 시작
           mirrorMarkDeleteHandled();
+          // Cmd+⌫(^U) 는 라인 전체를 비우지만 Option+⌫(^W) 는 단어만 지워 남은 길이를 모른다
+          if (ev.metaKey) this.resetTypedLine(session.id);
+          else this.invalidateTypedLine(session.id);
           ta.write(session.id, ev.metaKey ? '\x15' : '\x17');
           return false;
         }
@@ -1196,6 +1345,9 @@ const TerminalView = {
       lastCols: 0,   // PTY 에 마지막으로 보낸 치수 — 변했을 때만 리사이즈 IPC
       lastRows: 0,
       lastTypedAt: 0, // 사용자가 이 터미널에 직접 키 입력한 마지막 시각 (완료 시 포커스 이동 억제 근거)
+      typedText: '',    // 현재 입력 라인에 쳐 넣은 것으로 추적된 텍스트 (Cmd/Ctrl+J 잘라내기용)
+      typedValid: true, // 그 추적을 신뢰할 수 있는가 (방향키·Tab 등이 오면 false)
+      cutFailReason: '', // 마지막 잘라내기가 실패한 까닭 ('invalid' | 'mismatch')
       resetInputMirror: mirrorInvalidate,
       scrollQueued: false,
       scrollForce: false,

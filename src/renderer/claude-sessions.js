@@ -141,7 +141,10 @@ Object.assign(App, {
       const proj = App.state.projects.find((p) => p.path === cwd);
       const info = await App.createSession(proj ? proj.id : (active ? active.projectId : null));
       const cmd = it.source === 'codex' ? 'codex resume ' : 'claude --resume ';
-      if (info) setTimeout(() => ta.write(info.id, cmd + it.id + '\r'), 600);
+      if (info) setTimeout(() => {
+        ta.write(info.id, cmd + it.id + '\r');
+        TerminalView.resetTypedLine(info.id);
+      }, 600);
     } finally {
       App._resuming = false;
     }

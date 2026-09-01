@@ -320,7 +320,9 @@ Object.assign(App, {
     // - ESC+CR 을 한 번에 쓰면 TUI(crossterm)가 Alt+Enter 로 읽어 줄바꿈만 삽입하고 대기한다.
     // - Codex/Claude TUI 는 붙여넣기 직후 도착한 Enter 를 붙여넣기의 일부로 삼키므로 한 틱 늦춘다.
     setTimeout(() => {
-      if (TerminalView.views.has(sessionId)) ta.write(sessionId, '\r');
+      if (!TerminalView.views.has(sessionId)) return;
+      ta.write(sessionId, '\r');
+      TerminalView.resetTypedLine(sessionId);
     }, App.SUBMIT_ENTER_DELAY_MS);
   },
 
