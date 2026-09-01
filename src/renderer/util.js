@@ -64,3 +64,27 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+// 드롭다운 검색용 느슨한 매칭.
+// 검색어를 공백으로 나눈 각 토큰이 후보 문자열들 중 하나에 (a) 부분 문자열로 들어 있거나
+// (b) 순서만 유지된 문자 나열(예: "trmasi" → "terminal-assistance")로 들어 있으면 일치로 본다.
+// 모든 토큰이 일치해야 한다 — 토큰별로 다른 후보에 걸려도 된다(제목·경로·프로젝트명 혼합 검색).
+function fuzzyMatch(candidates, query) {
+  const q = String(query == null ? '' : query).trim().toLowerCase();
+  if (!q) return true;
+  const fields = (Array.isArray(candidates) ? candidates : [candidates])
+    .filter((v) => v != null)
+    .map((v) => String(v).toLowerCase());
+  if (!fields.length) return false;
+  return q.split(/\s+/).every((token) =>
+    fields.some((f) => f.includes(token) || isSubsequenceOf(f, token)));
+}
+
+// token 의 글자들이 순서를 지켜 text 안에 흩어져 있는가 (연속일 필요 없음)
+function isSubsequenceOf(text, token) {
+  let i = 0;
+  for (let k = 0; k < text.length && i < token.length; k++) {
+    if (text[k] === token[i]) i++;
+  }
+  return i === token.length;
+}

@@ -6,6 +6,7 @@ Object.assign(App, {
 
   // opts.wide: 문서 열람 등 넓은 팝업 (기본 420px → 680px)
   // opts.xl: 파일 미리보기 등 대형 팝업 (900px)
+  // opts.full: 편집기 등 화면을 최대한 쓰는 팝업 (96vw × 94vh)
   modal(html, onOpen, opts) {
     // close() 를 거치지 않고 모달 위에 새 모달을 여는 경로(프리셋 관리 → 수정 등)에서
     // 이전 Esc 리스너가 document 에 남지 않도록 먼저 정리한다
@@ -14,6 +15,7 @@ Object.assign(App, {
     const m = document.getElementById('modal');
     m.classList.toggle('wide', !!(opts && opts.wide));
     m.classList.toggle('xl', !!(opts && opts.xl));
+    m.classList.toggle('full', !!(opts && opts.full));
     m.innerHTML = html;
     bd.classList.remove('hidden');
     // 바깥 클릭으로는 닫지 않는다 — 입력 중 드래그가 배경 클릭으로 판정돼

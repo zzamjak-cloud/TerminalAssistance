@@ -16,7 +16,8 @@ Object.assign(App, {
     open: new Set(),     // 펼친 디렉토리 절대경로(정규화)
     gitFiles: new Map(), // 변경 파일 절대경로(정규화) → 상태 문자 (M/A/U/D/R)
     gitDirs: new Set(),  // 변경을 포함한 디렉토리 절대경로(정규화) — 폴더 점 표시
-    selected: null       // 선택 항목 절대경로 — 스페이스 미리보기 대상
+    selected: null,      // 선택 항목 절대경로 — 스페이스 미리보기 대상
+    renaming: null       // F2 이름 변경 중인 항목 절대경로 (재렌더 억제)
   },
 
   // 트리 루트: 활성 세션의 프로젝트 경로 → 없으면 세션 cwd → 빈 프로젝트 선택 시 그 경로
@@ -35,10 +36,20 @@ Object.assign(App, {
       e.stopPropagation();
       App.refreshExplorer(true);
     };
+    document.getElementById('btn-tree-new').onclick = (e) => {
+      e.stopPropagation();
+      App.showNewFileModal();
+    };
     // 스페이스 = 선택 항목 미리보기 토글, Enter = 터미널 입력 라인 끝에 경로 삽입
     const tree = document.getElementById('file-tree');
     tree.addEventListener('keydown', (ev) => {
       const t = App._tree;
+      if (ev.target.tagName === 'INPUT') return; // 이름 변경 입력 중 — 트리 단축키 금지
+      if (ev.key === 'F2') {
+        ev.preventDefault();
+        if (t.selected) App.startTreeRename(t.selected);
+        return;
+      }
       if (ev.key === ' ' || ev.code === 'Space') {
         ev.preventDefault(); // 스크롤 방지
         // 이미 미리보기가 열려 있으면 닫기 — 한 키로 여닫는 토글
@@ -113,6 +124,7 @@ Object.assign(App, {
   _wireTreeDrag(row, absPath, name, isDir) {
     row.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
+      if (e.target.tagName === 'INPUT') return; // 이름 변경 입력 중에는 캐럿 조작이 우선
       e.preventDefault(); // 드래그 중 텍스트 선택 방지 — click/dblclick 에는 영향 없음
       const startX = e.clientX, startY = e.clientY;
       let dragging = false, ghost = null, hover = null;
@@ -127,6 +139,17 @@ Object.assign(App, {
       const findTarget = (ev) => {
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
         if (!el) return null;
+        // 트리 안 = 파일 이동. 폴더 행이면 그 폴더, 파일 행이면 그 파일이 든 폴더, 빈 영역이면 루트.
+        const treeHost = el.closest('#file-tree');
+        if (treeHost) {
+          const hit = el.closest('.tree-row');
+          if (!hit) return treeHost;
+          const hp = hit.dataset.path;
+          const hitEntry = App._findTreeEntry(hp);
+          if (hitEntry && hitEntry.isDir) return hit;
+          const parent = hp.slice(0, hp.lastIndexOf('/'));
+          return document.querySelector(`#file-tree .tree-row[data-path="${CSS.escape(parent)}"]`) || treeHost;
+        }
         const memo = el.closest('.memo-modal-editor');
         if (memo) return memo;
         const prompt = el.closest('.pane-prompt-input');
@@ -161,7 +184,10 @@ Object.assign(App, {
         setHover(null);
         const target = findTarget(ev);
         const quoted = quotePath(absPath);
-        if (target && target.id === 'plan-panel') {
+        if (target && (target.id === 'file-tree' || target.classList.contains('tree-row'))) {
+          // 탐색기 안에서의 이동 — 대상 폴더로 rename
+          void App.moveTreeEntry(absPath, target.id === 'file-tree' ? App._tree.root : target.dataset.path);
+        } else if (target && target.id === 'plan-panel') {
           // 문서 패널에서 처리한 드롭은 유효성 오류여도 터미널 paste로 절대 흘리지 않는다.
           if (isDir) {
             App.showPlanDropFeedback('폴더는 계획 문서로 등록할 수 없습니다.', 'error');
@@ -259,6 +285,7 @@ Object.assign(App, {
       t.gitFiles = new Map();
       t.gitDirs = new Set();
       t.selected = null;
+      t.renaming = null;
       t.open = t.root ? App._loadOpenSet(t.root) : new Set();
       if (t.root) App.refreshExplorer(true);
     }
@@ -333,6 +360,7 @@ Object.assign(App, {
   // ── DOM 렌더 ──
   _renderTreeDom() {
     const t = App._tree;
+    if (t.renaming && document.querySelector('#file-tree .tree-rename')) return; // 이름 변경 중 — 입력이 사라지면 안 된다
     const treeEl = document.getElementById('file-tree');
     const title = document.getElementById('explorer-title');
     treeEl.textContent = '';
@@ -344,7 +372,7 @@ Object.assign(App, {
       treeEl.appendChild(e);
       return;
     }
-    title.textContent = t.root.split('/').filter(Boolean).pop() || t.root;
+    // 제목은 '탐색기' 고정 — 프로젝트명은 사이드바 선택 항목에 이미 드러난다 (경로는 툴팁으로)
     title.title = t.root;
     const frag = document.createDocumentFragment();
     App._renderDirChildren(frag, t.root, 0);
@@ -410,7 +438,11 @@ Object.assign(App, {
         row.appendChild(dot);
       }
 
-      row.onclick = () => {
+      // 이름 변경 입력 안의 클릭은 행 동작(선택·트리 포커스)으로 넘기지 않는다 —
+      // 트리에 포커스를 주면 입력이 blur 돼 편집이 끝나 버린다 (캐럿 이동·드래그 선택 불가)
+      const inRenameInput = (ev) => ev.target.classList.contains('tree-rename');
+      row.onclick = (ev) => {
+        if (inRenameInput(ev)) return;
         t.selected = p;
         document.getElementById('file-tree').focus(); // 스페이스/방향키 내비게이션 활성화
         if (e.isDir) {
@@ -421,12 +453,257 @@ Object.assign(App, {
           App._selectTreeRow(row);
         }
       };
-      row.ondblclick = () => { if (!e.isDir) App.showFilePreview(e.path); };
+      row.ondblclick = (ev) => { if (!inRenameInput(ev) && !e.isDir) App.showFilePreview(e.path); };
+      row.oncontextmenu = (ev) => {
+        if (inRenameInput(ev)) return; // 입력 안에서는 기본 편집 메뉴(붙여넣기 등)를 살린다
+        ev.preventDefault();
+        if (e.isDir) return; // 파일 전용 메뉴 (미리보기·편집·삭제)
+        App._selectTreeRow(row);
+        App.showTreeContextMenu(ev, e.path);
+      };
 
       parent.appendChild(row);
       if (e.isDir && t.open.has(p)) {
         App._renderDirChildren(parent, e.path, depth + 1);
       }
     }
+  },
+
+  // 새 파일을 만들 폴더 — 선택한 폴더, 파일을 골랐으면 그 파일이 든 폴더, 선택이 없으면 루트
+  _newFileDir() {
+    const t = App._tree;
+    if (!t.root) return null;
+    if (t.selected) {
+      const e = App._findTreeEntry(t.selected);
+      if (e && e.isDir) return t.selected;
+      if (e) return t.selected.slice(0, t.selected.lastIndexOf('/')) || t.root;
+    }
+    return t.root;
+  },
+
+  // 탐색기 헤더 '＋' — 선택한 폴더 안에 파일 또는 폴더를 만든다.
+  // 파일은 확장자(.md/.html/.js …)에 따라 편집기 형태가 정해지고, 만든 직후 편집기가 열린다.
+  showNewFileModal() {
+    const dir = App._newFileDir();
+    if (!dir) { App.showToast('프로젝트 세션을 먼저 열어 주세요'); return; }
+    App.modal(`
+      <h3>새로 만들기</h3>
+      <div class="modal-sub"></div>
+      <label>종류</label>
+      <select id="m-kind"><option value="file">파일</option><option value="dir">폴더</option></select>
+      <label>이름</label><input type="text" id="m-name" placeholder="예: NOTES.md, index.html, util.js">
+      <div class="form-help" id="m-hint">확장자에 따라 마크다운·JSON·코드 편집기로 열립니다.</div>
+      <div class="form-error" id="m-err"></div>
+      <div class="modal-actions">
+        <button id="m-cancel">취소</button><button id="m-create">만들기</button>
+      </div>`,
+      (m, close) => {
+        m.querySelector('.modal-sub').textContent = dir;
+        const input = m.querySelector('#m-name');
+        const kind = m.querySelector('#m-kind');
+        const hint = m.querySelector('#m-hint');
+        const err = m.querySelector('#m-err');
+        kind.onchange = () => {
+          const isDir = kind.value === 'dir';
+          input.placeholder = isDir ? '예: docs, src/ 없이 폴더 이름만' : '예: NOTES.md, index.html, util.js';
+          hint.textContent = isDir
+            ? '선택한 폴더 안에 새 폴더를 만듭니다.'
+            : '확장자에 따라 마크다운·JSON·코드 편집기로 열립니다.';
+          input.focus();
+        };
+        const create = async () => {
+          const name = input.value.trim();
+          if (!name) { err.textContent = '이름을 입력하세요.'; return; }
+          const isDir = kind.value === 'dir';
+          let path = null;
+          try {
+            path = isDir ? await ta.createDir(dir, name) : await ta.createFile(dir, name);
+          } catch (e) {
+            err.textContent = String(e);
+            return;
+          }
+          close();
+          const t = App._tree;
+          t.open.add(normPath(dir)); // 만든 항목이 보이도록 대상 폴더를 펼친다
+          App._saveOpenSet();
+          t.selected = normPath(path);
+          await App.refreshExplorer(true);
+          if (!isDir) App.showFileEditor(path);
+        };
+        input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } };
+        m.querySelector('#m-cancel').onclick = close;
+        m.querySelector('#m-create').onclick = create;
+        input.focus();
+      });
+  },
+
+  // ── 드래그 이동 (탐색기 안에서 다른 폴더 위에 놓기) ──
+  async moveTreeEntry(srcPath, destDir) {
+    const t = App._tree;
+    const src = normPath(srcPath);
+    const dest = destDir ? normPath(destDir) : null;
+    if (!dest) return;
+    const name = src.split('/').pop();
+    if (src.slice(0, src.lastIndexOf('/')) === dest) return; // 제자리 — 아무 일도 하지 않는다
+    if (dest === src || dest.startsWith(src + '/')) {
+      App.showToast('폴더를 자기 하위로 옮길 수 없습니다');
+      return;
+    }
+    let moved = null;
+    try {
+      moved = await ta.movePath(srcPath, dest + '/' + name);
+    } catch (e) {
+      App.showToast('이동 실패 — ' + String(e));
+      return;
+    }
+    App._rebaseTreeState(src, normPath(moved));
+    t.open.add(dest);
+    App._saveOpenSet();
+    await App.refreshExplorer(true);
+  },
+
+  // 경로가 바뀐 뒤의 펼침 목록·선택 보정 (폴더를 옮기면 하위 경로도 함께 바뀐다)
+  _rebaseTreeState(oldPath, newPath) {
+    const t = App._tree;
+    const next = new Set();
+    for (const d of t.open) {
+      if (d === oldPath) next.add(newPath);
+      else if (d.startsWith(oldPath + '/')) next.add(newPath + d.slice(oldPath.length));
+      else next.add(d);
+    }
+    t.open = next;
+    t.entries.delete(oldPath);
+    t.selected = newPath;
+    App._saveOpenSet();
+  },
+
+  // ── F2 이름 변경 (Enter·바깥 클릭 = 저장, Esc = 취소) ──
+  startTreeRename(path) {
+    const t = App._tree;
+    const p = normPath(path);
+    const row = document.querySelector(`#file-tree .tree-row[data-path="${CSS.escape(p)}"]`);
+    const nameEl = row && row.querySelector('.tree-name');
+    if (!nameEl || t.renaming) return;
+    const entry = App._findTreeEntry(p);
+    const oldName = nameEl.textContent;
+    t.renaming = p; // 편집 중에는 주기 갱신이 트리를 다시 그리지 않게 막는다
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'tree-rename';
+    input.value = oldName;
+    input.spellcheck = false;
+    nameEl.replaceWith(input);
+    input.focus();
+    // 확장자를 뺀 이름만 선택 — 확장자는 그대로 두고 고치는 경우가 대부분이다
+    const dot = entry && !entry.isDir ? oldName.lastIndexOf('.') : -1;
+    input.setSelectionRange(0, dot > 0 ? dot : oldName.length);
+
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      t.renaming = null;
+      const next = input.value.trim();
+      if (!commit || !next || next === oldName) {
+        App._renderTreeDom(); // 원래 이름으로 되돌린다
+        document.getElementById('file-tree').focus();
+        return;
+      }
+      const parent = p.slice(0, p.lastIndexOf('/'));
+      let moved = null;
+      try {
+        moved = await ta.movePath(path, parent + '/' + next);
+      } catch (e) {
+        App.showToast('이름을 바꾸지 못했습니다 — ' + String(e));
+        App._renderTreeDom();
+        return;
+      }
+      App._rebaseTreeState(p, normPath(moved));
+      await App.refreshExplorer(true);
+      document.getElementById('file-tree').focus();
+    };
+    input.onkeydown = (e) => {
+      e.stopPropagation(); // 트리 단축키(스페이스 미리보기 등) 차단
+      if (e.key === 'Enter') { e.preventDefault(); void finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); void finish(false); }
+    };
+    input.onblur = () => void finish(true); // 바깥 클릭 = 즉시 저장
+  },
+
+  // ── 탐색기 파일 우클릭 메뉴 (미리보기 · 편집하기 · 삭제하기) ──
+  _treeMenu: null, // { el, cleanup }
+
+  closeTreeContextMenu() {
+    const menu = App._treeMenu;
+    if (!menu) return;
+    App._treeMenu = null;
+    menu.cleanup();
+    menu.el.remove();
+  },
+
+  showTreeContextMenu(ev, path) {
+    App.closeTreeContextMenu();
+    const menu = document.createElement('div');
+    menu.className = 'term-context-menu';
+    const mkItem = (label, fn, cls) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'term-context-item' + (cls ? ' ' + cls : '');
+      btn.textContent = label;
+      btn.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); };
+      btn.onclick = (e) => { e.stopPropagation(); fn(btn); };
+      menu.appendChild(btn);
+      return btn;
+    };
+    mkItem('미리보기', () => { App.closeTreeContextMenu(); App.showFilePreview(path); });
+    mkItem('편집하기', () => { App.closeTreeContextMenu(); App.showFileEditor(path); });
+    // 삭제는 되돌릴 수 없으므로 같은 자리에서 '삭제 확인'으로 한 번 더 받는다
+    let armed = false, armTimer = null;
+    mkItem('삭제하기', async (btn) => {
+      if (!armed) {
+        armed = true;
+        btn.textContent = '삭제 확인';
+        btn.classList.add('confirm');
+        armTimer = setTimeout(() => {
+          armed = false;
+          btn.textContent = '삭제하기';
+          btn.classList.remove('confirm');
+        }, CONFIRM_ARM_MS);
+        return;
+      }
+      clearTimeout(armTimer);
+      App.closeTreeContextMenu();
+      try {
+        await ta.deleteFile(path);
+      } catch (e) {
+        App.showToast('삭제 실패 — ' + String(e));
+        return;
+      }
+      const t = App._tree;
+      if (t.selected === normPath(path)) t.selected = null;
+      App.refreshExplorer(true);
+    }, 'danger');
+
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = Math.max(0, Math.min(ev.clientX, window.innerWidth - rect.width - 6)) + 'px';
+    menu.style.top = Math.max(0, Math.min(ev.clientY, window.innerHeight - rect.height - 6)) + 'px';
+    const closeOnOutside = (e) => { if (!menu.contains(e.target)) App.closeTreeContextMenu(); };
+    const closeOnKey = (e) => { if (e.key === 'Escape') App.closeTreeContextMenu(); };
+    const closeNow = () => App.closeTreeContextMenu();
+    document.addEventListener('mousedown', closeOnOutside, true);
+    document.addEventListener('keydown', closeOnKey, true);
+    window.addEventListener('blur', closeNow);
+    window.addEventListener('wheel', closeNow, { passive: true });
+    App._treeMenu = {
+      el: menu,
+      cleanup: () => {
+        document.removeEventListener('mousedown', closeOnOutside, true);
+        document.removeEventListener('keydown', closeOnKey, true);
+        window.removeEventListener('blur', closeNow);
+        window.removeEventListener('wheel', closeNow);
+      }
+    };
   }
 });

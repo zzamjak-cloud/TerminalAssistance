@@ -356,6 +356,125 @@ pub async fn read_text_file(path: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// 탐색기 편집기 저장 — 임시 파일에 쓴 뒤 rename 으로 갈아끼워 중간 상태를 남기지 않는다.
+#[tauri::command]
+pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.is_dir() {
+        return Err("폴더에는 저장할 수 없습니다".into());
+    }
+    let dir = p.parent().ok_or("상위 폴더를 찾을 수 없습니다")?;
+    let name = p
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("파일 이름이 올바르지 않습니다")?;
+    let tmp = dir.join(format!(".{name}.ta-tmp"));
+    fs::write(&tmp, content.as_bytes()).map_err(|e| format!("임시 파일 저장 실패: {}", e))?;
+    if let Err(e) = fs::rename(&tmp, p) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("저장 반영 실패: {}", e));
+    }
+    Ok(())
+}
+
+/// 탐색기 '+' 버튼 — 지정한 폴더에 빈 파일을 만든다. 이미 있으면 오류(덮어쓰기 방지).
+#[tauri::command]
+pub async fn create_file(dir: String, name: String) -> Result<String, String> {
+    let name = name.trim();
+    valid_entry_name(name)?;
+    let base = Path::new(&dir);
+    if !base.is_dir() {
+        return Err("대상 폴더가 없습니다".into());
+    }
+    let target = base.join(name);
+    if target.exists() {
+        return Err("같은 이름의 파일이 이미 있습니다".into());
+    }
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|e| format!("파일을 만들 수 없습니다: {}", e))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+/// 탐색기 컨텍스트 메뉴 '삭제하기' — 파일만 지운다(폴더는 거부). 되돌릴 수 없으므로
+/// 프론트에서 2단계 확인을 거친 뒤에만 호출한다.
+#[tauri::command]
+pub async fn delete_file(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    let md = fs::metadata(p).map_err(|e| format!("파일을 찾을 수 없습니다: {}", e))?;
+    if md.is_dir() {
+        return Err("폴더는 삭제할 수 없습니다".into());
+    }
+    fs::remove_file(p).map_err(|e| format!("삭제하지 못했습니다: {}", e))
+}
+
+/// 탐색기 '새로 만들기' — 폴더 생성. 이미 있으면 오류.
+#[tauri::command]
+pub async fn create_dir(dir: String, name: String) -> Result<String, String> {
+    let name = name.trim();
+    if let Err(e) = valid_entry_name(name) {
+        return Err(e);
+    }
+    let base = Path::new(&dir);
+    if !base.is_dir() {
+        return Err("대상 폴더가 없습니다".into());
+    }
+    let target = base.join(name);
+    if target.exists() {
+        return Err("같은 이름의 항목이 이미 있습니다".into());
+    }
+    fs::create_dir(&target).map_err(|e| format!("폴더를 만들 수 없습니다: {}", e))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+/// 탐색기 드래그 이동 · F2 이름 변경 공통 — from 을 to 로 옮긴다(덮어쓰기 금지).
+#[tauri::command]
+pub async fn move_path(from: String, to: String) -> Result<String, String> {
+    let src = Path::new(&from);
+    let dst = Path::new(&to);
+    if !src.exists() {
+        return Err("원본을 찾을 수 없습니다".into());
+    }
+    if src == dst {
+        return Ok(to);
+    }
+    // 대소문자만 다른 이름 변경(macOS/Windows 의 대소문자 무시 파일시스템)은 exists() 가
+    // 참이라 덮어쓰기로 오인된다 — 경로가 다르면서 실제로 같은 항목인 경우만 통과시킨다.
+    let same_entry = dst.exists()
+        && fs::canonicalize(src).ok() == fs::canonicalize(dst).ok()
+        && fs::canonicalize(src).is_ok();
+    if dst.exists() && !same_entry {
+        return Err("대상 위치에 같은 이름이 이미 있습니다".into());
+    }
+    let parent = dst.parent().ok_or("대상 폴더를 찾을 수 없습니다")?;
+    if !parent.is_dir() {
+        return Err("대상 폴더가 없습니다".into());
+    }
+    // 폴더를 자기 자신의 하위로 옮기면 트리가 끊긴다
+    if src.is_dir() {
+        if let (Ok(s), Ok(p)) = (fs::canonicalize(src), fs::canonicalize(parent)) {
+            if p.starts_with(&s) {
+                return Err("폴더를 자기 하위로 옮길 수 없습니다".into());
+            }
+        }
+    }
+    fs::rename(src, dst).map_err(|e| format!("옮기지 못했습니다: {}", e))?;
+    Ok(dst.to_string_lossy().into_owned())
+}
+
+/// 새 파일·폴더 이름과 F2 이름 변경에 공통으로 쓰는 검사 (경로 구분자·특수 이름 금지)
+fn valid_entry_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("이름을 입력하세요".into());
+    }
+    if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        return Err("이름에 경로 구분자를 쓸 수 없습니다".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -74,8 +74,9 @@ Object.assign(App, {
     return App._previewCode(path, name, ext, file);
   },
 
-  // 미리보기 공통 골격: 제목(파일명) + 경로 부제 + 본문 + [외부로 열기 | 닫기]
-  _previewShell(path, name, bodyClass, fill) {
+  // 미리보기 공통 골격: 제목(파일명) + 경로 부제 + 본문 + [외부로 열기 | 편집 | 닫기]
+  // opts.edit = 편집 버튼 표시 (텍스트 형식이고 잘리지 않은 파일만 — 잘린 내용을 저장하면 나머지가 날아간다)
+  _previewShell(path, name, bodyClass, fill, opts) {
     App.modal(`
       <h3></h3>
       <div class="modal-sub"></div>
@@ -83,6 +84,7 @@ Object.assign(App, {
       <div class="modal-actions">
         <button id="m-open-ext">외부 프로그램으로 열기</button>
         <span style="flex:1"></span>
+        ${opts && opts.edit ? '<button id="m-edit" class="primary">편집</button>' : ''}
         <button id="m-close">닫기</button>
       </div>`,
       (m, close) => {
@@ -91,6 +93,8 @@ Object.assign(App, {
         m.querySelector('.modal-sub').textContent = path;
         m.querySelector('#m-open-ext').onclick = () => ta.openPath(path);
         m.querySelector('#m-close').onclick = close;
+        const edit = m.querySelector('#m-edit');
+        if (edit) edit.onclick = () => App.showFileEditor(path); // 같은 자리에 편집기 모달로 교체
         fill(m.querySelector('.' + bodyClass.split(' ')[0]));
       }, { xl: true });
   },
@@ -139,7 +143,7 @@ Object.assign(App, {
         c.classList.add('hljs');
       });
       App._truncNotice(body, file);
-    });
+    }, { edit: !file.truncated });
   },
 
   _previewJson(path, name, file) {
@@ -168,7 +172,7 @@ Object.assign(App, {
       pre.appendChild(code);
       body.appendChild(pre);
       App._truncNotice(body, file);
-    });
+    }, { edit: !file.truncated && isEditableFile(path) });
   },
 
   _previewUnsupported(path, name, reason) {

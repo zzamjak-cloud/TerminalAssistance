@@ -82,6 +82,16 @@
     gitStatus: (cwd) => invoke('git_status', { cwd }),
     // 미리보기용 텍스트 읽기 { content, truncated, size } — 바이너리면 reject
     readTextFile: (path) => invoke('read_text_file', { path }),
+    // 편집기 저장 (임시 파일 → rename 원자적 교체)
+    writeTextFile: (path, content) => invoke('write_text_file', { path, content }),
+    // 탐색기 '+' — 폴더에 빈 파일 생성 → 만들어진 절대경로 (같은 이름이 있으면 reject)
+    createFile: (dir, name) => invoke('create_file', { dir, name }),
+    // 탐색기 컨텍스트 메뉴 삭제 (파일만)
+    deleteFile: (path) => invoke('delete_file', { path }),
+    // 탐색기 '새로 만들기' — 폴더 생성 → 만들어진 절대경로
+    createDir: (dir, name) => invoke('create_dir', { dir, name }),
+    // 드래그 이동 · F2 이름 변경 공통 → 옮겨진 절대경로 (덮어쓰기는 거부)
+    movePath: (from, to) => invoke('move_path', { from, to }),
     // 터미널 파일 링크 해석: cwd/rel 직접 대응 → 단독 파일명이면 프로젝트 내 검색 (없으면 null)
     resolveProjectFile: (cwd, rel) => invoke('resolve_project_file', { cwd, rel }),
     write: (id, data) => invoke('write_session', { id, data }),

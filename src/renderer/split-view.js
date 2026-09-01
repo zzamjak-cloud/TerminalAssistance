@@ -485,6 +485,9 @@ Object.assign(App, {
       const sig = [sid, App.sessionLabel(sess), branch, (proj && proj.color) || '', Theme.state.id, switchSig,
         gitSig, App._gitPulling === sess.cwd ? 'pulling' : '',
         globals.concat(projs).map((p) => p.id + ':' + p.label + ':' + p.command).join(',')].join('|');
+      // 세션 전환 드롭다운이 열려 있는 동안엔 바를 다시 만들지 않는다 — 상태 태그가 바뀔 때마다
+      // 재생성되면 검색어를 치던 도중에 메뉴가 닫힌다. 닫힌 뒤 다음 렌더에서 반영된다.
+      if (bar && bar.querySelector('.pane-session-menu:not(.hidden)')) continue;
       if (bar && bar.dataset.sig === sig) continue;
       if (!bar) {
         bar = document.createElement('div');
@@ -535,6 +538,29 @@ Object.assign(App, {
     menu.className = 'pane-session-menu hidden';
     menu.dataset.pane = String(paneIdx);
 
+    // ── 최상단 검색창 ── 프로젝트 단위로 거른다: 프로젝트 이름이 걸리면 그 프로젝트의
+    // 세션 전체와 "+ 새 세션" 항목을 함께 보여준다 (목적이 프로젝트 찾기이므로).
+    const search = document.createElement('input');
+    search.type = 'text';
+    search.className = 'pane-session-search';
+    search.placeholder = '프로젝트·세션 검색';
+    search.spellcheck = false;
+    search.autocomplete = 'off';
+    menu.appendChild(search);
+
+    const extras = []; // 검색 중에는 감추는 항목(푸터)
+    const groups = []; // 프로젝트 단위 묶음 { el, fields, rows, addEl }
+    let group = null;
+
+    const addGroup = (name, color, path) => {
+      const el = document.createElement('div');
+      el.className = 'pane-session-group';
+      el.textContent = name;
+      if (color) el.style.color = color;
+      menu.appendChild(el);
+      group = { el, fields: [name, path || ''], rows: [], addEl: null };
+      groups.push(group);
+    };
     const addItem = (label, title, onclick, opts) => {
       const item = document.createElement('button');
       item.className = 'pane-session-item' + (opts && opts.active ? ' active' : '') + (opts && opts.empty ? ' empty' : '');
@@ -546,6 +572,7 @@ Object.assign(App, {
         onclick();
       };
       menu.appendChild(item);
+      if (opts && opts.empty && group) group.addEl = item; // 그룹의 "+ 새 세션" — 그룹과 함께 보이고 숨는다
       return item;
     };
     const appendSession = (sess) => {
@@ -554,27 +581,27 @@ Object.assign(App, {
       });
       item.dataset.sid = sess.id;
       item.prepend(statusTag(sess.status));
+      if (group) group.rows.push({ el: item, fields: [App.sessionLabel(sess), sess.cwd] });
     };
 
     const knownProjects = new Set(App.state.projects.map((p) => p.id));
     const homeSessions = App.state.sessions.filter((s) => !s.projectId || !knownProjects.has(s.projectId));
-    const homeGroup = document.createElement('div');
-    homeGroup.className = 'pane-session-group';
-    homeGroup.textContent = '일반 터미널';
-    menu.appendChild(homeGroup);
+    addGroup('일반 터미널');
     homeSessions.forEach(appendSession);
     // 세션이 이미 있어도 그룹 끝에 항상 새 세션 항목을 둔다 — 추가 생성 경로가 사라지지 않게.
     addItem('+ 새 일반 터미널', '홈 디렉토리에서 새 세션 시작', () => App.createPaneSession(paneIdx, null), { empty: true });
 
     for (const p of App.state.projects) {
-      const group = document.createElement('div');
-      group.className = 'pane-session-group';
-      group.textContent = p.name;
-      if (p.color) group.style.color = Theme.adjustText(p.color);
-      menu.appendChild(group);
+      addGroup(p.name, p.color ? Theme.adjustText(p.color) : '', p.path);
       App.state.sessions.filter((s) => s.projectId === p.id).forEach(appendSession);
       addItem('+ 새 세션 시작', p.path, () => App.createPaneSession(paneIdx, p.id), { empty: true });
     }
+
+    const noHit = document.createElement('div');
+    noHit.className = 'pane-session-nohit';
+    noHit.textContent = '일치하는 프로젝트가 없습니다';
+    noHit.hidden = true;
+    menu.appendChild(noHit);
 
     const footer = document.createElement('button');
     footer.className = 'pane-session-add';
@@ -586,6 +613,43 @@ Object.assign(App, {
       App.createPaneSession(paneIdx, sess ? sess.projectId || null : null);
     };
     menu.appendChild(footer);
+    extras.push(footer);
+
+    // 프로젝트 이름이 걸리면 그 프로젝트 전체를, 아니면 일치하는 세션만 남긴다.
+    // 세션이 하나도 없는 프로젝트도 이름만 맞으면 "+ 새 세션"과 함께 보여야 한다.
+    const applyFilter = () => {
+      const q = search.value.trim();
+      let hits = 0;
+      for (const g of groups) {
+        const projHit = fuzzyMatch(g.fields, q);
+        let shown = 0;
+        for (const r of g.rows) {
+          const ok = !q || projHit || fuzzyMatch(r.fields, q);
+          r.el.hidden = !ok;
+          if (ok) shown++;
+        }
+        const visible = !q || projHit || shown > 0;
+        g.el.hidden = !visible;
+        if (g.addEl) g.addEl.hidden = !visible;
+        if (visible && q) hits++;
+      }
+      for (const el of extras) el.hidden = !!q;
+      noHit.hidden = !q || hits > 0;
+    };
+    search.oninput = applyFilter;
+    search.onkeydown = (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      // 보이는 첫 세션으로 전환하고, 세션이 없으면 첫 일치 프로젝트에 새 세션을 연다
+      for (const g of groups) {
+        if (g.el.hidden) continue;
+        const row = g.rows.find((r) => !r.el.hidden);
+        if (row) { row.el.click(); return; }
+        if (g.addEl && !g.addEl.hidden) { g.addEl.click(); return; }
+      }
+    };
+    menu._resetSearch = () => { search.value = ''; applyFilter(); };
+    menu._focusSearch = () => search.focus();
     return menu;
   },
 
@@ -598,10 +662,19 @@ Object.assign(App, {
     menu.classList.toggle('hidden', !willOpen);
     const label = bar.querySelector('.ppl-name');
     if (label) label.classList.toggle('open', willOpen);
+    // 열 때마다 이전 검색어를 지우고 바로 타이핑할 수 있게 검색창에 포커스를 준다.
+    // (mousedown 직후라 포커스가 되돌려질 수 있어 다음 틱에 준다)
+    if (willOpen && menu._resetSearch) {
+      menu._resetSearch();
+      setTimeout(() => menu._focusSearch(), 0);
+    }
   },
 
   closeSessionSwitchMenus() {
-    document.querySelectorAll('.pane-session-menu').forEach((m) => m.classList.add('hidden'));
+    document.querySelectorAll('.pane-session-menu').forEach((m) => {
+      m.classList.add('hidden');
+      if (m._resetSearch) m._resetSearch();
+    });
     document.querySelectorAll('.ppl-name.open').forEach((el) => el.classList.remove('open'));
   },
 
@@ -742,6 +815,10 @@ Object.assign(App, {
         picker.className = 'pane-picker';
         pane.appendChild(picker);
       }
+      // 재렌더로 목록을 다시 그려도 치던 검색어·포커스는 살린다 (세션 상태 변화가 잦다)
+      const oldSearch = picker.querySelector('.pane-picker-search');
+      const prevQuery = oldSearch ? oldSearch.value : '';
+      const hadFocus = oldSearch && document.activeElement === oldSearch;
       picker.textContent = '';
       const taken = App.splitVisiblePanes().filter(Boolean);
       const candidates = App.state.sessions.filter((x) => !taken.includes(x.id));
@@ -750,6 +827,16 @@ Object.assign(App, {
       h.textContent = candidates.length || emptyProjects.length ? '표시할 세션 선택' : '세션이 없습니다';
       picker.appendChild(h);
       if (candidates.length || emptyProjects.length) {
+        // 제목 드롭다운과 같은 방식의 검색창 — 프로젝트 이름이 걸리면 그 프로젝트의 세션도 함께 남는다
+        const search = document.createElement('input');
+        search.type = 'text';
+        search.className = 'pane-picker-search';
+        search.placeholder = '프로젝트·세션 검색';
+        search.spellcheck = false;
+        search.autocomplete = 'off';
+        picker.appendChild(search);
+
+        const rows = []; // { el, fields }
         const list = document.createElement('div');
         list.className = 'pane-picker-list';
         for (const sess of candidates) {
@@ -765,6 +852,7 @@ Object.assign(App, {
           btn.appendChild(statusTag(sess.status));
           btn.onclick = ((paneIdx, sid) => () => App.assignPaneSession(paneIdx, sid))(i, sess.id);
           list.appendChild(btn);
+          rows.push({ el: btn, fields: [App.sessionLabel(sess), sess.cwd, proj ? proj.name : '', proj ? proj.path : ''] });
         }
         for (const proj of emptyProjects) {
           const btn = document.createElement('button');
@@ -783,8 +871,38 @@ Object.assign(App, {
             App.createSession(projectId, { paneIdx });
           })(i, proj.id);
           list.appendChild(btn);
+          rows.push({ el: btn, fields: [proj.name, proj.path] });
         }
         picker.appendChild(list);
+
+        const noHit = document.createElement('div');
+        noHit.className = 'pane-picker-nohit';
+        noHit.textContent = '일치하는 프로젝트가 없습니다';
+        noHit.hidden = true;
+        picker.appendChild(noHit);
+
+        const applyFilter = () => {
+          const q = search.value.trim();
+          let hits = 0;
+          for (const r of rows) {
+            const ok = fuzzyMatch(r.fields, q);
+            r.el.hidden = !ok;
+            if (ok) hits++;
+          }
+          list.hidden = !!q && hits === 0;
+          noHit.hidden = !q || hits > 0;
+        };
+        search.oninput = applyFilter;
+        search.onkeydown = (e) => {
+          if (e.key !== 'Enter') return;
+          const first = rows.find((r) => !r.el.hidden);
+          if (first) { e.preventDefault(); first.el.click(); }
+        };
+        if (prevQuery) { search.value = prevQuery; applyFilter(); }
+        if (hadFocus) {
+          search.focus();
+          search.setSelectionRange(prevQuery.length, prevQuery.length);
+        }
       }
       // '+ 세션 추가' — 프로젝트를 골라 이 패널에 새 세션을 연다 (세션이 있어도 상주)
       const addBtn = document.createElement('button');
