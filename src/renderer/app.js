@@ -277,11 +277,18 @@ const App = {
     const mod = App.state.platform === 'macos' ? ev.metaKey : ev.ctrlKey;
     if (!mod || ev.altKey || ev.shiftKey) return false;
     const key = ev.key.toLowerCase();
-    if (key !== 'p' && key !== 'j') return false;
+    // 패널 폴딩 3종(P 우측 패널 · I 좌측 사이드바 · O 탐색기) + J(터미널↔입력창 커서)
+    const actions = {
+      p: App.togglePromptPanel,
+      i: App.toggleLeftSidebar,
+      o: App.toggleExplorer,
+      j: App.toggleTerminalPromptFocus
+    };
+    const run = actions[key];
+    if (!run) return false;
     ev.preventDefault();
     ev.stopPropagation();
-    if (key === 'p') App.togglePromptPanel();
-    else App.toggleTerminalPromptFocus();
+    run.call(App);
     return true;
   },
 
