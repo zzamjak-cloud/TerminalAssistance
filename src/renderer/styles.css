@@ -130,7 +130,7 @@ button:disabled:hover { border-color: var(--border); }
 }
 .session-row.active:hover { background: var(--accent-fill-hi); }
 .session-row.active .session-title { font-weight: 600; }
-.session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-close { border: none; background: none; color: var(--fg-dim); padding: 0 4px; visibility: hidden; }
 .session-row:hover .session-close { visibility: visible; }
 /* 삭제 확인 상태: 빨강 "삭제 확인" — 한 번 더 클릭해야 닫힘 */
@@ -776,7 +776,8 @@ button:disabled:hover { border-color: var(--border); }
 /* 탐색기 헤더 '＋' — 새 파일·폴더 만들기 */
 #btn-tree-new { padding: 2px 8px; font-size: 11px; }
 /* F2 이름 변경 입력 — 행 안에서 이름 자리만 차지한다 */
-.tree-rename {
+.tree-rename,
+.session-rename {
   flex: 1; min-width: 0;
   padding: 0 4px; margin: -1px 0;
   border: 1px solid var(--accent); border-radius: 4px;

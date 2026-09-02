@@ -31,6 +31,96 @@ function initSidebarSort() {
   });
 }
 
+let editingSessionId = null;
+let sidebarSessionRenameKeyReady = false;
+
+function isSessionRenameInput(target) {
+  return !!(target && target.classList && target.classList.contains('session-rename'));
+}
+
+function isSessionRowControl(target) {
+  return !!(target && (target.tagName === 'BUTTON' || (target.classList && target.classList.contains('session-close'))));
+}
+
+function initSidebarSessionRenameKeys() {
+  if (sidebarSessionRenameKeyReady) return;
+  sidebarSessionRenameKeyReady = true;
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'F2') return;
+    if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA' || ev.target.isContentEditable)) return;
+    const id = App.state.activeId;
+    if (!id) return;
+    const s = App.state.sessions.find((x) => x.id === id);
+    if (!s) return;
+    ev.preventDefault();
+    startSessionTitleRename(id);
+  });
+}
+
+function refreshSessionTitleSurfaces() {
+  renderSidebar();
+  if (App.renderTopbar) App.renderTopbar();
+  if (App.renderPanePickers) App.renderPanePickers();
+  if (App.renderPanePresets) App.renderPanePresets();
+}
+
+function startSessionTitleRename(id) {
+  const s = App.state.sessions.find((x) => x.id === id);
+  const row = s && document.querySelector(`#project-list .session-row[data-sid="${id}"]`);
+  const titleEl = row && row.querySelector('.session-title');
+  if (!s || !row || !titleEl || editingSessionId) return;
+
+  const oldTitle = s.title;
+  editingSessionId = id;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'session-rename';
+  input.value = oldTitle;
+  input.spellcheck = false;
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    editingSessionId = null;
+
+    const next = input.value.trim();
+    if (!commit || !next || next === oldTitle) {
+      renderSidebar();
+      return;
+    }
+
+    s.title = next;
+    refreshSessionTitleSurfaces();
+    const rollback = (error) => {
+      s.title = oldTitle;
+      refreshSessionTitleSurfaces();
+      if (App.showToast) App.showToast('세션 제목을 바꾸지 못했습니다: ' + String(error));
+      else console.warn('세션 제목 저장 실패:', error);
+    };
+    try {
+      const result = ta.renameSession(id, next);
+      if (result && typeof result.catch === 'function') result.catch(rollback);
+    } catch (error) {
+      rollback(error);
+    }
+  };
+
+  input.onclick = (e) => e.stopPropagation();
+  input.ondblclick = (e) => e.stopPropagation();
+  input.onmousedown = (e) => e.stopPropagation();
+  input.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  };
+  input.onblur = () => finish(true);
+}
+
 // 상태 전이 시 전체 재구축 대신 해당 세션 행의 태그만 교체.
 // 전체 재구축은 호버 표시가 깜빡이고 드래그 중이던 요소가 DOM 에서 떨어져 나가는 부작용이 있다.
 // 행이 없으면(프로젝트 접힘 → mini-dots 표시 등) 전체 렌더로 폴백.
@@ -42,6 +132,7 @@ function updateSessionStatus(s) {
 }
 
 function renderSidebar() {
+  initSidebarSessionRenameKeys();
   const list = document.getElementById('project-list');
   list.textContent = '';
   const { projects, sessions, activeId } = App.state;
@@ -71,7 +162,21 @@ function renderSidebar() {
       }
     };
     row.appendChild(x);
-    row.onclick = () => App.activateSession(s.id);
+    row.onclick = (e) => {
+      if (isSessionRenameInput(e.target) || isSessionRowControl(e.target)) return;
+      if (e.detail >= 2) {
+        startSessionTitleRename(s.id);
+        return;
+      }
+      if (s.id !== App.state.activeId) App.activateSession(s.id);
+    };
+    row.ondblclick = (e) => {
+      if (isSessionRenameInput(e.target) || isSessionRowControl(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (s.id !== App.state.activeId) App.activateSession(s.id);
+      startSessionTitleRename(s.id);
+    };
     return row;
   };
 

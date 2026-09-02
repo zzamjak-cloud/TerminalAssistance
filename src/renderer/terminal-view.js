@@ -779,7 +779,7 @@ const TerminalView = {
       fontFamily: this.fontFamilyOption(),
       theme: Theme.termTheme(),
       scrollback: 5000,
-      cursorBlink: true,
+      cursorBlink: false,
       // OSC 8 하이퍼링크(Codex 등이 쓰는 이스케이프)는 WebLinksAddon 이 아니라 xterm 내장
       // OscLinkProvider 가 처리한다. linkHandler 를 주지 않으면 confirm() + window.open()
       // 폴백으로 떨어져 Tauri 웹뷰에서는 아무것도 열리지 않는다 — 외부 브라우저로 연결한다.
