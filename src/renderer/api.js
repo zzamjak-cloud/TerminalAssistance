@@ -127,6 +127,8 @@
     clipboardImage: () => invoke('clipboard_image'),
     clipboardText: () => invoke('clipboard_text'),
     openPath: (p) => invoke('open_path', { path: p }),
+    // 파일이 든 폴더를 OS 탐색기(Finder)로 열고 해당 파일을 선택한다
+    revealPath: (p) => invoke('reveal_path', { path: p }),
     // sessionId 를 함께 넘기면 알림 클릭 시 그 세션으로 창을 열어 준다
     notify: (title, body, sessionId) => invoke('notify', { title, body, sessionId: sessionId || null }),
     fileSrc: (p) => convertFileSrc(p),

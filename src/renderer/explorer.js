@@ -631,7 +631,7 @@ Object.assign(App, {
     input.onblur = () => void finish(true); // 바깥 클릭 = 즉시 저장
   },
 
-  // ── 탐색기 파일 우클릭 메뉴 (미리보기 · 편집하기 · 삭제하기) ──
+  // ── 탐색기 파일 우클릭 메뉴 (미리보기 · 편집하기 · 탐색기에서 보기 · 삭제하기) ──
   _treeMenu: null, // { el, cleanup }
 
   closeTreeContextMenu() {
@@ -658,6 +658,15 @@ Object.assign(App, {
     };
     mkItem('미리보기', () => { App.closeTreeContextMenu(); App.showFilePreview(path); });
     mkItem('편집하기', () => { App.closeTreeContextMenu(); App.showFileEditor(path); });
+    // OS 탐색기에서 파일이 든 폴더를 열고 그 파일을 선택 상태로 둔다
+    mkItem('탐색기에서 보기', async () => {
+      App.closeTreeContextMenu();
+      try {
+        await ta.revealPath(path);
+      } catch (e) {
+        App.showToast('탐색기에서 열지 못했습니다 — ' + String(e));
+      }
+    });
     // 삭제는 되돌릴 수 없으므로 같은 자리에서 '삭제 확인'으로 한 번 더 받는다
     let armed = false, armTimer = null;
     mkItem('삭제하기', async (btn) => {

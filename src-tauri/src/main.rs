@@ -520,6 +520,14 @@ fn open_path(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 
+/// 파일이 든 폴더를 OS 탐색기로 열고 그 파일을 선택 상태로 둔다 (macOS 는 Finder)
+#[tauri::command]
+fn reveal_path(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|err| err.to_string())
+}
+
 #[tauri::command]
 fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     app.opener()
@@ -893,6 +901,7 @@ fn main() {
             clipboard_image,
             clipboard_text,
             open_path,
+            reveal_path,
             open_url,
             check_update,
             install_update,
