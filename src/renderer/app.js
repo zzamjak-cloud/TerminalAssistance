@@ -3,6 +3,9 @@
 // 패널 레이아웃 panel-layout.js / 모달 modals.js / 사이드바 렌더 sidebar.js /
 // 분할·패널 헤더(프리셋 드롭다운) split-view.js /
 // 터미널 terminal-view.js. 각 파일이 Object.assign(App, ...) 으로 메서드를 붙인다.
+const GIT_REMOTE_FETCH_MIN_MS = 15_000;
+const GIT_REMOTE_POLL_MS = 60_000;
+
 const App = {
   state: {
     projects: [],
@@ -19,7 +22,7 @@ const App = {
     imageStripFolded: JSON.parse(localStorage.getItem('ta-image-strip-fold') || '{}'), // sessionId → 참조 이미지 접힘 상태
     branches: {},   // sessionId → git 브랜치명 (헤더 표시용, 2초 폴링)
     gitRemote: {},  // cwd → { branch, hasUpstream, behind, ahead, fetchFailed } | null(=git 저장소 아님)
-                    // 세션 시작 시 1회 fetch 로 채우고, Pull 성공 후 로컬 기준으로만 갱신한다
+                    // 보이는 cwd 만 공유하며 브랜치 전환·앱 복귀·저빈도 폴링 때 갱신한다
     drafts: {},     // projectId/queued:<sessionId>, memo:<projectId>는 Markdown 이전 전 구버전 데이터
     projectEmptyId: null // 세션 없는 프로젝트 선택 시 '새 세션 시작' 화면 대상
   },
@@ -81,8 +84,20 @@ const App = {
     });
     // 데스크톱 알림 클릭 → 창은 백엔드가 이미 앞으로 올렸고, 여기서 세션을 화면에 띄운다
     ta.onActivateSession((sessionId) => App.revealSession(sessionId));
-    // 다른 앱에 있다가 돌아온 경우 — 활성 세션이 완료 상태면 그 시점부터 열람 카운트다운
-    window.addEventListener('focus', () => App.checkDoneViewed(App.state.activeId));
+    // 다른 앱에 있다가 돌아오거나 숨었던 창이 다시 보이면, 보이는 저장소의 Pull 상태도 갱신한다.
+    // macOS 웹뷰는 focus와 visibilitychange를 연달아 보낼 수 있어 cwd별 fetch TTL로 합친다.
+    const refreshAfterAppResume = () => {
+      App.checkDoneViewed(App.state.activeId);
+      void App.refreshBranch();
+      App.refreshVisibleGitRemote({ fetch: true });
+    };
+    window.addEventListener('focus', refreshAfterAppResume);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refreshAfterAppResume();
+    });
+    window.addEventListener('online', () => {
+      App.refreshVisibleGitRemote({ fetch: true, forceFetch: true });
+    });
     // 허가 대기 배지 클릭 → 대기 중인 세션으로 점프 (여러 개면 클릭할 때마다 순환)
     document.getElementById('waiting-indicator').onclick = () => {
       const ws = App.state.sessions.filter((x) => x.status === 'waiting');
@@ -101,6 +116,10 @@ const App = {
     // 시스템 메모리 폴링 (2초)
     setInterval(() => App.pollStatus(), 2000);
     App.pollStatus();
+    // 앱을 계속 열어 둔 동안 생긴 원격 변경도 놓치지 않는다. 숨김 상태에서는 네트워크를 쓰지 않는다.
+    setInterval(() => {
+      if (document.visibilityState === 'visible') App.refreshVisibleGitRemote({ fetch: true });
+    }, GIT_REMOTE_POLL_MS);
     // 코덱스 사용량 폴링 (10초 — 파일 꼬리 읽기라 가볍지만 데이터 갱신 주기도 느리다)
     setInterval(() => App.pollCodexUsage(), 10000);
     App.pollCodexUsage();
@@ -146,7 +165,7 @@ const App = {
 
     App.renderAll();
     if (recovered) App.noteRecovery(); // UI 가 그려진 뒤 복구 사실을 알린다
-    App.refreshGitRemoteForSessions(restoring); // 복원된 세션도 시작 시점 1회 fetch
+    App.refreshVisibleGitRemote({ fetch: true }); // 복원 뒤 실제로 보이는 cwd만 fetch
 
     // 자동 업데이트 확인 (백그라운드 — 실패는 조용히 무시)
     setTimeout(() => App.checkUpdate(), 2500);
@@ -398,45 +417,108 @@ const App = {
   // 화면에 보이는 세션(활성 + 분할 패널)의 브랜치 갱신 — 값이 바뀐 경우에만 재렌더.
   // 분할 패널 헤더도 브랜치를 표시하므로 활성 세션 하나만 폴링하면 나머지가 비어 보인다.
   async refreshBranch() {
-    const ids = new Set([App.state.activeId, ...App.splitVisiblePanes()].filter(Boolean));
+    const sessions = App.visibleGitSessions();
+    const byCwd = new Map();
+    for (const s of sessions) {
+      if (!byCwd.has(s.cwd)) byCwd.set(s.cwd, []);
+      byCwd.get(s.cwd).push(s);
+    }
     let changed = false;
-    for (const id of ids) {
-      const s = App.state.sessions.find((x) => x.id === id);
-      if (!s) continue;
+    await Promise.all([...byCwd.entries()].map(async ([cwd, cwdSessions]) => {
       try {
-        const b = await ta.gitBranch(s.cwd);
-        if (App.state.branches[s.id] !== b) {
-          App.state.branches[s.id] = b;
-          changed = true;
+        const branch = await ta.gitBranch(cwd);
+        const cachedRemote = App.state.gitRemote[cwd];
+        // 처음 화면에 올라온 세션이어도 cwd 공유 캐시가 다른 브랜치를 가리키면 stale 상태다.
+        let branchChanged = !!(cachedRemote && cachedRemote.branch !== branch);
+        for (const s of cwdSessions) {
+          if (App.state.branches[s.id] !== branch) {
+            branchChanged = branchChanged || App.state.branches[s.id] !== undefined;
+            App.state.branches[s.id] = branch;
+            changed = true;
+          }
+        }
+        // GitFork·터미널 등 외부 checkout은 기존 원격 캐시의 branch/behind가 더는 유효하지 않다.
+        if (branchChanged) {
+          delete App.state.gitRemote[cwd]; // 새 브랜치에 이전 브랜치의 Pull 배지를 잠시라도 표시하지 않는다
+          void App.refreshGitRemote(cwd, { fetch: true, forceFetch: true });
         }
       } catch (_) { /* 조회 실패는 무시 */ }
-    }
+    }));
     if (!changed) return;
     App.renderTopbar();
     App.renderPanePresets(); // 패널 헤더의 ⎇브랜치 갱신 (단일 화면 포함)
   },
 
   // ── git 원격 상태 (패널 헤더 Pull 버튼) ──
-  // 세션 시작 시 1회만 fetch 한다 (네트워크 호출이라 폴링하지 않는다).
-  // 같은 프로젝트의 세션이 여러 개면 cwd 기준으로 결과를 공유한다.
+  // 활성 + 분할 패널에 보이는 세션만 고르고 같은 cwd는 한 번만 조회한다.
+  visibleGitSessions() {
+    const paneIds = App.isSplit && App.isSplit() ? App.splitVisiblePanes() : [];
+    const ids = new Set([App.state.activeId, ...paneIds].filter(Boolean));
+    return [...ids]
+      .map((id) => App.state.sessions.find((s) => s.id === id))
+      .filter((s) => s && s.cwd);
+  },
+
+  refreshVisibleGitRemote(opts) {
+    const seen = new Set();
+    for (const s of App.visibleGitSessions()) {
+      if (seen.has(s.cwd)) continue;
+      seen.add(s.cwd);
+      void App.refreshGitRemote(s.cwd, opts);
+    }
+  },
+
+  // 네트워크 fetch는 cwd별 TTL로 제한하고, 로컬 카운트 재계산(fetch=false)은 즉시 수행한다.
+  // fetch=false 진행 중 fetch=true가 들어오면 기존 작업 뒤에 강한 요청을 이어서 실행한다.
   async refreshGitRemote(cwd, opts) {
     if (!cwd) return;
-    const fetch = !!(opts && opts.fetch);
+    let fetch = !!(opts && opts.fetch);
+    const forceFetch = !!(opts && opts.forceFetch);
+    let preserveFetchFailure = false;
     App._gitRemoteInflight = App._gitRemoteInflight || new Map();
-    // 같은 cwd 를 동시에 조회하지 않는다 — fetch 는 느리고 결과도 같다
-    if (App._gitRemoteInflight.has(cwd)) return App._gitRemoteInflight.get(cwd);
+    App._gitRemoteLastFetchAt = App._gitRemoteLastFetchAt || new Map();
+    if (fetch && !forceFetch) {
+      const lastFetchAt = App._gitRemoteLastFetchAt.get(cwd) || 0;
+      if (Date.now() - lastFetchAt < GIT_REMOTE_FETCH_MIN_MS) {
+        // focus·visibility 이벤트가 겹쳐도 네트워크만 생략하고, 외부 pull/reset 등 로컬 변화는 즉시 센다.
+        fetch = false;
+        preserveFetchFailure = true;
+      }
+    }
+    const running = App._gitRemoteInflight.get(cwd);
+    if (running) {
+      // 강제 요청(브랜치 변경)은 기존 fetch가 있더라도 그 응답보다 뒤에서 다시 확인해야 한다.
+      if (fetch && (!running.fetch || forceFetch)) running.followUpFetch = true;
+      return running.promise;
+    }
+    if (fetch) App._gitRemoteLastFetchAt.set(cwd, Date.now());
+    const entry = { promise: null, fetch, followUpFetch: false };
     const job = (async () => {
       let st = null;
       try { st = await ta.gitRemoteState(cwd, fetch); } catch (_) { return; } // 조회 실패 = 상태 유지
       const prev = App.state.gitRemote[cwd];
+      const knownBranch = App.visibleGitSessions().find((s) => s.cwd === cwd);
+      const currentBranch = knownBranch && App.state.branches[knownBranch.id];
+      // 조회 중 checkout이 일어나 이전 브랜치 결과가 돌아오면 표시하지 않고 새 fetch를 이어 붙인다.
+      if (st && currentBranch && st.branch !== currentBranch) {
+        entry.followUpFetch = true;
+        return;
+      }
+      if (st && preserveFetchFailure && prev && prev.fetchFailed) st.fetchFailed = true;
       App.state.gitRemote[cwd] = st || null;
       if (JSON.stringify(prev) !== JSON.stringify(st || null)) App.renderPanePresets();
     })();
-    App._gitRemoteInflight.set(cwd, job);
-    try { await job; } finally { App._gitRemoteInflight.delete(cwd); }
+    entry.promise = job;
+    App._gitRemoteInflight.set(cwd, entry);
+    try {
+      await job;
+    } finally {
+      if (App._gitRemoteInflight.get(cwd) === entry) App._gitRemoteInflight.delete(cwd);
+      if (entry.followUpFetch) void App.refreshGitRemote(cwd, { fetch: true, forceFetch: true });
+    }
   },
 
-  // 세션 시작(신규 생성 · 앱 시작 시 복원) 시점의 최신 상태 확인
+  // 새 세션 생성 시 해당 cwd의 최신 상태 확인
   refreshGitRemoteForSessions(sessions) {
     const seen = new Set();
     for (const s of sessions) {
@@ -694,6 +776,7 @@ const App = {
     App.checkDoneViewed(id); // 즉시 해제 대신 열람 카운트다운 — 무엇이 끝났는지 볼 시간을 준다
     App.renderAll();
     App.refreshBranch(); // 전환 즉시 브랜치 표시 (다음 폴링까지 기다리지 않게)
+    App.refreshVisibleGitRemote({ fetch: true }); // 새로 활성화된 패널의 Pull 상태도 TTL 범위에서 갱신
     if (App.isOverlayOpen && App.isOverlayOpen('term-search')) App.updateTerminalSearch();
   },
 

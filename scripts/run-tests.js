@@ -25,14 +25,21 @@ const t = {
   },
 };
 
-for (const file of files) {
-  const mod = require(path.join(dir, file));
-  console.log(mod.name || file);
-  mod.run(t);
+async function main() {
+  for (const file of files) {
+    const mod = require(path.join(dir, file));
+    console.log(mod.name || file);
+    await mod.run(t);
+  }
+
+  if (!files.length) {
+    console.log('실행할 테스트가 없습니다 (scripts/test/*.test.js)');
+  }
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exitCode = fail ? 1 : 0;
 }
 
-if (!files.length) {
-  console.log('실행할 테스트가 없습니다 (scripts/test/*.test.js)');
-}
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
