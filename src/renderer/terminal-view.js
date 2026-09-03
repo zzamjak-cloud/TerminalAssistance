@@ -3,6 +3,12 @@
 // WebGL 렌더러는 화면에 보이는 세션에만 부착한다 — 브라우저의 WebGL 컨텍스트 수 제한(~16)
 // 때문에 세션이 많아도 컨텍스트는 보이는 패널 수(단일 1, 분할 최대 6)만 쓰고,
 // 화면에 없는 세션은 어차피 렌더링되지 않으므로 손해가 없다.
+// 알려진 파일 확장자 목록 — 단독 파일명 링크 판정과 한국어 조사 꼬리 제거에 함께 쓴다.
+const FILE_LINK_EXTS = '(?:jsx?|mjs|cjs|tsx?|py|rs|go|java|kt|c|h|cpp|cc|cxx|hpp|cs|swift|rb|php|lua'
+  + '|css|scss|less|html?|xml|svg|json|jsonl|yaml|yml|toml|ini|sh|bash|zsh|bat|ps1|sql|pl'
+  + '|diff|patch|md|markdown|txt|log|csv|lock|env|gitignore'
+  + '|png|jpe?g|gif|bmp|webp|ico|avif|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|aac|flac)';
+
 const TerminalView = {
   views: new Map(), // sessionId → { term, fit, holder, webgl, frozen, queue }
   area: null,
@@ -591,17 +597,22 @@ const TerminalView = {
   FILE_LINK_RE: (() => {
     const seg = '[\\p{L}\\p{N}._$@%+~=-]';
     // 단독 파일명은 알려진 확장자만 — 일반 단어·도메인(example.com 등) 오탐 방지
-    const exts = '(?:jsx?|mjs|cjs|tsx?|py|rs|go|java|kt|c|h|cpp|cc|cxx|hpp|cs|swift|rb|php|lua'
-      + '|css|scss|less|html?|xml|svg|json|jsonl|yaml|yml|toml|ini|sh|bash|zsh|bat|ps1|sql|pl'
-      + '|diff|patch|md|markdown|txt|log|csv|lock|env|gitignore'
-      + '|png|jpe?g|gif|bmp|webp|ico|avif|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|aac|flac)';
+    const exts = FILE_LINK_EXTS;
     return new RegExp(
       `(?:[A-Za-z]:[\\\\/]|\\\\\\\\|\\.{1,2}[\\\\/]|[\\\\/])?${seg}+(?:[\\\\/]${seg}+)+(?::\\d+(?::\\d+)?)?` +
-      `|${seg}+\\.${exts}(?!\\.?[\\p{L}\\p{N}])(?::\\d+(?::\\d+)?)?` +
+      `|${seg}+\\.${exts}(?:(?!\\.?[\\p{L}\\p{N}])|(?=\\p{Script=Hangul}))(?::\\d+(?::\\d+)?)?` +
       `|${seg}+\\.[A-Za-z][A-Za-z0-9]{0,9}:\\d+(?::\\d+)?`,
       'giu'
     );
   })(),
+
+  // "…design.md로 스펙을" 처럼 조사가 공백 없이 붙는 경우를 위한 꼬리 제거 패턴.
+  // 경로 문자 클래스가 \p{L} 을 허용해 한글까지 경로로 삼켜지므로,
+  // 알려진 확장자 바로 뒤에 붙은 한글·한자·가나 덩어리는 파일명이 아니라 조사로 보고 잘라낸다.
+  FILE_LINK_TAIL_RE: new RegExp(
+    '(\\.' + FILE_LINK_EXTS + ')[\\p{Script=Hangul}\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}]+$',
+    'iu'
+  ),
 
   // 터미널 링크(본문 URL·OSC 8 하이퍼링크)를 시스템 기본 브라우저로 연다.
   // http/https 만 허용 — 웹뷰가 임의 스킴 실행기를 여는 경로를 만들지 않는다.
@@ -745,7 +756,9 @@ const TerminalView = {
     re.lastIndex = 0;
     let m;
     while ((m = re.exec(text))) {
-      const matched = m[0].replace(/[.,;'"”’]+$/, ''); // 문장 끝 문장부호 꼬리 제거
+      const matched = m[0]
+        .replace(/[.,;'"”’]+$/, '') // 문장 끝 문장부호 꼬리 제거
+        .replace(this.FILE_LINK_TAIL_RE, '$1'); // 확장자에 바로 붙은 조사 제거
       if (matched.length < 3 || !/\p{L}/u.test(matched)) continue;
       // 직전에 공백 없이 URL 스킴(://)이 이어지면 URL 의 일부 — WebLinksAddon 에 맡긴다
       // 매치가 '/' 로 시작하면 그 슬래시까지 붙여서 본다 — https:/ + / 처럼 스킴이 쪼개지지 않게

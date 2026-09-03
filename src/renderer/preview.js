@@ -64,8 +64,8 @@ Object.assign(App, {
     try {
       file = await ta.readTextFile(path);
     } catch (e) {
-      // 바이너리/읽기 실패 — 알려진 텍스트 형식이 아니면 '미지원' 안내로 처리
-      return App._previewUnsupported(path, name, String(e));
+      // 알려진 텍스트 형식인데 못 읽었다면 형식 문제가 아니라 파일 문제(없음/권한)다
+      return App._previewUnsupported(path, name, String(e), isText);
     }
     if (!isText && file.content.length === 0) return App._previewUnsupported(path, name, '내용이 비어 있습니다');
 
@@ -175,12 +175,12 @@ Object.assign(App, {
     }, { edit: !file.truncated && isEditableFile(path) });
   },
 
-  _previewUnsupported(path, name, reason) {
+  _previewUnsupported(path, name, reason, readFailed) {
     App._previewShell(path, name, 'preview-media', (body) => {
       const d = document.createElement('div');
       d.className = 'tree-empty';
       d.style.padding = '30px 10px';
-      d.textContent = '미리보기를 지원하지 않는 형식입니다. (' + reason + ')';
+      d.textContent = (readFailed ? '파일을 열 수 없습니다. (' : '미리보기를 지원하지 않는 형식입니다. (') + reason + ')';
       body.appendChild(d);
     });
   }
