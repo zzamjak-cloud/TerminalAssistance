@@ -109,6 +109,7 @@ const App = {
 
     document.getElementById('btn-add-project').onclick = () => App.showProjectModal();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
+    document.getElementById('btn-help').onclick = () => App.showHelpModal();
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
     document.getElementById('btn-claude-refresh').onclick = () => App.renderClaudeList(true);
     document.getElementById('btn-plan-refresh').onclick = () => App.renderPlanList(true);
