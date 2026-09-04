@@ -342,18 +342,6 @@ const TerminalView = {
     return false;
   },
 
-  // 사용자가 이 세션 터미널에 직접 입력한 시각 기록 (App.focusComposerOnDone 억제 근거)
-  noteTyping(sid) {
-    const v = this.views.get(sid);
-    if (v) v.lastTypedAt = Date.now();
-  },
-
-  // 최근 ms 이내에 이 세션 터미널로 직접 타이핑했는가
-  typedRecently(sid, ms) {
-    const v = this.views.get(sid);
-    return !!v && v.lastTypedAt > 0 && Date.now() - v.lastTypedAt < ms;
-  },
-
   // 입력 내용에 따라 높이 자동 조절 — 상한은 그 패널 높이의 절반
   resizeComposer(c) {
     if (!c || !c.input) return;
@@ -1242,12 +1230,6 @@ const TerminalView = {
       ta.write(session.id, d);
       App.ackIfDone(session.id); // 입력 = 사용자가 결과를 확인함
     });
-    // 사용자의 실제 키 입력만 타이핑으로 기록한다 — onData 에서 기록하면 컴포저 전송·예약
-    // 발송(deliverDraft → term.paste → onData)까지 타이핑으로 오인해 완료 시 포커스 이동이
-    // 잘못 억제된다. keydown 은 IME 조합 중 키(keyCode 229)도 잡으므로 조합 파괴도 막는다.
-    if (term.textarea) {
-      term.textarea.addEventListener('keydown', () => this.noteTyping(session.id));
-    }
 
     term.attachCustomKeyEventHandler((ev) => {
       // WKWebView 는 조합을 커밋시킨 물리 키에 대해 커밋 문자의 charCode 를 담은
@@ -1357,7 +1339,6 @@ const TerminalView = {
       queueBytes: 0, // 큐 누적 바이트 (상한 관리용)
       lastCols: 0,   // PTY 에 마지막으로 보낸 치수 — 변했을 때만 리사이즈 IPC
       lastRows: 0,
-      lastTypedAt: 0, // 사용자가 이 터미널에 직접 키 입력한 마지막 시각 (완료 시 포커스 이동 억제 근거)
       typedText: '',    // 현재 입력 라인에 쳐 넣은 것으로 추적된 텍스트 (Cmd/Ctrl+J 잘라내기용)
       typedValid: true, // 그 추적을 신뢰할 수 있는가 (방향키·Tab 등이 오면 false)
       cutFailReason: '', // 마지막 잘라내기가 실패한 까닭 ('invalid' | 'mismatch')

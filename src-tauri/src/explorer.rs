@@ -287,34 +287,7 @@ pub async fn git_pull(cwd: String) -> GitPullResult {
         text = format!("{}
 {}", text, err);
     }
-    // 토스트 한 줄용 — diffstat 수십 줄 대신 요약/오류 줄만 골라낸다
-    let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-    let keep: Vec<&str> = lines
-        .iter()
-        .copied()
-        .filter(|l| {
-            let low = l.to_lowercase();
-            low.starts_with("updating")
-                || low.starts_with("fast-forward")
-                || low.starts_with("already up to date")
-                || low.contains("files changed")
-                || low.contains("file changed")
-                || low.starts_with("error")
-                || low.starts_with("fatal")
-                || low.starts_with("conflict")
-        })
-        .collect();
-    // 아무것도 못 골랐으면 마지막 2줄로 대체 (예상 못 한 메시지도 보이게)
-    let picked = if keep.is_empty() {
-        lines[lines.len().saturating_sub(2)..].to_vec()
-    } else {
-        keep
-    };
-    let mut message = picked.join(" / ");
-    // 토스트 한 줄에 들어가도록 길이를 제한한다
-    if message.chars().count() > 220 {
-        message = message.chars().take(220).collect::<String>() + "…";
-    }
+    let message = summarize_pull_output(&text, out.status.success());
     GitPullResult {
         ok: out.status.success(),
         message: if message.is_empty() {
@@ -322,6 +295,95 @@ pub async fn git_pull(cwd: String) -> GitPullResult {
         } else {
             message
         },
+    }
+}
+
+/// git pull 출력에서 토스트 한 줄에 담을 요약을 만든다.
+/// 실패 시에는 원인 줄을 통째로 살린다 — 예전에는 "error:" 로 시작하는 첫 줄만 남겨서
+/// 정작 중요한 대상 파일명과 해결 안내("Please commit your changes...")가 잘려나가고,
+/// "Updating a..b" 진행 줄만 뒤에 붙어 실패인지 성공인지도 헷갈렸다.
+fn summarize_pull_output(text: &str, ok: bool) -> String {
+    let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let picked: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| {
+            let low = l.to_lowercase();
+            if ok {
+                // 성공 시에는 diffstat 수십 줄 대신 요약 줄만 골라낸다
+                low.starts_with("updating")
+                    || low.starts_with("fast-forward")
+                    || low.starts_with("already up to date")
+                    || low.contains("files changed")
+                    || low.contains("file changed")
+            } else {
+                // 실패 시에는 진행 상황·fetch 로그·CRLF 경고만 걷어내고 나머지를 모두 남긴다
+                !(low.starts_with("updating")
+                    || low.starts_with("fast-forward")
+                    || low.starts_with("from ")
+                    || low.starts_with("remote:")
+                    || low.starts_with("warning:")
+                    || low.starts_with("aborting")
+                    || low.contains("->"))
+            }
+        })
+        .collect();
+    // 아무것도 못 골랐으면 마지막 2줄로 대체 (예상 못 한 메시지도 보이게)
+    let picked = if picked.is_empty() {
+        lines[lines.len().saturating_sub(2)..].to_vec()
+    } else {
+        picked
+    };
+    let mut message = picked.join(" / ");
+    // 토스트 한 줄에 들어가도록 길이를 제한한다
+    if message.chars().count() > 220 {
+        message = message.chars().take(220).collect::<String>() + "…";
+    }
+    message
+}
+
+#[cfg(test)]
+mod git_pull_tests {
+    use super::summarize_pull_output;
+
+    /// 로컬 수정본 때문에 ff-only pull 이 거부됐을 때의 실제 git 출력
+    #[test]
+    fn failure_keeps_cause_file_and_hint() {
+        let out = "From C:/tmp/up
+   107263b..686d381  master     -> origin/master
+error: Your local changes to the following files would be overwritten by merge:
+	src/renderer/app.js
+Please commit your changes or stash them before you merge.
+Updating 107263b..686d381
+Aborting";
+        let m = summarize_pull_output(out, false);
+        assert!(m.contains("src/renderer/app.js"), "대상 파일명이 사라졌다: {}", m);
+        assert!(m.contains("stash"), "해결 안내가 사라졌다: {}", m);
+        assert!(!m.contains("Updating"), "진행 줄이 실패 메시지에 섞였다: {}", m);
+    }
+
+    #[test]
+    fn success_keeps_summary_only() {
+        let out = "Updating accbe5e..285e9b0
+Fast-forward
+ CHANGELOG.md | 9 +
+ 11 files changed, 612 insertions(+), 6 deletions(-)";
+        let m = summarize_pull_output(out, true);
+        assert!(m.contains("Fast-forward"), "{}", m);
+        assert!(m.contains("11 files changed"), "{}", m);
+        assert!(!m.contains("CHANGELOG.md |"), "diffstat 줄이 남았다: {}", m);
+    }
+
+    #[test]
+    fn already_up_to_date_passthrough() {
+        assert_eq!(summarize_pull_output("Already up to date.", true), "Already up to date.");
+    }
+
+    #[test]
+    fn unexpected_output_is_not_dropped() {
+        let m = summarize_pull_output("fatal: not a git repository", false);
+        assert!(m.contains("fatal"), "{}", m);
+        assert_eq!(summarize_pull_output("", false), "");
     }
 }
 

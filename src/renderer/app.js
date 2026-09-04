@@ -65,7 +65,6 @@ const App = {
         App.onDone(s, busyMs);
         // 반복 done 이벤트가 다음 예약까지 소진하지 않도록 실제 실행 완료 전이만 처리한다.
         if (prevStatus === 'running') App.handleQueuedDone(sessionId);
-        if (prevStatus !== 'done') App.focusComposerOnDone(s);
       } else {
         App.clearDoneTimers(sessionId); // 새 작업 시작/입력 등으로 done 이탈 → 확인 추적 취소
       }
@@ -823,26 +822,6 @@ const App = {
   DONE_VIEW_MS: 5000,
   DONE_FALLBACK_MS: 5 * 60 * 1000,
   doneTimers: new Map(), // sessionId → { view, fallback }
-
-  // 작업 완료 시 커서를 그 패널의 프롬프트 입력창으로 — 완료 직후 이어서 치는
-  // 텍스트가 터미널(xterm)로 새는 것을 막는다. 보고 있는(활성) 세션에만 적용하고,
-  // 다른 입력 요소에서 작성 중이면 포커스를 뺏지 않는다.
-  // (xterm 의 숨은 textarea 는 '커서가 터미널에 있는' 상태이므로 입력창으로 옮겨 오되,
-  //  사용자가 터미널에서 직접 타이핑 중이면 예외 — 타이핑 에코 출력만으로도
-  //  done 전이가 생기므로(800ms 무출력 판정) 최근 입력이 있으면 뺏지 않는다)
-  TERM_TYPING_GRACE_MS: 3000,
-  focusComposerOnDone(s) {
-    if (s.id !== App.state.activeId) return;
-    if (App.isOverlayOpen('modal-backdrop')) return;
-    if (TerminalView.typedRecently(s.id, App.TERM_TYPING_GRACE_MS)) return;
-    const c = TerminalView.composerForSession(s.id);
-    if (!c || c.input.disabled) return;
-    const ae = document.activeElement;
-    const editing = ae && ae !== c.input && (ae.isContentEditable ||
-      (['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName) && !ae.classList.contains('xterm-helper-textarea')));
-    if (editing) return;
-    c.input.focus();
-  },
 
   // 같은 세션에 이 간격 안에서 완료 알림을 두 번 보내지 않는다 — 백엔드가 상태를
   // 오판했더라도(짧은 running↔done 왕복) 팝업이 연달아 뜨는 것을 막는 안전망.
