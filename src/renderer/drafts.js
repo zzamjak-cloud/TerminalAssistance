@@ -315,6 +315,7 @@ Object.assign(App, {
   deliverDraft(sessionId, text) {
     const submitText = App.normalizeComposerSubmitText(text);
     if (!submitText.trim() || !TerminalView.views.has(sessionId)) return;
+    App.noteSessionActivity(sessionId); // 프롬프트 전송도 사용자 활동 — 복원 표시를 걷는다
     TerminalView.paste(sessionId, submitText);
     // Enter 는 붙여넣기와 분리된 별도 write 로 보낸다.
     // - ESC+CR 을 한 번에 쓰면 TUI(crossterm)가 Alt+Enter 로 읽어 줄바꿈만 삽입하고 대기한다.

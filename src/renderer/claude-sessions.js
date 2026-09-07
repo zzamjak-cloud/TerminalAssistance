@@ -132,14 +132,23 @@ Object.assign(App, {
   // 세션 경로는 기록의 cwd 와 일치하는 프로젝트 우선 — AI 도구는 세션을 경로 기준으로
   // 필터링하므로 홈 터미널에서 열람했더라도 올바른 경로에서 재개된다.
   // 셸 초기화 출력과 입력이 얽히지 않도록 잠시 뒤에 보낸다 (그 전 입력도 PTY 가 버퍼링하긴 함)
-  async resumeSessionHistory(it) {
+  // opts.sessionId 를 주면 새 세션을 만들지 않고 그 세션에서 재개한다 —
+  // 재시작 복원으로 이미 열려 있는 빈 세션을 그대로 쓰기 위한 경로.
+  async resumeSessionHistory(it, opts) {
     if (App._resuming) return;
     App._resuming = true;
     try {
       const cwd = it.cwd || App.sessionHistoryCwd();
-      const active = App.state.sessions.find((x) => x.id === App.state.activeId);
-      const proj = App.state.projects.find((p) => p.path === cwd);
-      const info = await App.createSession(proj ? proj.id : (active ? active.projectId : null));
+      const reuseId = opts && opts.sessionId;
+      let info;
+      if (reuseId && App.state.sessions.some((s) => s.id === reuseId)) {
+        info = { id: reuseId };
+        App.activateSession(reuseId);
+      } else {
+        const active = App.state.sessions.find((x) => x.id === App.state.activeId);
+        const proj = App.state.projects.find((p) => p.path === cwd);
+        info = await App.createSession(proj ? proj.id : (active ? active.projectId : null));
+      }
       const cmd = it.source === 'codex' ? 'codex resume ' : 'claude --resume ';
       if (info) setTimeout(() => {
         ta.write(info.id, cmd + it.id + '\r');

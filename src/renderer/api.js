@@ -7,9 +7,28 @@
   window.ta = {
     getState: () => invoke('get_state'),
 
-    addProject: (p) => invoke('add_project', { name: p.name, path: p.path, color: p.color || null }),
+    addProject: (p) => invoke('add_project', {
+      name: p.name,
+      path: p.path,
+      color: p.color || null,
+      // 워크트리 프로젝트일 때만 함께 넘긴다 (부모 id + 체크아웃한 브랜치)
+      parentId: p.parentId || null,
+      branch: p.branch || null
+    }),
     updateProject: (id, patch) => invoke('update_project', { id, name: patch.name ?? null, path: patch.path ?? null, color: patch.color ?? null }),
     removeProject: (id) => invoke('remove_project', { id }),
+
+    // 재시작 복원: 지난 실행에서 열려 있던 세션을 되살린다 (부팅 중 1회)
+    restoreSessions: () => invoke('restore_sessions'),
+
+    // ── git 워크트리 ──
+    repoInfo: (cwd) => invoke('repo_info', { cwd }),
+    worktreeAdd: (o) => invoke('worktree_add', {
+      root: o.root, path: o.path, branch: o.branch, createNew: !!o.createNew, base: o.base || null
+    }),
+    worktreeCheck: (root, path) => invoke('worktree_check', { root, path }),
+    worktreeRemove: (root, path, force) => invoke('worktree_remove', { root, path, force: !!force }),
+
     reorderProjects: (ids) => invoke('reorder_projects', { ids }),
     pickFolder: () => invoke('pick_folder'),
 

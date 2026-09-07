@@ -114,8 +114,9 @@ pub async fn resolve_project_file(cwd: String, rel: String) -> Option<String> {
     None
 }
 
-/// OS 콘솔 창이 깜빡이지 않게 git 프로세스를 실행 (windows_subsystem 빌드 대응)
-fn git_cmd(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
+/// OS 콘솔 창이 깜빡이지 않게 git 프로세스를 실행 (windows_subsystem 빌드 대응).
+/// 성공(exit 0) 시에만 stdout 을 돌려준다 — 실패 사유가 필요하면 `git_cmd_full` 을 쓴다.
+pub(crate) fn git_cmd(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(cwd).args(args);
     // 자격증명 입력 프롬프트로 프로세스가 멈추지 않게 한다 (fetch/pull 이 네트워크를 탄다)
@@ -131,6 +132,30 @@ fn git_cmd(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
         return None;
     }
     Some(out.stdout)
+}
+
+/// `git_cmd` 와 같은 실행 조건이되 실패 사유(stderr)까지 돌려준다.
+/// 워크트리 생성·제거처럼 사용자에게 실패 원인을 그대로 보여줘야 하는 곳에서 쓴다.
+pub(crate) fn git_cmd_full(cwd: &str, args: &[&str]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("git 을 실행할 수 없습니다: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if out.status.success() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    // git 은 실패 사유를 stderr 에 쓰지만, 비어 있으면 stdout 이라도 보여준다
+    Err(if stderr.is_empty() { stdout } else { stderr })
 }
 
 #[derive(Serialize)]

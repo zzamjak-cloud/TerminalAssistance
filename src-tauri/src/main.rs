@@ -10,13 +10,14 @@ mod plans;
 mod pty;
 mod store;
 mod util;
+mod worktree;
 
 use pty::PtyManager;
 use serde_json::json;
 use std::fs;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{new_id, LaunchRecipe, Preset, Project, Store};
+use store::{new_id, LaunchRecipe, Preset, Project, SavedSession, Store};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -84,15 +85,36 @@ fn add_project(
     name: String,
     path: String,
     color: Option<String>,
+    parent_id: Option<String>,
+    branch: Option<String>,
 ) -> Result<Project, String> {
+    // parentId·branch 는 워크트리 프로젝트에서만 함께 들어온다 (한쪽만 오면 일반 프로젝트로 둔다)
+    let worktree = parent_id.is_some() && branch.is_some();
     let p = Project {
         id: new_id(),
         name,
         path,
         color: color.unwrap_or_else(|| "#4f8cc9".into()),
+        parent_id: if worktree { parent_id } else { None },
+        branch: if worktree { branch } else { None },
     };
     let mut s = plock(&store);
-    s.data.projects.push(p.clone());
+    // 워크트리는 부모 바로 뒤에 끼워 넣어 사이드바 순서와 저장 순서를 일치시킨다
+    let at = p.parent_id.as_ref().and_then(|pid| {
+        let start = s.data.projects.iter().position(|x| &x.id == pid)?;
+        // 이미 달려 있는 형제 워크트리들 뒤로 보낸다
+        let mut idx = start + 1;
+        while idx < s.data.projects.len()
+            && s.data.projects[idx].parent_id.as_deref() == Some(pid.as_str())
+        {
+            idx += 1;
+        }
+        Some(idx)
+    });
+    match at {
+        Some(i) => s.data.projects.insert(i, p.clone()),
+        None => s.data.projects.push(p.clone()),
+    }
     s.save()?;
     Ok(p)
 }
@@ -132,6 +154,13 @@ fn reorder_projects(store: StoreState, ids: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 fn remove_project(store: StoreState, id: String) -> Result<(), String> {
     let mut s = plock(&store);
+    // 부모를 지워도 워크트리 폴더는 git 이 소유하므로 건드리지 않는다.
+    // 등록만 최상위 프로젝트로 승격시켜 목록에서 사라지지 않게 한다.
+    for p in s.data.projects.iter_mut() {
+        if p.parent_id.as_deref() == Some(id.as_str()) {
+            p.parent_id = None;
+        }
+    }
     s.data.projects.retain(|p| p.id != id);
     s.data
         .presets
@@ -362,6 +391,92 @@ fn update_settings(
 }
 
 // ── 세션 ──
+// ── 세션 배치 영속화 (재시작 복원용) ──
+// 살아 있는 세션 목록만 스냅샷해 설정에 남긴다. 화면 내용은 저장하지 않는다.
+// 호출 지점은 세션 생성·종료·이름변경 세 곳뿐이라 상시 부하가 없다.
+fn save_session_layout(store: &StoreState, ptys: &State<PtyManager>) {
+    let saved: Vec<SavedSession> = ptys
+        .list()
+        .into_iter()
+        .filter(|s| s.status != pty::Status::Exited)
+        .map(|s| SavedSession {
+            id: s.id,
+            project_id: s.project_id,
+            title: s.title,
+            cwd: s.cwd,
+            created_at_ms: s.created_at_ms,
+        })
+        .collect();
+    let mut s = plock(store);
+    if s.data.session_layout.len() == saved.len()
+        && s.data
+            .session_layout
+            .iter()
+            .zip(&saved)
+            .all(|(a, b)| a.id == b.id && a.title == b.title)
+    {
+        return; // 바뀐 게 없으면 디스크를 건드리지 않는다
+    }
+    s.data.session_layout = saved;
+    let _ = s.save(); // 배치 저장 실패는 사용자 조작을 막을 이유가 아니다 (다음 변경 때 재시도)
+}
+
+/// 지난 실행에서 열려 있던 세션을 되살린다. 프론트가 부팅 중 한 번 호출한다.
+/// 프로젝트가 사라졌거나 작업 폴더가 없어진 항목(제거된 워크트리 등)은 건너뛰고,
+/// 무엇을 왜 건너뛰었는지 함께 돌려줘 프론트가 사용자에게 알릴 수 있게 한다.
+#[tauri::command]
+fn restore_sessions(
+    app: AppHandle,
+    store: StoreState,
+    ptys: State<PtyManager>,
+) -> serde_json::Value {
+    // 이미 세션이 있으면(웹뷰 리로드) 아무것도 하지 않는다 — 중복 생성 방지
+    if !ptys.list().is_empty() {
+        return json!({ "restored": [], "skipped": [], "alreadyRunning": true });
+    }
+    let (saved, shell, project_ids) = {
+        let s = plock(&store);
+        (
+            s.data.session_layout.clone(),
+            s.data.settings.shell.clone(),
+            s.data
+                .projects
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<std::collections::HashSet<_>>(),
+        )
+    };
+
+    let mut restored = Vec::new();
+    let mut skipped = Vec::new();
+    for item in saved {
+        if let Some(reason) =
+            store::session_restore_skip_reason(&item, &project_ids, |p| {
+                std::path::Path::new(p).is_dir()
+            })
+        {
+            skipped.push(json!({ "title": item.title, "cwd": item.cwd, "reason": reason }));
+            continue;
+        }
+        match ptys.create(
+            app.clone(),
+            item.project_id.clone(),
+            Some(item.cwd.clone()),
+            &shell,
+            Some(item.title.clone()),
+            Some((item.id.clone(), item.created_at_ms)),
+        ) {
+            Ok(info) => restored.push(info),
+            Err(e) => {
+                skipped.push(json!({ "title": item.title, "cwd": item.cwd, "reason": e }));
+            }
+        }
+    }
+    // 건너뛴 항목이 저장 목록에 계속 남아 매 실행 경고를 반복하지 않도록 정리한다
+    save_session_layout(&store, &ptys);
+    json!({ "restored": restored, "skipped": skipped, "alreadyRunning": false })
+}
+
 #[tauri::command]
 fn create_session(
     app: AppHandle,
@@ -390,7 +505,9 @@ fn create_session(
         .max()
         .unwrap_or(0)
         + 1;
-    ptys.create(app, project_id, cwd, &shell, Some(format!("S{}", n)))
+    let info = ptys.create(app, project_id, cwd, &shell, Some(format!("S{}", n)), None)?;
+    save_session_layout(&store, &ptys);
+    Ok(info)
 }
 
 #[tauri::command]
@@ -399,12 +516,18 @@ fn write_session(ptys: State<PtyManager>, id: String, data: String) {
 }
 
 #[tauri::command]
-fn rename_session(ptys: State<PtyManager>, id: String, title: String) -> Result<(), String> {
+fn rename_session(
+    store: StoreState,
+    ptys: State<PtyManager>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
     let t = title.trim();
     if t.is_empty() {
         return Err("제목이 비어 있습니다".into());
     }
     ptys.rename(&id, t);
+    save_session_layout(&store, &ptys);
     Ok(())
 }
 
@@ -414,8 +537,9 @@ fn resize_session(ptys: State<PtyManager>, id: String, cols: u16, rows: u16) {
 }
 
 #[tauri::command]
-fn close_session(ptys: State<PtyManager>, id: String) {
+fn close_session(store: StoreState, ptys: State<PtyManager>, id: String) {
     ptys.close(&id);
+    save_session_layout(&store, &ptys);
 }
 
 #[tauri::command]
@@ -889,6 +1013,7 @@ fn main() {
             remove_recipe,
             update_settings,
             create_session,
+            restore_sessions,
             write_session,
             rename_session,
             resize_session,
@@ -928,6 +1053,10 @@ fn main() {
             explorer::move_path,
             explorer::delete_file,
             explorer::resolve_project_file,
+            worktree::repo_info,
+            worktree::worktree_add,
+            worktree::worktree_check,
+            worktree::worktree_remove,
             codex::list_codex_sessions,
             codex::codex_session_messages,
             codex::codex_usage,

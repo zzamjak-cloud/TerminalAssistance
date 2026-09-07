@@ -523,6 +523,8 @@ impl PtyManager {
         });
     }
 
+    /// `restore` 가 있으면 지난 실행의 세션 id·생성 시각을 그대로 이어받는다.
+    /// 분할 배치(`ta-split-panes`)가 세션 id 로 저장돼 있어, id 를 보존해야 레이아웃까지 살아난다.
     pub fn create(
         &self,
         app: AppHandle,
@@ -530,8 +532,9 @@ impl PtyManager {
         cwd: Option<String>,
         shell_override: &str,
         title: Option<String>,
+        restore: Option<(String, u64)>,
     ) -> Result<SessionInfo, String> {
-        let (id, created_at_ms) = (crate::store::new_id(), now_ms());
+        let (id, created_at_ms) = restore.unwrap_or_else(|| (crate::store::new_id(), now_ms()));
         let shell = resolve_shell(shell_override)?;
         let home = || std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_else(|_| ".".into());
         let mut cwd = cwd.unwrap_or_else(home);

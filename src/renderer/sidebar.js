@@ -27,6 +27,8 @@ function initSidebarSort() {
     itemSelector: '.project[data-id]',
     axis: 'y',
     ignore: 'button, .chevron, .session-row',
+    // 워크트리는 부모를 따라만 움직인다 — 자신이 끌리거나 드롭 대상이 되지 않게 막는다
+    canDrop: (srcEl, dstEl) => !srcEl.dataset.parent && !dstEl.dataset.parent,
     onDrop: (srcId, dstId, before) => App.moveProject(srcId, dstId, before)
   });
 }
@@ -145,6 +147,14 @@ function renderSidebar() {
     t.className = 'session-title';
     t.textContent = s.title;
     row.appendChild(t);
+    // 재시작으로 되살린 세션은 아직 아무것도 돌지 않았음을 알린다 (첫 입력·실행 시 사라짐)
+    if (App._restoredSessions && App._restoredSessions.has(s.id)) {
+      const r = document.createElement('span');
+      r.className = 'restored-tag';
+      r.textContent = '복원됨';
+      r.title = '재시작 전 열려 있던 세션 — 셸만 다시 열렸고 화면 내용은 복원하지 않습니다';
+      row.appendChild(r);
+    }
     row.appendChild(statusTag(s.status));
     // 닫기 버튼: 첫 클릭 = "삭제 확인" 표시(재클릭 시 실제 닫기) — 실수 방지
     const x = document.createElement('button');
@@ -247,15 +257,19 @@ function renderSidebar() {
     list.appendChild(box);
   }
 
-  for (const p of projects) {
+  // 워크트리는 부모 바로 아래 들여쓰기로 붙는다 (부모를 접으면 함께 숨는다)
+  for (const { project: p, depth } of orderProjectsWithWorktrees(projects)) {
+    const isWorktree = depth > 0;
+    if (isWorktree && Collapsed.has(p.parentId)) continue;
     const mySessions = sessions.filter((s) => s.projectId === p.id);
     const folded = Collapsed.has(p.id);
     // 현재 활성 세션이 이 프로젝트 소속(또는 빈 프로젝트 선택 중)이면 프로젝트 행도 파랑으로 강조
     const hasActive = mySessions.some((s) => s.id === activeId) || p.id === App.state.projectEmptyId;
 
     const box = document.createElement('div');
-    box.className = 'project';
+    box.className = 'project' + (isWorktree ? ' worktree' : '');
     box.dataset.id = p.id;
+    if (isWorktree) box.dataset.parent = p.parentId;
 
     const row = document.createElement('div');
     row.className = 'project-row' + (hasActive ? ' active' : '');
@@ -274,6 +288,15 @@ function renderSidebar() {
     row.appendChild(chev);
 
     // 컬러 아이콘 대신 프로젝트 이름에 색상 적용
+    // 워크트리는 브랜치를 다루는 항목이라는 걸 이름 앞에서 바로 알린다
+    if (isWorktree) {
+      const mark = document.createElement('span');
+      mark.className = 'worktree-mark';
+      mark.innerHTML = branchIconSvg(11);
+      mark.title = '워크트리 — ' + (p.branch || '');
+      row.appendChild(mark);
+    }
+
     const name = document.createElement('span');
     name.className = 'project-name';
     name.textContent = p.name;
@@ -295,6 +318,16 @@ function renderSidebar() {
 
     const actions = document.createElement('span');
     actions.className = 'project-actions';
+    // git 저장소인 최상위 프로젝트에만 붙는 조건부 버튼 — 고정 버튼(＋·✎)의 자리가
+    // 흔들리지 않도록 목록 맨 왼쪽에 둔다 (액션 영역은 행 오른쪽 끝에 붙어 있다)
+    if (!isWorktree && App.isGitRepo(p)) {
+      const wtBtn = document.createElement('button');
+      wtBtn.className = 'icon-btn';
+      wtBtn.innerHTML = branchIconSvg(13);
+      wtBtn.title = '워크트리 만들기 — 다른 브랜치를 별도 폴더로 열기';
+      wtBtn.onclick = (e) => { e.stopPropagation(); App.showWorktreeModal(p); };
+      actions.appendChild(wtBtn);
+    }
     const addBtn = document.createElement('button');
     addBtn.textContent = '＋';
     addBtn.title = '새 세션';
@@ -310,6 +343,13 @@ function renderSidebar() {
     editBtn.onclick = (e) => { e.stopPropagation(); App.showProjectModal(p); };
     actions.appendChild(addBtn);
     actions.appendChild(editBtn);
+    if (isWorktree) {
+      const delBtn = document.createElement('button');
+      delBtn.textContent = '✕';
+      delBtn.title = '워크트리 제거';
+      delBtn.onclick = (e) => { e.stopPropagation(); App.removeWorktree(p); };
+      actions.appendChild(delBtn);
+    }
     row.appendChild(actions);
     // 클릭 = 프로젝트 선택: 세션이 없으면 즉시 새 세션 시작,
     // 있으면 이 프로젝트에서 마지막으로 선택했던 세션으로 복귀 (접힘 상태면 펼침).
@@ -321,7 +361,7 @@ function renderSidebar() {
       const target = mySessions.find((s) => s.id === lastId) || mySessions[mySessions.length - 1];
       App.activateSession(target.id);
     };
-    row.title = p.path;
+    row.title = isWorktree ? `워크트리 · ${p.branch}\n${p.path}` : p.path;
     box.appendChild(row);
 
     if (!folded) {

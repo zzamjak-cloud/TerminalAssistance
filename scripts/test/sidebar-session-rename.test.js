@@ -3,6 +3,8 @@ const path = require('path');
 const vm = require('vm');
 
 const SRC = path.join(__dirname, '..', '..', 'src', 'renderer', 'sidebar.js');
+// 사이드바는 워크트리 중첩 정렬(orderProjectsWithWorktrees)을 worktree.js 에서 가져다 쓴다
+const WORKTREE_SRC = path.join(__dirname, '..', '..', 'src', 'renderer', 'worktree.js');
 
 class FakeElement {
   constructor(tagName, ownerDocument) {
@@ -136,7 +138,11 @@ function loadSidebar() {
     makeSortable() {},
     Theme: { adjustText: (color) => color },
     ArmedConfirm: { isArmed: () => false, disarm() {}, arm() {} },
-    ta: { renameSession: async (id, title) => calls.push([id, title]) },
+    ta: {
+      renameSession: async (id, title) => calls.push([id, title]),
+      // 워크트리 버튼 노출 판단이 쓰는 저장소 조회 — 이 테스트에서는 항상 '저장소 아님'
+      repoInfo: () => Promise.resolve(null),
+    },
     App: {
       state: {
         projects: [{ id: 'p1', name: 'Project', path: 'D:/Project', color: '' }],
@@ -152,7 +158,8 @@ function loadSidebar() {
     },
     console: { warn() {}, error() {}, log() {} },
   };
-  const api = vm.runInNewContext(fs.readFileSync(SRC, 'utf8') + ';({ renderSidebar });', sandbox);
+  const source = fs.readFileSync(WORKTREE_SRC, 'utf8') + '\n' + fs.readFileSync(SRC, 'utf8');
+  const api = vm.runInNewContext(source + ';({ renderSidebar });', sandbox);
   return { api, document, calls, App: sandbox.App };
 }
 

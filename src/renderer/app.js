@@ -38,6 +38,10 @@ const App = {
     TerminalView.init();
     // 기본 온보딩 안내(index.html 정적 마크업)를 보관 — 빈 프로젝트 화면과 번갈아 쓴다
     App._emptyDefault = document.getElementById('empty-state').innerHTML;
+    // 재시작 복원은 getState 보다 먼저 — 되살린 세션이 st.sessions 에 함께 실려오면
+    // 아래의 터미널 생성·스크롤백 주입·분할 배치 복원 경로를 그대로 탄다.
+    // (웹뷰 리로드일 때는 백엔드에 세션이 이미 살아 있어 아무것도 하지 않는다)
+    const restoreResult = await App.restoreSessions();
     const st = await ta.getState();
     Object.assign(App.state, {
       projects: st.projects, presets: st.presets, recipes: st.recipes || [], settings: st.settings, sessions: st.sessions,
@@ -164,6 +168,8 @@ const App = {
     }
 
     App.renderAll();
+    // 복원 결과 알림 + '이어서 하기' 배너 (기록 조회가 있으므로 UI 를 막지 않게 뒤에서 돈다)
+    App.afterSessionRestore(restoreResult);
     if (recovered) App.noteRecovery(); // UI 가 그려진 뒤 복구 사실을 알린다
     App.refreshVisibleGitRemote({ fetch: true }); // 복원 뒤 실제로 보이는 cwd만 fetch
 
@@ -620,13 +626,10 @@ const App = {
 
   async moveProject(srcId, targetId, before) {
     const arr = App.state.projects;
-    const from = arr.findIndex((p) => p.id === srcId);
-    if (from < 0) return;
-    const [moved] = arr.splice(from, 1);
-    let to = arr.findIndex((p) => p.id === targetId);
-    if (to < 0) { arr.splice(from, 0, moved); return; }
-    if (!before) to += 1;
-    arr.splice(to, 0, moved);
+    const order = arr.map((p) => p.id).join(' ');
+    // 딸린 워크트리를 통째로 데려간다 (워크트리 자체는 부모를 따라만 움직인다)
+    moveProjectGroup(arr, srcId, targetId, before);
+    if (arr.map((p) => p.id).join(' ') === order) return; // 순서가 그대로면 저장하지 않는다
     renderSidebar();
     await ta.reorderProjects(arr.map((p) => p.id)).catch((e) => console.warn('프로젝트 순서 저장 실패:', e));
   },
