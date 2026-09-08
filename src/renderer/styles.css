@@ -938,9 +938,12 @@ button:disabled:hover { border-color: var(--border); }
 }
 .memo-modal-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-fill); }
 .memo-modal-editor:empty::before { content: attr(data-placeholder); color: var(--fg-dim); pointer-events: none; }
-/* 메모 수정 팝업 — Markdown 원문 편집 textarea */
+/* 메모 수정 팝업 — Markdown 원문 편집 textarea.
+   textarea 는 내용에 따라 자라지 않아 max-height 가 발동하지 않는다(min-height 에 고정됨).
+   그래서 height 를 창 높이에 비례시킨다 — 240px 는 제목·부제·라벨·입력·버튼 줄의 실측 높이라
+   팝업 전체가 84vh 에 들어맞고, 창 최소 높이(500px)에서도 화면을 넘지 않는다. */
 .memo-edit-body {
-  width: 100%; min-height: 220px; max-height: 52vh; resize: vertical;
+  width: 100%; height: calc(84vh - 240px); min-height: 220px; resize: vertical;
   padding: 10px 11px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--fg); outline: none;
   font-size: 13px; line-height: 1.55; font-family: inherit;
