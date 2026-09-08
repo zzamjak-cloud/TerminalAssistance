@@ -113,7 +113,8 @@ fn add_project(
     });
     match at {
         Some(i) => s.data.projects.insert(i, p.clone()),
-        None => s.data.projects.push(p.clone()),
+        // 새 일반 프로젝트는 목록 맨 앞 — 사이드바에서 고정된 '일반 터미널' 바로 아래 첫 자리로 온다
+        None => s.data.projects.insert(0, p.clone()),
     }
     s.save()?;
     Ok(p)

@@ -369,7 +369,7 @@ Object.assign(App, {
               Object.assign(existing, patch);
             } else {
               const p = await ta.addProject({ name: name.value.trim(), path: path.value.trim(), color: chosen });
-              App.state.projects.push(p);
+              App.state.projects.unshift(p); // 백엔드와 같은 규칙 — 새 프로젝트는 목록 맨 앞
             }
           } catch (e) { alert('저장 실패: ' + e); return; }
           close(); App.renderAll();

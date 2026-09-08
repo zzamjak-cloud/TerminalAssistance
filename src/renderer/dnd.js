@@ -2,9 +2,23 @@
 // Tauri(WKWebView)는 파일 드롭용 네이티브 핸들러가 HTML5 DnD 이벤트를 가로채므로,
 // dnd-kit 과 같은 방식으로 mousedown/mousemove/mouseup 을 직접 추적한다.
 // 드롭 위치는 파란 점선(.drop-indicator)으로 표시.
+
+// 드래그 중 목록 경계에 다가가면 자동 스크롤 — 컨테이너 자신 또는 스크롤되는 조상을 찾는다
+function findScrollHost(el, axis) {
+  for (let n = el; n && n !== document.body; n = n.parentElement) {
+    const st = getComputedStyle(n);
+    const ov = axis === 'x' ? st.overflowX : st.overflowY;
+    if (!/(auto|scroll|overlay)/.test(ov)) continue;
+    if (axis === 'x' ? n.scrollWidth > n.clientWidth : n.scrollHeight > n.clientHeight) return n;
+  }
+  return null;
+}
+
 function makeSortable(opts) {
   // opts: { container, itemSelector, axis: 'y'|'x', ignore?, canDrop?(srcEl,dstEl), onDrop(srcId,dstId,before) }
   const c = opts.container;
+  const EDGE = 40;      // 경계로부터 이 거리 안에서 자동 스크롤 시작 (px)
+  const MAX_STEP = 16;  // 프레임당 최대 스크롤량 (px)
   c.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     const src = e.target.closest(opts.itemSelector);
@@ -14,30 +28,23 @@ function makeSortable(opts) {
 
     const startX = e.clientX, startY = e.clientY;
     let dragging = false, indicator = null, target = null, before = false;
+    let host = null, timer = 0, lastX = e.clientX, lastY = e.clientY;
 
-    const move = (ev) => {
-      if (!dragging) {
-        if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < 6) return; // 클릭과 구분
-        dragging = true;
-        src.classList.add('dragging');
-        indicator = document.createElement('div');
-        indicator.className = 'drop-indicator' + (opts.axis === 'x' ? ' vert' : '');
-        document.body.appendChild(indicator);
-        document.body.classList.add('sorting');
-      }
+    // 포인터 위치로 드롭 대상과 인디케이터를 갱신한다 (자동 스크롤 뒤에도 재사용)
+    const update = () => {
       target = null;
       for (const el of c.querySelectorAll(opts.itemSelector)) {
         if (el === src) continue;
         const r = el.getBoundingClientRect();
         const inside = opts.axis === 'x'
-          ? ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top - 10 && ev.clientY <= r.bottom + 10
-          : ev.clientY >= r.top && ev.clientY <= r.bottom;
+          ? lastX >= r.left && lastX <= r.right && lastY >= r.top - 10 && lastY <= r.bottom + 10
+          : lastY >= r.top && lastY <= r.bottom;
         if (!inside) continue;
         if (opts.canDrop && !opts.canDrop(src, el)) continue;
         target = el;
         before = opts.axis === 'x'
-          ? ev.clientX < r.left + r.width / 2
-          : ev.clientY < r.top + r.height / 2;
+          ? lastX < r.left + r.width / 2
+          : lastY < r.top + r.height / 2;
         break;
       }
       if (target) {
@@ -57,9 +64,44 @@ function makeSortable(opts) {
       }
     };
 
+    // 포인터가 멈춰 있어도 계속 굴러가야 하므로 타이머로 반복한다
+    const autoScroll = () => {
+      if (!host) return;
+      const r = host.getBoundingClientRect();
+      const pos = opts.axis === 'x' ? lastX : lastY;
+      const min = opts.axis === 'x' ? r.left : r.top;
+      const max = opts.axis === 'x' ? r.right : r.bottom;
+      let dir = 0;
+      if (pos < min + EDGE) dir = -(1 - (pos - min) / EDGE);
+      else if (pos > max - EDGE) dir = 1 - (max - pos) / EDGE;
+      if (!dir) return;
+      dir = Math.max(-1, Math.min(1, dir));
+      const key = opts.axis === 'x' ? 'scrollLeft' : 'scrollTop';
+      const prev = host[key];
+      host[key] = prev + dir * MAX_STEP;
+      if (host[key] !== prev) update(); // 스크롤로 항목이 움직였으니 인디케이터를 다시 계산
+    };
+
+    const move = (ev) => {
+      lastX = ev.clientX; lastY = ev.clientY;
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < 6) return; // 클릭과 구분
+        dragging = true;
+        src.classList.add('dragging');
+        indicator = document.createElement('div');
+        indicator.className = 'drop-indicator' + (opts.axis === 'x' ? ' vert' : '');
+        document.body.appendChild(indicator);
+        document.body.classList.add('sorting');
+        host = findScrollHost(c, opts.axis);
+        if (host) timer = setInterval(autoScroll, 16);
+      }
+      update();
+    };
+
     const up = () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
+      if (timer) { clearInterval(timer); timer = 0; }
       if (dragging) {
         src.classList.remove('dragging');
         if (indicator) indicator.remove();
