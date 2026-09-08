@@ -5,7 +5,10 @@ const path = require('path');
 const vm = require('vm');
 
 const SRC = path.join(__dirname, '..', '..', 'src', 'renderer', 'dashboard.js');
-const sandbox = { App: {}, TerminalView: { views: new Map() }, document: {}, Date, Map, Set, console };
+const sandbox = {
+  App: {}, TerminalView: { views: new Map() }, document: {}, Date, Map, Set, console,
+  localStorage: { getItem: () => null, setItem() {} }
+};
 vm.createContext(sandbox);
 vm.runInContext(
   fs.readFileSync(SRC, 'utf8')
@@ -28,7 +31,8 @@ function fakeView(lines) {
   };
 }
 
-const order = (list) => sortSessionsForDashboard(list).map((s) => s.id).join(',');
+const order = (list, mode, ctx) =>
+  sortSessionsForDashboard(list, mode, ctx).map((s) => s.id).join(',');
 
 exports.name = '전 세션 대시보드 (정렬 · 버퍼 tail)';
 
@@ -61,6 +65,38 @@ exports.run = function (t) {
       { id: 'r', status: 'running' }, { id: 'w1', status: 'waiting' }, { id: 'w2', status: 'waiting' }
     ]) === 'w1,w2,r');
   t.check('빈 목록·null 도 안전', order([]) === '' && order(null) === '');
+  t.check('알 수 없는 정렬 기준은 상태 정렬로 대체', order(sessions, '무엇') === 'c,e,b,a,d');
+  t.check('ctx 를 생략해도 상태 정렬은 동작', order(sessions, 'status') === 'c,e,b,a,d');
+
+  // ── 프로젝트 정렬: 프로젝트 등록 순서 → 세션 생성 순서 ──
+  const projCtx = { projectIndex: new Map([['p2', 0], ['p1', 1]]) };
+  const mixed = [
+    { id: 'a', status: 'idle', projectId: 'p1' },
+    { id: 'b', status: 'idle', projectId: 'p2' },
+    { id: 'home', status: 'idle', projectId: null },
+    { id: 'c', status: 'idle', projectId: 'p1' },
+    { id: 'd', status: 'idle', projectId: 'p2' }
+  ];
+  t.check('프로젝트 등록 순서대로 묶인다',
+    order(mixed, 'project', projCtx) === 'b,d,a,c,home', order(mixed, 'project', projCtx));
+  t.check('프로젝트 없는 홈 터미널은 끝으로',
+    order(mixed, 'project', projCtx).endsWith('home'));
+  t.check('등록 목록에 없는 프로젝트도 끝으로 (삭제 직후 등)',
+    order([{ id: 'x', projectId: '사라짐' }, { id: 'y', projectId: 'p2' }], 'project', projCtx) === 'y,x');
+  t.check('프로젝트 정렬은 상태를 보지 않는다',
+    order([
+      { id: 'a', status: 'exited', projectId: 'p2' },
+      { id: 'b', status: 'waiting', projectId: 'p1' }
+    ], 'project', projCtx) === 'a,b');
+
+  // ── 최근 활동 정렬: 최근에 상태가 바뀐 순 ──
+  const actCtx = { lastChangeAt: new Map([['a', 100], ['b', 300], ['c', 200]]) };
+  t.check('최근 변화가 앞으로',
+    order([{ id: 'a' }, { id: 'b' }, { id: 'c' }], 'activity', actCtx) === 'b,c,a');
+  t.check('기록이 없는 세션은 뒤로',
+    order([{ id: 'z' }, { id: 'b' }], 'activity', actCtx) === 'b,z');
+  t.check('기록이 없는 세션끼리는 생성 순서 유지',
+    order([{ id: 'z1' }, { id: 'z2' }], 'activity', actCtx) === 'z1,z2');
 
   // ── 버퍼 tail ──
   t.check('마지막 3행을 순서대로 가져온다',

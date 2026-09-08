@@ -20,12 +20,36 @@ function dashboardStatusRank(status) {
   return rank === undefined ? 3 : rank;
 }
 
-// 표시 순서 = [상태 우선순위, 세션 생성 순서]. 렌더는 이 순서를 CSS order 로 적용하므로
-// DOM 은 세션 순서로 고정되고 상태가 바뀌어도 타일이 이동만 한다 (재생성·깜빡임 없음).
-function sortSessionsForDashboard(sessions) {
+const DASH_SORTS = [
+  { id: 'status', label: '상태' },
+  { id: 'project', label: '프로젝트' },
+  { id: 'activity', label: '최근 활동' }
+];
+
+// 표시 순서를 계산한다. 렌더는 이 순서의 인덱스를 CSS order 로 적용하므로
+// DOM 은 세션 순서로 고정되고, 순서가 바뀌어도 타일이 이동만 한다 (재생성·깜빡임 없음).
+// 어떤 기준이든 동순위는 세션 생성 순서(원본 배열 순서)로 갈린다.
+// ctx: { projectIndex: Map(projectId → 표시 순서), lastChangeAt: Map(sessionId → ms) }
+function sortSessionsForDashboard(sessions, mode, ctx) {
+  const c = ctx || {};
+  const projectIndex = c.projectIndex || new Map();
+  const lastChangeAt = c.lastChangeAt || new Map();
+  // 프로젝트가 없는 홈 터미널은 목록 끝으로 (등록된 프로젝트보다 뒤)
+  const projRank = (s) => {
+    const idx = s.projectId === null || s.projectId === undefined
+      ? undefined : projectIndex.get(s.projectId);
+    return idx === undefined ? Number.MAX_SAFE_INTEGER : idx;
+  };
+  const key = {
+    status: (s) => dashboardStatusRank(s.status),
+    project: projRank,
+    // 최근일수록 앞 — 음수로 뒤집어 오름차순 비교에 태운다
+    activity: (s) => -(lastChangeAt.get(s.id) || 0)
+  }[mode] || ((s) => dashboardStatusRank(s.status));
+
   return (sessions || [])
     .map((s, i) => ({ s, i }))
-    .sort((a, b) => (dashboardStatusRank(a.s.status) - dashboardStatusRank(b.s.status)) || (a.i - b.i))
+    .sort((a, b) => (key(a.s) - key(b.s)) || (a.i - b.i))
     .map((x) => x.s);
 }
 
@@ -62,7 +86,11 @@ Object.assign(App, {
   _dashTimer: null,
   _dashTiles: new Map(), // sessionId → { root, statusEl, metaEl, timeEl, bodyEl, lastBody }
   _dashKeyHandler: null,
-  _runStartedAt: new Map(), // sessionId → running 진입 시각 (진행 시간 표시용)
+  _dashMenu: null,
+  _runStartedAt: new Map(),  // sessionId → running 진입 시각 (진행 시간 표시용)
+  _lastStatus: new Map(),    // sessionId → 마지막으로 기록한 상태
+  _lastChangeAt: new Map(),  // sessionId → 상태가 실제로 바뀐 시각 ('최근 활동' 정렬용)
+  _dashSort: localStorage.getItem('ta-dash-sort') || 'status',
 
   // 상태 전이 기록 — 대시보드가 닫혀 있어도 진행 시작 시각은 알고 있어야
   // 열었을 때 경과 시간을 바로 보여줄 수 있다 (Map 쓰기 1회 — 무시할 수 있는 비용)
@@ -72,7 +100,19 @@ Object.assign(App, {
     } else {
       App._runStartedAt.delete(sessionId);
     }
+    // 같은 상태가 반복 통보되는 경우(진행 중 재통보)는 '활동'으로 세지 않는다 —
+    // 그러면 진행 중 세션이 매초 최상단으로 튀어 목록이 요동친다
+    if (App._lastStatus.get(sessionId) !== status) {
+      App._lastStatus.set(sessionId, status);
+      App._lastChangeAt.set(sessionId, Date.now());
+    }
     if (App._dashOpen) App.refreshDashboard();
+  },
+
+  setDashboardSort(mode) {
+    App._dashSort = mode;
+    localStorage.setItem('ta-dash-sort', mode);
+    App.refreshDashboard();
   },
 
   toggleDashboard() {
@@ -86,6 +126,18 @@ Object.assign(App, {
     App._dashOpen = true;
     root.classList.remove('hidden');
     document.getElementById('btn-dashboard').classList.add('on');
+    // 정렬 드롭다운은 열 때 한 번만 채운다
+    const sortEl = document.getElementById('dashboard-sort');
+    if (sortEl && !sortEl.options.length) {
+      for (const opt of DASH_SORTS) {
+        const o = document.createElement('option');
+        o.value = opt.id;
+        o.textContent = opt.label;
+        sortEl.appendChild(o);
+      }
+      sortEl.onchange = () => App.setDashboardSort(sortEl.value);
+    }
+    if (sortEl) sortEl.value = App._dashSort;
     App.renderDashboard();
     App._dashTimer = setInterval(() => {
       // 창이 숨겨져 있으면 갱신하지 않는다 (pollStatus 등 기존 관례와 동일)
@@ -96,6 +148,8 @@ Object.assign(App, {
       if (ev.key !== 'Escape') return;
       const backdrop = document.getElementById('modal-backdrop');
       if (backdrop && !backdrop.classList.contains('hidden')) return;
+      // 타일 메뉴가 열려 있으면 Esc 는 메뉴 몫이다 — 이 핸들러가 먼저 등록돼 있어 직접 양보한다
+      if (App._dashMenu) return;
       ev.preventDefault();
       App.closeDashboard();
     };
@@ -104,6 +158,7 @@ Object.assign(App, {
 
   closeDashboard() {
     App._dashOpen = false;
+    App.closeDashboardTileMenu();
     const root = document.getElementById('dashboard');
     if (root) root.classList.add('hidden');
     const btn = document.getElementById('btn-dashboard');
@@ -127,6 +182,11 @@ Object.assign(App, {
     App._dashTiles.clear();
 
     const sessions = App.state.sessions;
+    // 닫힌 세션의 추적 기록을 정리한다 (세션 집합이 바뀔 때만 도는 자리라 비용이 없다)
+    const alive = new Set(sessions.map((s) => s.id));
+    for (const map of [App._runStartedAt, App._lastStatus, App._lastChangeAt]) {
+      for (const id of [...map.keys()]) if (!alive.has(id)) map.delete(id);
+    }
     document.getElementById('dashboard-count').textContent =
       sessions.length ? `세션 ${sessions.length}개` : '';
 
@@ -166,10 +226,90 @@ Object.assign(App, {
         App.closeDashboard();
         App.activateSession(s.id);
       };
+      // 우클릭 = 분할 패널 배정 — 여러 세션을 훑어 배치하는 흐름이므로 대시보드는 열어 둔다
+      tile.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        App.showDashboardTileMenu(ev, s.id);
+      };
       grid.appendChild(tile);
       App._dashTiles.set(s.id, { root: tile, statusEl: dot, metaEl: meta, timeEl: time, bodyEl: body, lastBody: null });
     }
     App.refreshDashboard();
+  },
+
+  closeDashboardTileMenu() {
+    const menu = App._dashMenu;
+    if (!menu) return;
+    App._dashMenu = null;
+    menu.cleanup();
+    menu.el.remove();
+  },
+
+  // 타일 우클릭 메뉴 — 이 세션을 어느 분할 패널에 띄울지 고른다.
+  // 분할이 아니면 지정할 자리가 없으므로 그 사실만 알려 준다.
+  showDashboardTileMenu(ev, sessionId) {
+    App.closeDashboardTileMenu();
+    const session = App.state.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    const menu = document.createElement('div');
+    menu.className = 'term-context-menu';
+
+    const label = document.createElement('div');
+    label.className = 'term-context-label';
+    label.textContent = App.sessionLabel(session);
+    menu.appendChild(label);
+
+    if (!App.isSplit()) {
+      const hint = document.createElement('div');
+      hint.className = 'term-context-hint';
+      hint.textContent = '분할 화면에서만 패널을 지정할 수 있습니다 (상단바 분할 버튼)';
+      menu.appendChild(hint);
+    } else {
+      const count = App.splitPaneCount();
+      for (let i = 0; i < count; i++) {
+        const held = App.split.panes[i];
+        const heldSession = held ? App.state.sessions.find((s) => s.id === held) : null;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'term-context-item';
+        const here = held === sessionId;
+        // 세션 라벨 자체에 '—' 가 들어가므로(프로젝트명 — S2) 구분은 괄호로 한다
+        const holds = here ? '여기 표시 중' : (heldSession ? '현재: ' + App.sessionLabel(heldSession) : '비어 있음');
+        btn.textContent = `${i + 1}번 패널 (${holds})`;
+        btn.disabled = here;
+        btn.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); };
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          App.closeDashboardTileMenu();
+          // switchPaneSession 이 같은 세션을 쓰던 다른 패널을 비워 중복 표시를 막는다
+          App.switchPaneSession(i, sessionId);
+          App.refreshDashboard(); // 배정 결과(활성 타일)를 즉시 반영 — 대시보드는 열어 둔다
+        };
+        menu.appendChild(btn);
+      }
+    }
+
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = Math.max(0, Math.min(ev.clientX, window.innerWidth - rect.width - 6)) + 'px';
+    menu.style.top = Math.max(0, Math.min(ev.clientY, window.innerHeight - rect.height - 6)) + 'px';
+
+    const closeOnOutside = (e) => { if (!menu.contains(e.target)) App.closeDashboardTileMenu(); };
+    const closeOnKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); App.closeDashboardTileMenu(); } };
+    const closeNow = () => App.closeDashboardTileMenu();
+    document.addEventListener('mousedown', closeOnOutside, true);
+    document.addEventListener('keydown', closeOnKey, true);
+    window.addEventListener('blur', closeNow);
+    window.addEventListener('wheel', closeNow, { passive: true });
+    App._dashMenu = {
+      el: menu,
+      cleanup: () => {
+        document.removeEventListener('mousedown', closeOnOutside, true);
+        document.removeEventListener('keydown', closeOnKey, true);
+        window.removeEventListener('blur', closeNow);
+        window.removeEventListener('wheel', closeNow);
+      }
+    };
   },
 
   // 매 tick 갱신 — DOM 은 값이 실제로 달라졌을 때만 건드린다
@@ -185,6 +325,13 @@ Object.assign(App, {
     }
 
     const project = (s) => App.state.projects.find((p) => p.id === s.projectId);
+    // 선택한 기준으로 표시 순서를 계산한다 — 인덱스를 CSS order 로 주므로 DOM 은 그대로다
+    const projectIndex = new Map(App.state.projects.map((p, i) => [p.id, i]));
+    const ordered = sortSessionsForDashboard(App.state.sessions, App._dashSort, {
+      projectIndex, lastChangeAt: App._lastChangeAt
+    });
+    const orderOf = new Map(ordered.map((s, i) => [s.id, i]));
+
     for (const s of App.state.sessions) {
       const tile = App._dashTiles.get(s.id);
       if (!tile) continue;
@@ -192,7 +339,7 @@ Object.assign(App, {
       // 상태 — 점 색과 정렬 위치 (CSS order 라 DOM 이동이 없다)
       const dotClass = 'dash-dot ' + s.status;
       if (tile.statusEl.className !== dotClass) tile.statusEl.className = dotClass;
-      const order = String(dashboardStatusRank(s.status));
+      const order = String(orderOf.get(s.id) || 0);
       if (tile.root.style.order !== order) tile.root.style.order = order;
       if (tile.root.classList.contains('active') !== (s.id === App.state.activeId)) {
         tile.root.classList.toggle('active', s.id === App.state.activeId);

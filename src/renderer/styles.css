@@ -454,6 +454,8 @@ button:disabled:hover { border-color: var(--border); }
   border-bottom: 1px solid var(--border);
 }
 #dashboard-count { color: var(--fg-dim); font-size: 11px; flex: 1; }
+.dash-sort-label { color: var(--fg-dim); font-size: 11px; }
+#dashboard-sort { padding: 2px 4px; font-size: 11px; }
 #dashboard-head button {
   border: none; background: none; color: var(--fg-dim);
   font-size: 13px; line-height: 1; padding: 2px 4px; cursor: pointer;
@@ -1019,6 +1021,19 @@ button:disabled:hover { border-color: var(--border); }
   border: none; background: none; color: var(--fg);
   text-align: left; padding: 6px 10px; font-size: 12px; border-radius: 5px;
   white-space: nowrap;
+}
+/* 이미 그 자리에 있는 패널 등 고를 수 없는 항목 */
+.term-context-item:disabled { color: var(--fg-dim); cursor: default; }
+.term-context-item:disabled:hover { background: none; }
+/* 메뉴 머리말(대상 이름)과 안내 문구 — 클릭 대상이 아니다 */
+.term-context-label {
+  padding: 4px 10px 5px; font-size: 11px; font-weight: 600; color: var(--fg-dim);
+  border-bottom: 1px solid var(--border); margin-bottom: 3px;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.term-context-hint {
+  padding: 5px 10px 6px; font-size: 11px; color: var(--fg-dim);
+  max-width: 240px; white-space: normal; line-height: 1.5;
 }
 .term-context-item:hover { background: var(--bg-hover-hi); }
 .form-error { min-height: 18px; margin-top: 7px; color: var(--exited); font-size: 11px; line-height: 1.5; }
