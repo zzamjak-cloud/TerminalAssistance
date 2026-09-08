@@ -557,24 +557,7 @@ const App = {
     }
   },
 
-  // Pull 버튼 클릭 — 터미널에 명령을 흘리지 않고 백그라운드로 실행한 뒤 결과를 토스트로 알린다
-  async runGitPull(cwd) {
-    if (!cwd || App._gitPulling === cwd) return;
-    App._gitPulling = cwd;
-    App.renderPanePresets(); // 진행 중 표시
-    try {
-      const r = await ta.gitPull(cwd);
-      App.showToast((r && r.ok ? '⬇ Pull 완료 — ' : '⚠ Pull 실패 — ') + ((r && r.message) || ''));
-    } catch (e) {
-      App.showToast('⚠ Pull 실패 — ' + e);
-    } finally {
-      App._gitPulling = null;
-    }
-    // pull 직후는 이미 최신 원격 정보를 갖고 있으므로 fetch 없이 카운트만 다시 센다
-    await App.refreshGitRemote(cwd, { fetch: false });
-    App.refreshBranch();
-    App.renderPanePresets();
-  },
+  // Pull 실행(runGitPull)과 실패 진단 팝업은 git-pull.js 에 있다
 
   // ── AI 도구 남은 사용량 (상단바 표시) ──
   // 코덱스·Claude Code 각각 최근 사용 흔적이 있을 때만 표시한다. 조회 실패는 미표시.

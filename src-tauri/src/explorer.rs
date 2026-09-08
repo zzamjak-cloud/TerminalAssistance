@@ -166,18 +166,24 @@ pub struct GitStatus {
     pub files: HashMap<String, String>,
 }
 
-/// git 변경 파일 목록. 저장소가 아니거나 git 이 없으면 None (탐색기는 표시 생략).
-#[tauri::command]
-pub async fn git_status(cwd: String) -> Option<GitStatus> {
-    let root = String::from_utf8_lossy(&git_cmd(&cwd, &["rev-parse", "--show-toplevel"])?)
-        .trim()
-        .to_string();
+/// `git status --porcelain -z` 를 (저장소 상대 경로, X=인덱스 상태, Y=워크트리 상태) 로 읽는다.
+/// ignored(`!!`) 는 제외하고, 이름변경·복사의 원본 경로 토큰은 소비만 하고 버린다.
+/// 탐색기 표시와 pull 되돌리기가 같은 판정을 쓰도록 한 곳에 모아 둔다.
+fn porcelain_entries(cwd: &str) -> Option<Vec<(String, char, char)>> {
     // -z: 경로에 개행·공백이 있어도 안전, --untracked-files=all: 새 폴더도 파일 단위로 나열
+    // core.quotepath=false: 한글 등 비ASCII 경로가 8진 이스케이프로 오지 않게 한다
     let out = git_cmd(
-        &cwd,
-        &["status", "--porcelain", "-z", "--untracked-files=all"],
+        cwd,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+        ],
     )?;
-    let mut files = HashMap::new();
+    let mut entries = Vec::new();
     let mut it = out.split(|&b| b == 0).filter(|s| !s.is_empty());
     while let Some(entry) = it.next() {
         if entry.len() < 4 {
@@ -189,22 +195,39 @@ pub async fn git_status(cwd: String) -> Option<GitStatus> {
         if x == 'R' || x == 'C' {
             let _ = it.next();
         }
+        if x == '!' && y == '!' {
+            continue; // ignored 는 표시하지 않는다
+        }
+        entries.push((path, x, y));
+    }
+    Some(entries)
+}
+
+/// 탐색기·팝업 표시용 상태 문자 (M 수정 / A 추가 / D 삭제 / R 이름변경 / U 미추적).
+fn display_status(x: char, y: char) -> char {
+    if x == '?' && y == '?' {
+        return 'U';
+    }
+    // 워크트리 상태(Y) 우선, 스테이지만 된 경우 인덱스 상태(X)
+    if y != ' ' {
+        y
+    } else {
+        x
+    }
+}
+
+/// git 변경 파일 목록. 저장소가 아니거나 git 이 없으면 None (탐색기는 표시 생략).
+#[tauri::command]
+pub async fn git_status(cwd: String) -> Option<GitStatus> {
+    let root = String::from_utf8_lossy(&git_cmd(&cwd, &["rev-parse", "--show-toplevel"])?)
+        .trim()
+        .to_string();
+    let mut files = HashMap::new();
+    for (path, x, y) in porcelain_entries(&cwd)? {
         if is_unity_meta_path(&path) {
             continue;
         }
-        let status = match (x, y) {
-            ('?', '?') => 'U',
-            ('!', '!') => continue, // ignored 는 표시하지 않는다
-            // 워크트리 상태(Y) 우선, 스테이지만 된 경우 인덱스 상태(X)
-            _ => {
-                if y != ' ' {
-                    y
-                } else {
-                    x
-                }
-            }
-        };
-        files.insert(path, status.to_string());
+        files.insert(path, display_status(x, y).to_string());
     }
     Some(GitStatus { root, files })
 }
@@ -268,25 +291,55 @@ pub async fn git_remote_state(cwd: String, fetch: bool) -> Option<GitRemoteState
     .flatten()
 }
 
-/// Pull 실행 결과 (토스트 문구용)
+/// pull 을 막은 파일 하나 — 팝업 목록의 한 줄.
+#[derive(Serialize)]
+pub struct GitBlockedFile {
+    /// 저장소 루트 기준 상대 경로 ('/' 구분)
+    pub path: String,
+    /// 표시용 상태 문자 (M 수정 / A 추가 / D 삭제 / U 미추적 / ? 판정 불가)
+    pub status: String,
+    /// 미추적 파일 — '되돌리기'가 복원이 아니라 삭제가 된다
+    pub untracked: bool,
+}
+
+/// Pull 실행 결과. 실패 시에는 원인 유형과 막은 파일 목록까지 실어 보내
+/// 프론트가 토스트 대신 팝업으로 안내할 수 있게 한다.
 #[derive(Serialize)]
 pub struct GitPullResult {
     pub ok: bool,
+    /// 한 줄 요약 (성공 토스트 · 팝업 헤더)
     pub message: String,
+    /// 실패 유형 — "" 성공 / local_changes 로컬 수정 충돌 / untracked 미추적 파일 충돌
+    /// / conflict 병합 충돌 / diverged 원격과 갈라짐 / other 그 밖의 실패
+    pub kind: String,
+    /// pull 을 막은 파일들 (유형에 따라 비어 있을 수 있다)
+    pub files: Vec<GitBlockedFile>,
+    /// git 원본 출력 — 팝업의 '원본 출력 보기'
+    pub raw: String,
 }
 
 /// `git pull --ff-only` 실행. 터미널 세션에 명령을 흘려보내지 않으므로
 /// AI 에이전트가 돌고 있는 패널에서도 프롬프트를 방해하지 않는다.
 #[tauri::command]
 pub async fn git_pull(cwd: String) -> GitPullResult {
+    let target = cwd.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = Command::new("git");
-        // advice.* 안내문을 끄면 토스트에 실패 원인 한 줄만 남는다
-        cmd.arg("-C")
-            .arg(&cwd)
-            .args(["-c", "advice.diverging=false", "pull", "--ff-only"]);
+        // advice.* 안내문을 끄면 요약 한 줄에 실패 원인만 남는다
+        // core.quotepath=false: 실패 메시지의 비ASCII 경로를 그대로 받아 되돌리기에 쓴다
+        cmd.arg("-C").arg(&target).args([
+            "-c",
+            "advice.diverging=false",
+            "-c",
+            "core.quotepath=false",
+            "pull",
+            "--ff-only",
+        ]);
         cmd.env("GIT_TERMINAL_PROMPT", "0");
         cmd.env("GCM_INTERACTIVE", "never");
+        // 실패 메시지를 문장 패턴으로 파싱하므로 로케일을 영어로 고정한다
+        cmd.env("LC_ALL", "C");
+        cmd.env("LANG", "C");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -301,6 +354,9 @@ pub async fn git_pull(cwd: String) -> GitPullResult {
             return GitPullResult {
                 ok: false,
                 message: "git 실행에 실패했습니다".into(),
+                kind: "other".into(),
+                files: Vec::new(),
+                raw: String::new(),
             }
         }
     };
@@ -309,18 +365,214 @@ pub async fn git_pull(cwd: String) -> GitPullResult {
     if text.is_empty() {
         text = err;
     } else if !err.is_empty() {
-        text = format!("{}
-{}", text, err);
+        text = format!("{}\n{}", text, err);
     }
-    let message = summarize_pull_output(&text, out.status.success());
+    let ok = out.status.success();
+    let message = summarize_pull_output(&text, ok);
+    let (kind, paths) = if ok {
+        (String::new(), Vec::new())
+    } else {
+        parse_pull_blockers(&text)
+    };
+    let files = if paths.is_empty() {
+        Vec::new()
+    } else {
+        describe_blocked_files(&cwd, paths).await
+    };
     GitPullResult {
-        ok: out.status.success(),
+        ok,
         message: if message.is_empty() {
             "완료".into()
         } else {
             message
         },
+        kind,
+        files,
+        raw: text,
     }
+}
+
+/// pull 실패 출력에서 뽑은 경로들에 현재 워크트리 상태(M/A/D/U)를 붙인다.
+/// 상태를 못 읽으면 '?' 로 남기고 추적 파일로 취급한다 — 되돌리기가 삭제로 오작동하지 않게.
+async fn describe_blocked_files(cwd: &str, paths: Vec<String>) -> Vec<GitBlockedFile> {
+    let target = cwd.to_string();
+    let entries = tauri::async_runtime::spawn_blocking(move || porcelain_entries(&target))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut by_path = HashMap::new();
+    for (path, x, y) in entries {
+        by_path.insert(path, (x, y));
+    }
+    paths
+        .into_iter()
+        .map(|path| match by_path.get(&path) {
+            Some(&(x, y)) => GitBlockedFile {
+                status: display_status(x, y).to_string(),
+                untracked: x == '?',
+                path,
+            },
+            None => GitBlockedFile {
+                path,
+                status: "?".into(),
+                untracked: false,
+            },
+        })
+        .collect()
+}
+
+/// pull 실패 출력에서 '무엇이 막았는지'를 읽어 (유형, 저장소 상대 경로들) 로 돌려준다.
+/// git 의 실제 문구를 기준으로 한다:
+///   - "error: Your local changes to the following files would be overwritten by merge:" + 들여쓴 목록
+///   - "error: The following untracked working tree files would be overwritten by merge:" + 들여쓴 목록
+///   - "error: Untracked working tree file 'x' would be overwritten by merge." (단일 파일 형태)
+///   - "CONFLICT (content): Merge conflict in <path>"
+///   - "fatal: Not possible to fast-forward, aborting." (파일이 아니라 갈라진 히스토리가 원인)
+fn parse_pull_blockers(text: &str) -> (String, Vec<String>) {
+    let mut kind = String::new();
+    let mut paths: Vec<String> = Vec::new();
+    let mut collecting = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let low = trimmed.to_lowercase();
+        // 목록 머리글 — 다음 줄부터 들여쓴 경로가 이어진다
+        if low.ends_with(':') && low.contains("would be overwritten by") {
+            if kind.is_empty() {
+                kind = if low.contains("untracked") {
+                    "untracked".into()
+                } else {
+                    "local_changes".into()
+                };
+            }
+            collecting = true;
+            continue;
+        }
+        if collecting {
+            // 들여쓰기가 곧 목록의 범위다 — "Please commit your changes..." 안내에서 끝난다
+            if line.starts_with('\t') || line.starts_with("  ") {
+                if !trimmed.is_empty() {
+                    paths.push(trimmed.to_string());
+                }
+                continue;
+            }
+            collecting = false;
+        }
+        if let Some(rest) = trimmed.strip_prefix("CONFLICT") {
+            kind = "conflict".into();
+            if let Some(i) = rest.find(" in ") {
+                let p = rest[i + 4..].trim();
+                if !p.is_empty() {
+                    paths.push(p.to_string());
+                }
+            }
+            continue;
+        }
+        // 단일 파일 형태는 경로가 따옴표 안에 들어온다
+        if low.contains("would be overwritten") {
+            if let (Some(i), Some(j)) = (trimmed.find('\''), trimmed.rfind('\'')) {
+                if j > i + 1 {
+                    if kind.is_empty() {
+                        kind = if low.contains("untracked") {
+                            "untracked".into()
+                        } else {
+                            "local_changes".into()
+                        };
+                    }
+                    paths.push(trimmed[i + 1..j].to_string());
+                }
+            }
+            continue;
+        }
+        if kind.is_empty()
+            && (low.contains("not possible to fast-forward")
+                || low.contains("diverging branches")
+                || low.contains("need to specify how to reconcile"))
+        {
+            kind = "diverged".into();
+        }
+    }
+    if kind.is_empty() {
+        kind = "other".into();
+    }
+    // 같은 경로가 여러 줄에 걸쳐 나올 수 있다 (목록 + 충돌 표시)
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|p| seen.insert(p.clone()));
+    (kind, paths)
+}
+
+/// 되돌리기 결과 — 경로 단위로 성공/실패를 알려 준다 (일부만 실패해도 나머지는 반영됨).
+#[derive(Serialize)]
+pub struct GitDiscardResult {
+    pub ok: bool,
+    /// 되돌린 경로
+    pub done: Vec<String>,
+    /// 되돌리지 못한 경로와 사유
+    pub failed: Vec<GitDiscardFailure>,
+}
+
+#[derive(Serialize)]
+pub struct GitDiscardFailure {
+    pub path: String,
+    pub message: String,
+}
+
+/// 지정한 경로들의 로컬 수정을 버린다 (pull 충돌 팝업의 '되돌리기').
+/// 복구할 수 없는 작업이므로 프론트에서 확인을 받은 뒤에만 호출한다.
+///
+/// 경로는 git 이 알려 준 저장소 루트 기준 상대 경로다. 세션 cwd 가 하위 폴더일 수 있으므로
+/// 항상 저장소 루트에서 실행한다.
+#[tauri::command]
+pub async fn git_discard_paths(
+    cwd: String,
+    paths: Vec<String>,
+) -> Result<GitDiscardResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = git_cmd(&cwd, &["rev-parse", "--show-toplevel"])
+            .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "git 저장소가 아닙니다".to_string())?;
+        let mut done = Vec::new();
+        let mut failed = Vec::new();
+        for path in paths {
+            if let Err(message) = discard_one(&root, &path) {
+                failed.push(GitDiscardFailure { path, message });
+            } else {
+                done.push(path);
+            }
+        }
+        Ok(GitDiscardResult {
+            ok: failed.is_empty(),
+            done,
+            failed,
+        })
+    })
+    .await
+    .map_err(|e| format!("되돌리기를 실행할 수 없습니다: {e}"))?
+}
+
+/// 경로 한 개 되돌리기.
+/// 스테이지에 올라간 변경까지 함께 버려야 pull 이 다시 진행되므로 인덱스를 먼저 되돌린다.
+/// HEAD 에 없는 파일(새로 추가·미추적)은 복원할 원본이 없으니 삭제로 처리한다.
+fn discard_one(root: &str, path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("빈 경로".into());
+    }
+    // 경로는 git 이 알려 준 저장소 상대 경로여야 한다 — 절대 경로·상위 참조는 거부
+    if path.starts_with('/') || path.starts_with('\\') || path.contains("..") || path.contains(':')
+    {
+        return Err("저장소 안의 상대 경로가 아닙니다".into());
+    }
+    if git_cmd(root, &["cat-file", "-e", &format!("HEAD:{path}")]).is_some() {
+        // 인덱스를 HEAD 로 되돌린 뒤 워크트리를 복원한다 (충돌 표시도 이 순서로 풀린다)
+        git_cmd_full(root, &["reset", "-q", "HEAD", "--", path])?;
+        git_cmd_full(root, &["checkout", "-q", "--", path])?;
+        return Ok(());
+    }
+    // 미추적 또는 새로 추가된 파일 — 인덱스에서 내린 뒤 파일을 지운다
+    let _ = git_cmd_full(root, &["reset", "-q", "HEAD", "--", path]);
+    git_cmd_full(root, &["clean", "-q", "-f", "-d", "--", path])?;
+    Ok(())
 }
 
 /// git pull 출력에서 토스트 한 줄에 담을 요약을 만든다.
@@ -369,7 +621,7 @@ fn summarize_pull_output(text: &str, ok: bool) -> String {
 
 #[cfg(test)]
 mod git_pull_tests {
-    use super::summarize_pull_output;
+    use super::{parse_pull_blockers, summarize_pull_output};
 
     /// 로컬 수정본 때문에 ff-only pull 이 거부됐을 때의 실제 git 출력
     #[test]
@@ -409,6 +661,87 @@ Fast-forward
         let m = summarize_pull_output("fatal: not a git repository", false);
         assert!(m.contains("fatal"), "{}", m);
         assert_eq!(summarize_pull_output("", false), "");
+    }
+
+    /// 로컬 수정본이 막은 경우 — 파일 목록만 뽑고 안내 문구는 목록에 섞이지 않아야 한다
+    #[test]
+    fn blockers_from_local_changes_list() {
+        let out = "From C:/tmp/up
+   107263b..686d381  master     -> origin/master
+error: Your local changes to the following files would be overwritten by merge:
+\tsrc/renderer/app.js
+\tsrc/renderer/styles.css
+Please commit your changes or stash them before you merge.
+Aborting";
+        let (kind, paths) = parse_pull_blockers(out);
+        assert_eq!(kind, "local_changes");
+        assert_eq!(paths, vec!["src/renderer/app.js", "src/renderer/styles.css"]);
+    }
+
+    /// 실제 git 출력: 두 머리글이 한 번에 나올 수 있다 (수정 파일 + 미추적 파일)
+    /// 두 목록의 파일이 모두 남아야 팝업에서 한 번에 정리할 수 있다
+    #[test]
+    fn blockers_from_both_lists() {
+        let out = "From C:/tmp/up
+   5205c15..ef333c7  master     -> origin/master
+error: Your local changes to the following files would be overwritten by merge:
+	a.txt
+Please commit your changes or stash them before you merge.
+error: The following untracked working tree files would be overwritten by merge:
+	added.txt
+Please move or remove them before you merge.
+Updating 5205c15..ef333c7
+Aborting";
+        let (kind, paths) = parse_pull_blockers(out);
+        assert_eq!(kind, "local_changes");
+        assert_eq!(paths, vec!["a.txt", "added.txt"]);
+    }
+
+    /// 미추적 파일이 막은 경우 — 되돌리기가 삭제로 갈라지므로 유형이 구분돼야 한다
+    #[test]
+    fn blockers_from_untracked_list() {
+        let out = "error: The following untracked working tree files would be overwritten by merge:
+\tdocs/new.md
+Please move or remove them before you merge.";
+        let (kind, paths) = parse_pull_blockers(out);
+        assert_eq!(kind, "untracked");
+        assert_eq!(paths, vec!["docs/new.md"]);
+    }
+
+    /// 단일 파일 형태는 경로가 따옴표 안에 온다
+    #[test]
+    fn blockers_from_quoted_single_file() {
+        let (kind, paths) =
+            parse_pull_blockers("error: Untracked working tree file 'a/b.txt' would be overwritten by merge.");
+        assert_eq!(kind, "untracked");
+        assert_eq!(paths, vec!["a/b.txt"]);
+    }
+
+    /// 히스토리가 갈라진 실패는 파일 원인이 없다 — 팝업이 다른 안내를 해야 한다
+    #[test]
+    fn diverged_has_no_files() {
+        let (kind, paths) = parse_pull_blockers("fatal: Not possible to fast-forward, aborting.");
+        assert_eq!(kind, "diverged");
+        assert!(paths.is_empty());
+    }
+
+    /// 병합 충돌 표시에서 경로를 뽑고, 목록과 중복돼도 한 번만 남는다
+    #[test]
+    fn conflict_paths_are_deduped() {
+        let out = "error: Your local changes to the following files would be overwritten by merge:
+\tsrc/a.js
+CONFLICT (content): Merge conflict in src/a.js";
+        let (kind, paths) = parse_pull_blockers(out);
+        assert_eq!(kind, "conflict"); // 더 구체적인 신호가 유형을 덮는다
+        assert_eq!(paths, vec!["src/a.js"]);
+    }
+
+    /// 예상 못 한 실패도 유형이 비지 않아야 한다 (팝업은 원본 출력으로 안내)
+    #[test]
+    fn unknown_failure_is_other() {
+        let (kind, paths) = parse_pull_blockers("fatal: could not read Username for 'https://x'");
+        assert_eq!(kind, "other");
+        assert!(paths.is_empty());
     }
 }
 

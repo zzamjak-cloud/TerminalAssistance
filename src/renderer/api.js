@@ -130,8 +130,14 @@
     // 원격 대비 상태 { branch, hasUpstream, behind, ahead, fetchFailed } | null(=git 저장소 아님)
     // fetch=true 는 네트워크를 타므로 세션 시작 등 명시적 시점에만 쓴다
     gitRemoteState: (cwd, fetch) => invoke('git_remote_state', { cwd, fetch: !!fetch }),
-    // git pull --ff-only 실행 → { ok, message }
+    // git pull --ff-only 실행
+    // → { ok, message, kind, files: [{ path, status, untracked }], raw }
+    // kind: '' 성공 / local_changes / untracked / conflict / diverged / other
     gitPull: (cwd) => invoke('git_pull', { cwd }),
+    // 지정 경로의 로컬 수정 버리기 (pull 충돌 팝업의 되돌리기) — 복구 불가, 확인 후 호출
+    // paths 는 gitPull 이 돌려준 저장소 루트 기준 상대 경로
+    // → { ok, done: [경로], failed: [{ path, message }] }
+    gitDiscardPaths: (cwd, paths) => invoke('git_discard_paths', { cwd, paths }),
     // 코덱스 사용량 { windows: [{windowMinutes, usedPercent, resetsAt}], plan, mtimeMs } | null
     codexUsage: () => invoke('codex_usage'),
     // Claude Code 사용량 — 코덱스와 같은 모양 { windows, plan, mtimeMs } | null

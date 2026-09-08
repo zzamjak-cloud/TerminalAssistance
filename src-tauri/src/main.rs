@@ -1047,6 +1047,7 @@ fn main() {
             explorer::git_status,
             explorer::git_remote_state,
             explorer::git_pull,
+            explorer::git_discard_paths,
             explorer::read_text_file,
             explorer::write_text_file,
             explorer::create_file,

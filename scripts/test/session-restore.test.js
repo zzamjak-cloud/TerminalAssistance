@@ -22,9 +22,19 @@ function fakeHolder() {
 }
 
 function fakeElement() {
+  const classes = new Set();
   const el = {
-    className: '', textContent: '', title: '', onclick: null,
+    textContent: '', title: '', onclick: null,
+    // className 대입도 classList 에 반영한다
+    set className(v) { classes.clear(); for (const c of String(v).split(/\s+/)) if (c) classes.add(c); },
+    get className() { return [...classes].join(' '); },
     children: [],
+    // classList 와 className 은 실제 DOM 처럼 같은 값을 본다
+    classList: {
+      add(c) { classes.add(c); el.className = [...classes].join(' '); },
+      remove(c) { classes.delete(c); el.className = [...classes].join(' '); },
+      contains: (c) => classes.has(c)
+    },
     append(...kids) { for (const k of kids) { k.parent = el; el.children.push(k); } },
     appendChild(k) { k.parent = el; el.children.push(k); return k; },
     remove() {
@@ -55,7 +65,10 @@ function load(opts) {
     ta: {
       restoreSessions: async () => o.restoreResult,
       listClaudeSessions: async () => o.claude || [],
-      listCodexSessions: async () => o.codex || []
+      listCodexSessions: async () => o.codex || [],
+      // 배너의 '마지막 요청' 조회 — 열람 팝업과 같은 커맨드를 쓴다
+      claudeSessionMessages: async () => o.messages || [],
+      codexSessionMessages: async () => o.messages || []
     },
     App: {
       state: { sessions: o.sessions || [] },
@@ -77,6 +90,19 @@ function load(opts) {
 }
 
 exports.name = '재시작 세션 복원 (건너뜀 요약 · 이어서 하기 배너)';
+
+// 배너 안에서 클래스로 자식을 찾는다 (본문은 rb-body 아래 2줄 구조)
+function findByClass(el, className) {
+  for (const c of el.children || []) {
+    if (String(c.className || '').split(/\s+/).includes(className)) return c;
+    const deep = findByClass(c, className);
+    if (deep) return deep;
+  }
+  return null;
+}
+
+// mountResumeBanner 가 띄운 비동기 조회(마지막 요청)가 끝나기를 기다린다
+const settle = () => new Promise((r) => setImmediate(r));
 
 exports.run = async function (t) {
   // ── 건너뛴 항목 요약 ──
@@ -213,5 +239,58 @@ exports.run = async function (t) {
     await ctx.App.afterSessionRestore({ restored: [{ id: 's1' }, { id: 's2' }], skipped: [] });
     t.check('같은 대화를 두 세션에서 재개하지 않는다 (배너 1개)',
       ctx.holder.children.length === 1);
+  }
+
+  // ── 마지막 실행 요청 표시 ──
+  {
+    const ctx = load({
+      restoreResult: { restored: [{ id: 's1' }], skipped: [] },
+      sessions: [{ id: 's1', cwd: '/p' }],
+      claude: [recent],
+      messages: [
+        { role: 'user', kind: 'text', text: '첫 요청' },
+        { role: 'assistant', kind: 'text', text: '답변' },
+        { role: 'user', kind: 'text', text: '마지막으로  보낸\n요청' },
+        { role: 'assistant', kind: 'tool', text: 'Bash: ls' }
+      ]
+    });
+    await ctx.App.restoreSessions();
+    await ctx.App.afterSessionRestore({ restored: [{ id: 's1' }], skipped: [] });
+    await settle();
+    const last = findByClass(ctx.holder.children[0], 'rb-last');
+    t.check('마지막 사용자 요청을 한 줄로 보여준다',
+      last && last.textContent === '마지막 요청 · 마지막으로 보낸 요청',
+      last && last.textContent);
+    t.check('툴팁에는 원문을 남긴다', last && last.title === '마지막으로  보낸\n요청');
+    const meta = findByClass(ctx.holder.children[0], 'rb-meta');
+    t.check('첫 줄에는 도구·시각·첫 요청이 남는다', meta && meta.textContent.includes('작업 이어감'));
+  }
+  {
+    // 사용자 요청을 못 찾으면 빈 줄을 남기지 않는다
+    const ctx = load({
+      restoreResult: { restored: [{ id: 's1' }], skipped: [] },
+      sessions: [{ id: 's1', cwd: '/p' }],
+      claude: [recent],
+      messages: [{ role: 'assistant', kind: 'text', text: '답변만 있음' }]
+    });
+    await ctx.App.restoreSessions();
+    await ctx.App.afterSessionRestore({ restored: [{ id: 's1' }], skipped: [] });
+    await settle();
+    t.check('마지막 요청이 없으면 그 줄을 지운다',
+      !findByClass(ctx.holder.children[0], 'rb-last'));
+  }
+  {
+    // 조회가 끝나기 전에 배너를 걷어도 안전해야 한다
+    const ctx = load({
+      restoreResult: { restored: [{ id: 's1' }], skipped: [] },
+      sessions: [{ id: 's1', cwd: '/p' }],
+      claude: [recent],
+      messages: [{ role: 'user', kind: 'text', text: '요청' }]
+    });
+    await ctx.App.restoreSessions();
+    await ctx.App.afterSessionRestore({ restored: [{ id: 's1' }], skipped: [] });
+    ctx.App.dismissResumeBanner('s1');
+    await settle();
+    t.check('조회 중 배너가 걷혀도 오류 없이 끝난다', ctx.holder.children.length === 0);
   }
 };

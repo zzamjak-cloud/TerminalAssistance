@@ -3,6 +3,8 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../../src/renderer/app.js'), 'utf8');
+// Pull 실행 경로는 git-pull.js 에 있다 (실패 진단 팝업과 함께)
+const pullSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/git-pull.js'), 'utf8');
 
 function loadApp() {
   const storage = new Map();
@@ -64,7 +66,7 @@ module.exports = {
     );
     t.check(
       'Pull 완료 뒤에는 추가 fetch 없이 로컬 격차를 다시 센다',
-      /runGitPull\(cwd\)[\s\S]*?refreshGitRemote\(cwd, \{ fetch: false \}\)/.test(source)
+      /runGitPull\(cwd\)[\s\S]*?refreshGitRemote\(cwd, \{ fetch: false \}\)/.test(pullSource)
     );
 
     {

@@ -89,6 +89,27 @@ Object.assign(App, {
     view.holder.addEventListener('keydown', onKey, true);
   },
 
+  // 기록에서 '마지막으로 보낸 요청'을 찾는다 — 어떤 작업을 하다 멈췄는지 떠올리는 단서.
+  // 목록의 preview 는 '첫' 요청이라 세션을 식별하는 데는 쓸모 있지만 진행 상황을 알려주지 못한다.
+  // 열람 팝업과 같은 파서를 쓰므로(파일 끝에서 읽음) 대형 세션에서도 비용이 일정하다.
+  async loadLastUserRequest(item) {
+    const cwd = item.cwd || App.sessionHistoryCwd();
+    if (!cwd || !item.id) return '';
+    let msgs = [];
+    try {
+      msgs = item.source === 'codex'
+        ? await ta.codexSessionMessages(cwd, item.id)
+        : await ta.claudeSessionMessages(cwd, item.id);
+    } catch (_) { return ''; }
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m && m.role === 'user' && m.kind === 'text' && String(m.text || '').trim()) {
+        return String(m.text).trim();
+      }
+    }
+    return '';
+  },
+
   mountResumeBanner(sessionId, item) {
     const view = TerminalView.views.get(sessionId);
     if (!view || !view.holder || App._resumeBanners.has(sessionId)) return;
@@ -96,11 +117,22 @@ Object.assign(App, {
     const bar = document.createElement('div');
     bar.className = 'resume-banner';
 
-    const text = document.createElement('span');
-    text.className = 'rb-text';
+    const body = document.createElement('div');
+    body.className = 'rb-body';
+
+    // 첫 줄 = 이 기록이 무엇인지 (도구 · 시각 · 세션을 시작한 첫 요청)
+    const meta = document.createElement('div');
+    meta.className = 'rb-meta';
     const label = item.source === 'codex' ? 'Codex' : 'Claude';
-    text.textContent = `${label} · ${formatRelativeTime(item.mtimeMs)} · ${item.preview}`;
-    text.title = item.preview;
+    meta.textContent = `${label} · ${formatRelativeTime(item.mtimeMs)} · ${item.preview}`;
+    meta.title = item.preview;
+
+    // 둘째 줄 = 마지막 실행 요청 (비동기로 채운다 — 배너 표시를 지연시키지 않는다)
+    const last = document.createElement('div');
+    last.className = 'rb-last loading';
+    last.textContent = '마지막 요청 불러오는 중…';
+
+    body.append(meta, last);
 
     const go = document.createElement('button');
     go.className = 'rb-go';
@@ -116,10 +148,22 @@ Object.assign(App, {
     close.title = '닫기';
     close.onclick = () => App.dismissResumeBanner(sessionId);
 
-    bar.append(text, go, close);
+    bar.append(body, go, close);
     view.holder.appendChild(bar);
     App._resumeBanners.set(sessionId, bar);
     // 첫 키 입력 시 걷는 일은 markActivityOnInput 이 이미 맡고 있다 (noteSessionActivity 경유)
+
+    void App.loadLastUserRequest(item).then((text) => {
+      // 조회 중 사용자가 배너를 닫았거나 세션을 쓰기 시작했으면 손대지 않는다
+      if (App._resumeBanners.get(sessionId) !== bar) return;
+      last.classList.remove('loading');
+      if (!text) {
+        last.remove(); // 찾지 못하면 빈 줄을 남기지 않는다
+        return;
+      }
+      last.textContent = '마지막 요청 · ' + text.replace(/\s+/g, ' ');
+      last.title = text;
+    });
   },
 
   dismissResumeBanner(sessionId) {
