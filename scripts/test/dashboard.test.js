@@ -1,4 +1,4 @@
-// 전 세션 대시보드 — 정렬 우선순위와 xterm 버퍼 tail 추출 검증.
+// 전 세션 대시보드 — 프로젝트 묶기와 정렬 우선순위 검증.
 // dashboard.js 를 vm 샌드박스에 로드해 실제 구현을 돌린다.
 const fs = require('fs');
 const path = require('path');
@@ -12,29 +12,28 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(
   fs.readFileSync(SRC, 'utf8')
-  + ';globalThis.__d = { sortSessionsForDashboard, tailFromBuffer, dashboardStatusRank, formatRunElapsed };',
+  + ';globalThis.__d = { sortSessionsForDashboard, sortGroupsForDashboard, dashboardStatusRank,'
+  + ' formatRunElapsed, formatSinceChange, dashboardSignature };',
   sandbox
 );
-const { sortSessionsForDashboard, tailFromBuffer, dashboardStatusRank, formatRunElapsed } = sandbox.__d;
-
-// xterm 버퍼 흉내 — getLine(row).translateToString(true) 만 쓴다
-function fakeView(lines) {
-  return {
-    term: {
-      buffer: {
-        active: {
-          length: lines.length,
-          getLine: (row) => (row in lines ? { translateToString: () => lines[row] } : null)
-        }
-      }
-    }
-  };
-}
+const {
+  sortSessionsForDashboard, sortGroupsForDashboard, dashboardStatusRank,
+  formatRunElapsed, formatSinceChange, dashboardSignature
+} = sandbox.__d;
+const App = sandbox.App;
 
 const order = (list, mode, ctx) =>
   sortSessionsForDashboard(list, mode, ctx).map((s) => s.id).join(',');
 
-exports.name = '전 세션 대시보드 (정렬 · 버퍼 tail)';
+// 세션 목록을 그대로 App.state 에 꽂고 그룹 결과를 'key:세션,세션' 형태로 요약한다
+function groupsOf(sessions, projects) {
+  App.state = { sessions, projects: projects || [] };
+  return App.groupSessionsForDashboard()
+    .map((g) => g.key + ':' + g.sessions.map((s) => s.id).join('+'))
+    .join(' | ');
+}
+
+exports.name = '전 세션 대시보드 (프로젝트 묶기 · 정렬)';
 
 exports.run = function (t) {
   // ── 상태 우선순위: 내가 개입해야 하는 것이 먼저 ──
@@ -98,38 +97,94 @@ exports.run = function (t) {
   t.check('기록이 없는 세션끼리는 생성 순서 유지',
     order([{ id: 'z1' }, { id: 'z2' }], 'activity', actCtx) === 'z1,z2');
 
-  // ── 버퍼 tail ──
-  t.check('마지막 3행을 순서대로 가져온다',
-    tailFromBuffer(fakeView(['1', '2', '3', '4', '5']), 3).join('|') === '3|4|5');
-  t.check('행 수가 요청보다 적으면 있는 만큼',
-    tailFromBuffer(fakeView(['a', 'b']), 5).join('|') === 'a|b');
-  // TUI 대체 버퍼는 하단이 입력 영역이라 그냥 마지막 n 행을 뜨면 빈 줄만 잡힌다
-  t.check('화면 아래쪽 빈 줄은 건너뛴다',
-    tailFromBuffer(fakeView(['내용1', '내용2', '', '   ', '']), 2).join('|') === '내용1|내용2');
-  t.check('내용 사이의 빈 줄은 그대로 보존한다',
-    tailFromBuffer(fakeView(['a', '', 'b', '']), 3).join('|') === 'a||b');
-  // 좁은 타일에서 위쪽 빈 줄은 한 행을 낭비한다 (셸 시작 배너 앞의 공백 등)
-  t.check('위쪽 빈 줄은 걷어낸다',
-    tailFromBuffer(fakeView(['', '배너', '프롬프트']), 3).join('|') === '배너|프롬프트');
-  t.check('걷어낸 뒤에도 내용 사이 빈 줄은 남는다',
-    tailFromBuffer(fakeView(['', 'a', '', 'b']), 4).join('|') === 'a||b');
-  t.check('행 끝 공백은 제거한다',
-    tailFromBuffer(fakeView(['코드   ']), 1)[0] === '코드');
-  t.check('전부 빈 줄이면 빈 배열',
-    tailFromBuffer(fakeView(['', '  ', '']), 3).length === 0);
-  t.check('버퍼가 없는 뷰는 빈 배열', tailFromBuffer(null, 3).length === 0
-    && tailFromBuffer({}, 3).length === 0
-    && tailFromBuffer({ term: {} }, 3).length === 0);
-  t.check('getLine 이 null 을 주는 행은 건너뛴다', (() => {
-    const lines = ['a', 'b'];
-    const v = fakeView(lines);
-    v.term.buffer.active.length = 4; // 실제보다 긴 length — 없는 행은 null
-    return tailFromBuffer(v, 3).join('|') === 'a|b';
+  // ── 프로젝트 묶기 ──
+  const projects = [{ id: 'p1', name: '알파' }, { id: 'p2', name: '베타' }];
+  t.check('같은 프로젝트의 세션이 한 그룹으로 모인다',
+    groupsOf([
+      { id: 'a', projectId: 'p1' }, { id: 'b', projectId: 'p2' },
+      { id: 'c', projectId: 'p1' }, { id: 'd', projectId: 'p2' }
+    ], projects) === 'p:p1:a+c | p:p2:b+d', groupsOf([
+      { id: 'a', projectId: 'p1' }, { id: 'b', projectId: 'p2' },
+      { id: 'c', projectId: 'p1' }, { id: 'd', projectId: 'p2' }
+    ], projects));
+  t.check('그룹은 첫 등장 순서로 만들어진다',
+    groupsOf([{ id: 'a', projectId: 'p2' }, { id: 'b', projectId: 'p1' }], projects)
+      .startsWith('p:p2:'));
+  t.check('프로젝트 없는 세션은 홈 터미널 한 그룹으로 모인다',
+    groupsOf([
+      { id: 'h1', projectId: null }, { id: 'a', projectId: 'p1' }, { id: 'h2' }
+    ], projects) === 'home:h1+h2 | p:p1:a');
+  t.check('그룹은 프로젝트 객체를 함께 들고 온다', (() => {
+    App.state = { sessions: [{ id: 'a', projectId: 'p1' }], projects };
+    const g = App.groupSessionsForDashboard()[0];
+    return g.project && g.project.name === '알파';
   })());
+  t.check('등록 목록에 없는 프로젝트여도 그룹은 만들어진다 (project 는 null)', (() => {
+    App.state = { sessions: [{ id: 'a', projectId: '사라짐' }], projects };
+    const g = App.groupSessionsForDashboard()[0];
+    return g.project === null && g.sessions.length === 1;
+  })());
+  t.check('세션이 없으면 그룹도 없다', groupsOf([], projects) === '');
+
+  // ── 그룹 정렬: 그룹 안에서 가장 앞서는 세션이 그룹을 끌어올린다 ──
+  const grp = (key, index, sessions) => ({ key, projectId: key, index, sessions });
+  const gOrder = (groups, mode, ctx) =>
+    sortGroupsForDashboard(groups, mode, ctx).map((g) => g.key).join(',');
+  const gs = [
+    grp('p1', 0, [{ id: 'a', status: 'idle' }, { id: 'b', status: 'running' }]),
+    grp('p2', 1, [{ id: 'c', status: 'exited' }]),
+    grp('p3', 2, [{ id: 'd', status: 'idle' }, { id: 'e', status: 'waiting' }])
+  ];
+  t.check('허가 대기를 품은 그룹이 맨 위로',
+    gOrder(gs, 'status') === 'p3,p1,p2', gOrder(gs, 'status'));
+  t.check('그룹 정렬이 원본 배열을 변형하지 않는다',
+    gs.map((g) => g.key).join(',') === 'p1,p2,p3');
+  t.check('대표 상태가 같으면 첫 등장 순서로',
+    gOrder([
+      grp('x', 0, [{ id: '1', status: 'running' }]),
+      grp('y', 1, [{ id: '2', status: 'running' }])
+    ], 'status') === 'x,y');
+  t.check('프로젝트 기준이면 등록 순서를 따른다',
+    gOrder(gs, 'project', { projectIndex: new Map([['p3', 0], ['p2', 1], ['p1', 2]]) }) === 'p3,p2,p1');
+  t.check('등록 목록에 없는 그룹은 끝으로',
+    gOrder(gs, 'project', { projectIndex: new Map([['p2', 0]]) }) === 'p2,p1,p3');
+  t.check('활동 기준이면 그룹 안 최신 활동이 대표값',
+    gOrder(gs, 'activity', { lastChangeAt: new Map([['a', 10], ['c', 50], ['e', 30]]) }) === 'p2,p3,p1');
+  t.check('활동 기록이 전혀 없는 그룹끼리는 첫 등장 순서',
+    gOrder(gs, 'activity', { lastChangeAt: new Map() }) === 'p1,p2,p3');
+  t.check('알 수 없는 그룹 정렬 기준은 상태 정렬로 대체',
+    gOrder(gs, '무엇') === 'p3,p1,p2');
+
+  // ── 골격 재생성 서명 ──
+  const sig = (ss, ps) => dashboardSignature(ss, ps);
+  const base = [{ id: 'a', projectId: 'p1', title: 'S1' }];
+  t.check('같은 상태면 서명이 같다', sig(base, projects) === sig(base, projects));
+  t.check('세션이 늘면 서명이 달라진다',
+    sig(base, projects) !== sig(base.concat([{ id: 'b', projectId: 'p1', title: 'S2' }]), projects));
+  t.check('세션 이름이 바뀌면 서명이 달라진다',
+    sig(base, projects) !== sig([{ id: 'a', projectId: 'p1', title: '이름변경' }], projects));
+  t.check('프로젝트 이름이 바뀌면 서명이 달라진다',
+    sig(base, projects) !== sig(base, [{ id: 'p1', name: '알파둘' }]));
+  t.check('소속 프로젝트가 바뀌면 서명이 달라진다',
+    sig(base, projects) !== sig([{ id: 'a', projectId: 'p2', title: 'S1' }], projects));
+  t.check('상태 변화만으로는 서명이 바뀌지 않는다 (값 갱신으로 충분)',
+    sig([{ id: 'a', projectId: 'p1', title: 'S1', status: 'idle' }], projects)
+    === sig([{ id: 'a', projectId: 'p1', title: 'S1', status: 'waiting' }], projects));
+  t.check('세션이 없으면 빈 서명', sig([], projects) === '');
 
   // ── 진행 시간 표기 ──
   t.check('1분 미만은 초', formatRunElapsed(4200) === '4초');
   t.check('1분 이상은 분:초', formatRunElapsed(74000) === '1:14');
   t.check('초는 두 자리로 채운다', formatRunElapsed(65000) === '1:05');
   t.check('음수·0 도 안전', formatRunElapsed(-100) === '0초' && formatRunElapsed(0) === '0초');
+
+  // ── 마지막 활동 표기 ──
+  const now = 1_000_000_000;
+  const since = (secAgo) => formatSinceChange(now, now - secAgo * 1000);
+  t.check('45초 미만은 방금', since(0) === '방금' && since(44) === '방금');
+  t.check('1시간 미만은 분 단위', since(60) === '1분 전' && since(600) === '10분 전');
+  t.check('45초 이상은 최소 1분으로 올린다', since(45) === '1분 전');
+  t.check('1일 미만은 시간 단위', since(3600) === '1시간 전' && since(7200) === '2시간 전');
+  t.check('그 이상은 일 단위', since(86400) === '1일 전' && since(86400 * 3) === '3일 전');
+  t.check('미래 시각도 안전하게 방금으로', formatSinceChange(now, now + 5000) === '방금');
 };

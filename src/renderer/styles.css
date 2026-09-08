@@ -19,11 +19,13 @@
   --accent-tint-hi: rgba(46, 108, 214, .28);
   --running: #3fb950;
   --running-tint: rgba(63, 185, 80, .15);
+  --running-tint-hi: rgba(63, 185, 80, .26);
   --waiting: #d29922;
   --waiting-tint: rgba(210, 153, 34, .18);
   --waiting-tint-hi: rgba(210, 153, 34, .3);
   --done: #58a6ff;
   --done-tint: rgba(88, 166, 255, .18);
+  --done-tint-hi: rgba(88, 166, 255, .28);
   --exited: #f85149;
   --exited-tint: rgba(248, 81, 73, .15);
   --exited-tint-hi: rgba(248, 81, 73, .25);
@@ -463,40 +465,74 @@ button:disabled:hover { border-color: var(--border); }
 #dashboard-head button:hover { color: var(--fg); }
 #dashboard-grid {
   flex: 1; overflow-y: auto;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 8px; padding: 10px; align-content: start;
+  display: flex; flex-direction: column;
+  gap: 14px; padding: 12px; align-content: start;
 }
 .dash-empty { color: var(--fg-dim); font-size: 12px; padding: 8px; }
+/* ── 프로젝트 그룹 ── 세션 카드는 항상 소속 프로젝트 아래에 모인다 */
+.dash-group { display: flex; flex-direction: column; gap: 7px; }
+.dash-group-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 0 2px 5px;
+  border-bottom: 1px solid var(--border);
+}
+/* 사이드바에서 쓰는 프로젝트 색을 그대로 띠로 세운다 (같은 프로젝트를 눈으로 잇는 단서) */
+.dash-group-swatch {
+  flex: 0 0 auto; width: 3px; height: 13px; border-radius: 2px;
+  background: var(--fg-dim);
+}
+.dash-group-name {
+  font-weight: 700; font-size: 12px; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dash-group-branch {
+  flex: 0 0 auto; font-size: 10px; color: var(--fg-dim);
+  padding: 1px 6px; border-radius: 8px; background: var(--fg-tint);
+}
+.dash-group-chips { flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.dash-group-count { flex: 0 0 auto; font-size: 10.5px; color: var(--fg-dim); }
+.dash-group-tiles {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+}
+/* ── 세션 카드 ── 상태가 곧 색이다: 테두리와 헤더 배경이 상태색을 그대로 쓴다 */
 .dash-tile {
   display: flex; flex-direction: column;
   border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg-panel);
   overflow: hidden; cursor: pointer;
 }
-.dash-tile:hover { border-color: var(--accent-strong); }
-.dash-tile.active { box-shadow: inset 0 0 0 1px var(--accent-strong); }
-.dash-head { display: flex; align-items: center; gap: 6px; padding: 7px 9px 3px; }
+.dash-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 9px;
+  background: var(--fg-tint);
+  border-bottom: 1px solid var(--border);
+}
 .dash-name {
   flex: 1; min-width: 0; font-weight: 600; font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.dash-time { flex: 0 0 auto; color: var(--fg-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
-.dash-meta { padding: 0 9px 6px; color: var(--fg-dim); font-size: 10.5px; }
+.dash-time { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; color: inherit; opacity: .85; }
+.dash-meta { display: flex; align-items: center; gap: 6px; padding: 6px 9px; }
+.dash-since { flex: 1; text-align: right; font-size: 10.5px; color: var(--fg-dim); }
 /* 상태 점 — 사이드바 상태 태그와 같은 색 변수를 쓴다 (테마 보정도 함께 따라온다) */
 .dash-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--fg-dim); }
-.dash-dot.running { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
-.dash-dot.waiting { background: var(--waiting); animation: pulse 1.2s ease-in-out infinite; }
-.dash-dot.done { background: var(--done); }
-.dash-dot.exited { background: var(--exited); }
-.dash-body {
-  margin: 0; padding: 7px 9px 8px;
-  border-top: 1px solid var(--border);
-  background: var(--bg);
-  font-size: 10.5px; line-height: 1.45;
-  min-height: 7.5em; max-height: 11em; overflow: hidden;
-  white-space: pre-wrap; overflow-wrap: anywhere;
-  color: var(--fg-dim);
-}
+.dash-tile.s-running .dash-dot { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
+.dash-tile.s-waiting .dash-dot { background: var(--waiting); animation: pulse 1.2s ease-in-out infinite; }
+.dash-tile.s-done .dash-dot { background: var(--done); }
+.dash-tile.s-exited .dash-dot { background: var(--exited); }
+/* 상태별 색 — 테두리(아웃라인)와 헤더 배경·글자색을 한 벌로 바꾼다 */
+.dash-tile.s-running { border-color: var(--running); }
+.dash-tile.s-running .dash-head { background: var(--running-tint-hi); color: var(--running); border-bottom-color: var(--running-tint-hi); }
+.dash-tile.s-waiting { border-color: var(--waiting); }
+.dash-tile.s-waiting .dash-head { background: var(--waiting-tint-hi); color: var(--waiting); border-bottom-color: var(--waiting-tint-hi); }
+.dash-tile.s-done { border-color: var(--done); }
+.dash-tile.s-done .dash-head { background: var(--done-tint-hi); color: var(--done); border-bottom-color: var(--done-tint-hi); }
+.dash-tile.s-exited { border-color: var(--exited); }
+.dash-tile.s-exited .dash-head { background: var(--exited-tint-hi); color: var(--exited); border-bottom-color: var(--exited-tint-hi); }
+/* 대기중은 색을 쓰지 않는다 — 아무 일도 없다는 뜻이므로 눈에 띌 이유가 없다 */
+.dash-tile:hover { box-shadow: 0 0 0 1px var(--accent-strong); }
+.dash-tile.active { box-shadow: inset 0 0 0 2px var(--accent-strong); }
 /* 세션 미배정 패널의 세션 선택 피커 */
 .pane-picker {
   position: absolute; inset: 0; z-index: 4;
