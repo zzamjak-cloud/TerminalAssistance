@@ -73,6 +73,7 @@ const App = {
         App.clearDoneTimers(sessionId); // 새 작업 시작/입력 등으로 done 이탈 → 확인 추적 취소
       }
       if (status === 'waiting') App.onWaiting(s);
+      App.noteStatusForDashboard(sessionId, status); // 진행 시작 시각 기록 + 열려 있으면 즉시 갱신
       updateSessionStatus(s); // 전체 재구축 대신 해당 행만 갱신 (호버·드래그 유지)
       App.refreshPickerStatus(s); // 피커·패널 헤더의 상태 태그만 최신화 (단일 화면 헤더 포함)
       App.renderTopbar();
@@ -112,6 +113,8 @@ const App = {
 
     document.getElementById('btn-add-project').onclick = () => App.showProjectModal();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
+    document.getElementById('btn-dashboard').onclick = () => App.toggleDashboard();
+    document.getElementById('btn-dashboard-close').onclick = () => App.closeDashboard();
     document.getElementById('btn-help').onclick = () => App.showHelpModal();
     document.getElementById('btn-toggle-prompts').onclick = () => App.togglePromptPanel();
     document.getElementById('btn-claude-refresh').onclick = () => App.renderClaudeList(true);
@@ -253,8 +256,18 @@ const App = {
       return false;
     }
     const mod = App.state.platform === 'macos' ? ev.metaKey : ev.ctrlKey;
-    if (!mod || ev.altKey || ev.shiftKey) return false;
+    if (!mod || ev.altKey) return false;
     if (App.isShortcutBlocked(ev, opts)) return false;
+    // Shift 조합은 여기서만 처리한다. 대시보드에 Mod+D 를 주지 않는 이유:
+    // Windows·Linux 는 mod = Ctrl 이라 터미널의 Ctrl+D(EOF·셸 종료)를 삼켜버린다.
+    if (ev.shiftKey) {
+      if (ev.key.toLowerCase() === 'd') {
+        ev.preventDefault();
+        App.toggleDashboard();
+        return true;
+      }
+      return false;
+    }
     const key = ev.key.toLowerCase();
     if (key === 'f') {
       ev.preventDefault();
@@ -303,7 +316,17 @@ const App = {
   handleComposerShortcut(ev) {
     if (ev.isComposing || ev.keyCode === 229) return false;
     const mod = App.state.platform === 'macos' ? ev.metaKey : ev.ctrlKey;
-    if (!mod || ev.altKey || ev.shiftKey) return false;
+    if (!mod || ev.altKey) return false;
+    if (ev.shiftKey) {
+      // Shift+Enter(예약 발송)는 이 입력창의 keydown 핸들러가 먼저 처리하므로 여기 오지 않는다
+      if (ev.key.toLowerCase() === 'd') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        App.toggleDashboard();
+        return true;
+      }
+      return false;
+    }
     const key = ev.key.toLowerCase();
     // 패널 폴딩 3종(P 우측 패널 · I 좌측 사이드바 · O 탐색기) + J(터미널↔입력창 커서)
     const actions = {

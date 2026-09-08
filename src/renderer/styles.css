@@ -439,6 +439,62 @@ button:disabled:hover { border-color: var(--border); }
 .term-holder:hover .xterm-viewport { scrollbar-color: rgba(136, 136, 136, .55) transparent; }
 /* 중간클릭 팬 스크롤 중 — 상하 스크롤 커서로 모드 표시 */
 .term-holder.pan-scrolling, .term-holder.pan-scrolling * { cursor: ns-resize !important; }
+/* ── 전 세션 대시보드 ──
+   터미널 영역 위에 덮는 오버레이. 홀더의 배치·크기를 건드리지 않으므로
+   껐다 켜도 xterm 리플로우나 fit 재계산이 일어나지 않는다. */
+#dashboard {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+}
+#dashboard.hidden { display: none; }
+#dashboard-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+#dashboard-count { color: var(--fg-dim); font-size: 11px; flex: 1; }
+#dashboard-head button {
+  border: none; background: none; color: var(--fg-dim);
+  font-size: 13px; line-height: 1; padding: 2px 4px; cursor: pointer;
+}
+#dashboard-head button:hover { color: var(--fg); }
+#dashboard-grid {
+  flex: 1; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px; padding: 10px; align-content: start;
+}
+.dash-empty { color: var(--fg-dim); font-size: 12px; padding: 8px; }
+.dash-tile {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-panel);
+  overflow: hidden; cursor: pointer;
+}
+.dash-tile:hover { border-color: var(--accent-strong); }
+.dash-tile.active { box-shadow: inset 0 0 0 1px var(--accent-strong); }
+.dash-head { display: flex; align-items: center; gap: 6px; padding: 7px 9px 3px; }
+.dash-name {
+  flex: 1; min-width: 0; font-weight: 600; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dash-time { flex: 0 0 auto; color: var(--fg-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.dash-meta { padding: 0 9px 6px; color: var(--fg-dim); font-size: 10.5px; }
+/* 상태 점 — 사이드바 상태 태그와 같은 색 변수를 쓴다 (테마 보정도 함께 따라온다) */
+.dash-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--fg-dim); }
+.dash-dot.running { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
+.dash-dot.waiting { background: var(--waiting); animation: pulse 1.2s ease-in-out infinite; }
+.dash-dot.done { background: var(--done); }
+.dash-dot.exited { background: var(--exited); }
+.dash-body {
+  margin: 0; padding: 7px 9px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 10.5px; line-height: 1.45;
+  min-height: 7.5em; max-height: 11em; overflow: hidden;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--fg-dim);
+}
 /* 세션 미배정 패널의 세션 선택 피커 */
 .pane-picker {
   position: absolute; inset: 0; z-index: 4;
