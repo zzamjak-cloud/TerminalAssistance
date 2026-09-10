@@ -16,6 +16,12 @@ use std::time::SystemTime;
 /// 훅 스크립트 식별 마커 — 설치 여부 판정과 제거 시 우리 항목 선별에 사용
 const MARKER: &str = "ta-hook";
 
+/// 훅 상태 파일 본문 → JSON. Windows 훅은 PowerShell 로 기록해 UTF-8 BOM 이 붙을 수 있는데
+/// serde_json 은 BOM 을 값 시작으로 보지 않아 통째로 파싱에 실패한다. 앞의 BOM 을 떼고 읽는다.
+fn parse_state_json(text: &str) -> Option<Value> {
+    serde_json::from_str(text.trim_start_matches('\u{feff}').trim()).ok()
+}
+
 /// Claude Code 훅 수신기 (macOS/Linux). 어떤 실패도 Claude 실행을 막지 않도록 항상 exit 0.
 const HOOK_SH: &str = r#"#!/bin/bash
 # Terminal Assistance — Claude Code 훅 수신기 (자동 생성 파일, 수정하지 말 것)
@@ -55,7 +61,9 @@ try {
   $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   function Write-State($s) {
     $tmp = "$file.tmp"
-    "{""state"":""$s"",""ts"":$ts,""sid"":""$($j.session_id)""}" | Set-Content -Path $tmp -Encoding utf8 -NoNewline
+    $body = "{""state"":""$s"",""ts"":$ts,""sid"":""$($j.session_id)""}"
+    # Set-Content -Encoding utf8 은 PS 5.1 에서 BOM 을 붙인다 — 읽는 쪽 JSON 파서가 깨지므로 BOM 없이 쓴다
+    [System.IO.File]::WriteAllText($tmp, $body, (New-Object System.Text.UTF8Encoding($false)))
     Move-Item -Force $tmp $file
   }
   switch ($j.hook_event_name) {
@@ -112,7 +120,7 @@ pub fn refresh_hook_script() {
 pub fn claude_session_of(session_id: String) -> Option<String> {
     let dir = state_dir()?;
     let text = fs::read_to_string(dir.join(format!("{}.json", session_id))).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
+    let v = parse_state_json(&text)?;
     v["sid"].as_str().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
@@ -140,7 +148,7 @@ pub fn read_states(last_mtime: &mut Option<SystemTime>) -> Option<HashMap<String
             continue;
         }
         let Ok(text) = fs::read_to_string(&path) else { continue };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+        let Some(v) = parse_state_json(&text) else { continue };
         let (Some(state), Some(ts)) = (v["state"].as_str(), v["ts"].as_u64()) else { continue };
         map.insert(id.to_string(), HookState { state: state.to_string(), ts });
     }
@@ -346,4 +354,31 @@ pub fn set_claude_hooks(enable: bool) -> Result<(), String> {
 #[tauri::command]
 pub fn set_codex_hooks(enable: bool) -> Result<(), String> {
     if enable { install_codex() } else { uninstall_codex() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Windows 훅은 PowerShell 로 상태 파일을 쓰며 UTF-8 BOM 이 붙을 수 있다.
+    // BOM 을 떼지 않으면 파싱이 통째로 실패해 훅이 미설치된 것처럼 보이고,
+    // 완료 판정이 출력 휴리스틱으로 떨어져 예약 큐가 오작동한다.
+    #[test]
+    fn parses_hook_state_with_utf8_bom() {
+        let v = parse_state_json("\u{feff}{\"state\":\"done\",\"ts\":1,\"sid\":\"x\"}")
+            .expect("BOM 이 붙어도 파싱돼야 한다");
+        assert_eq!(v["state"], "done");
+        assert_eq!(v["ts"], 1);
+    }
+
+    #[test]
+    fn parses_hook_state_without_bom() {
+        let v = parse_state_json("{\"state\":\"waiting\",\"ts\":2,\"sid\":\"y\"}").unwrap();
+        assert_eq!(v["state"], "waiting");
+    }
+
+    #[test]
+    fn rejects_broken_hook_state() {
+        assert!(parse_state_json("not json").is_none());
+    }
 }
