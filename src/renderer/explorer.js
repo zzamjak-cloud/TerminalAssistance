@@ -40,7 +40,7 @@ Object.assign(App, {
       e.stopPropagation();
       App.showNewFileModal();
     };
-    // 스페이스 = 선택 항목 미리보기 토글, Enter = 터미널 입력 라인 끝에 경로 삽입
+    // 스페이스 = 선택 항목 미리보기 토글, Enter = 프롬프트 입력창에 경로 삽입(폴더 포함), ←→ = 폴딩
     const tree = document.getElementById('file-tree');
     tree.addEventListener('keydown', (ev) => {
       const t = App._tree;
@@ -65,11 +65,10 @@ Object.assign(App, {
         if (!t.selected) return;
         const e = App._findTreeEntry(t.selected);
         if (!e) return;
-        if (e.isDir) {
-          App._toggleTreeDir(t.selected); // 폴더는 Enter 로도 접기/펼치기
-        } else if (App.state.activeId) {
-          // 파일은 활성 화면의 프롬프트 입력창에, 입력창이 없으면 터미널 입력 라인에 삽입.
-          // 포커스는 트리에 남긴다 — 여러 파일을 연달아 Enter 로 넣을 수 있게
+        // 폴더·파일 모두 활성 화면의 프롬프트 입력창에, 입력창이 없으면 터미널 입력 라인에 삽입.
+        // 폴딩은 ←→ 전용 — Enter 는 경로 삽입만 한다.
+        // 포커스는 트리에 남긴다 — 여러 항목을 연달아 Enter 로 넣을 수 있게
+        if (App.state.activeId) {
           App.insertPathToActiveInput(e.path);
           tree.focus();
         }
