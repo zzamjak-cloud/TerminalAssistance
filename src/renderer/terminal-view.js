@@ -281,6 +281,22 @@ const TerminalView = {
     return text;
   },
 
+  // 주어진 텍스트가 지금 입력 상자(또는 셸 입력 라인)에 떠 있는가.
+  // 예약 큐가 '붙여넣기가 실제로 들어갔는지'를 확인하는 데 쓴다.
+  textOnInputLine(id, text) {
+    const v = this.views.get(id);
+    if (!v || !text) return false;
+    return this._typedLineOnScreen(v, String(text));
+  },
+
+  // 사용자가 치다 만 잔여 입력 ('' = 없음). 추적이 유효하고 화면에서도 확인될 때만 인정한다 —
+  // 예약 큐는 이게 비어 있을 때만 붙여넣는다 (남의 입력 위에 절대 겹쳐 쓰지 않는다).
+  pendingTypedLine(id) {
+    const v = this.views.get(id);
+    if (!v || !v.typedValid || !v.typedText || !v.typedText.trim()) return '';
+    return this._typedLineOnScreen(v, v.typedText) ? v.typedText : '';
+  },
+
   // 마지막 cutTypedLine 이 잘라내지 못한 까닭 ('' = 잘라낼 것이 없었거나 성공)
   cutFailReason(id) {
     const v = this.views.get(id);

@@ -4,7 +4,6 @@
 // 백엔드 형식 변경 없이 영속화한다.
 Object.assign(App, {
   _draftSaveChains: new Map(), // 같은 키의 저장 순서를 보장해 늦은 응답이 최신 큐를 덮지 않게 한다
-  _queueDispatching: new Set(),
   _composerTexts: new Map(), // 세션 전환 중 작성하던 텍스트의 오전송 방지
 
   // ── 작성 중 텍스트 영속화 (크래시 리로드·앱 재시작 대비) ──
@@ -171,6 +170,42 @@ Object.assign(App, {
       el.appendChild(row);
     };
 
+    // 전달이 확인되지 않아 멈춘 상태 — 무엇 때문에 멈췄고 어떻게 풀지 목록 맨 위에 알린다.
+    // 항목은 큐에 그대로 남아 있으므로 여기서 결정할 때까지 순서가 흐트러지지 않는다.
+    const paused = PromptQueue.pausedInfo(id);
+    if (paused && queued.length) {
+      const note = {
+        leftover: '터미널 입력줄에 내용이 남아 있어 예약을 보류했습니다',
+        paste: '프롬프트가 터미널에 들어가지 않아 멈췄습니다',
+        submit: '프롬프트는 들어갔지만 전송이 확인되지 않아 멈췄습니다',
+        error: '예약 전송 중 오류가 나 멈췄습니다',
+      }[paused.reason] || '예약 전송이 멈췄습니다';
+      const row = document.createElement('div');
+      row.className = 'composer-item queue-paused';
+      const kind = document.createElement('span');
+      kind.className = 'composer-kind';
+      kind.textContent = '보류';
+      const text = document.createElement('span');
+      text.className = 'composer-text';
+      text.textContent = note;
+      text.title = `${note}\n\n${paused.text}`;
+      const mk = (label, title, fn) => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.title = title;
+        b.onclick = fn;
+        return b;
+      };
+      row.append(
+        kind, text,
+        mk('다시 시도', '같은 내용을 다시 전송합니다', () => void PromptQueue.retry(id)),
+        mk('입력창으로', '내용을 프롬프트 입력창으로 되돌립니다', () => void PromptQueue.releaseToComposer(id)),
+        mk('취소', '이 예약만 버리고 다음 항목으로 넘어갑니다', () => void PromptQueue.cancelPaused(id))
+      );
+      row.lastChild.className = 'composer-remove';
+      el.appendChild(row);
+    }
+
     queued.forEach((d, index) => {
       const cancel = document.createElement('button');
       cancel.className = 'composer-remove';
@@ -262,38 +297,13 @@ Object.assign(App, {
     }
   },
 
-  // 영속 저장소에서 선두 항목 제거가 성공한 뒤에만 PTY로 보낸다(at-most-once).
-  async dispatchNextQueued(sessionId) {
-    if (App._queueDispatching.has(sessionId)) return;
-    const key = App.queueKey(sessionId);
-    const before = App.state.drafts[key] || [];
-    const nextDraft = before[0];
-    const nextText = nextDraft ? App.normalizeComposerSubmitText(nextDraft.text) : '';
-    if (!nextText.trim()) return;
-    App._queueDispatching.add(sessionId);
-    const rest = before.slice(1);
-    App.state.drafts[key] = rest;
-    App.renderComposerQueue();
-    try {
-      await App.persistDraftList(key, rest);
-      App.deliverDraft(sessionId, nextText);
-    } catch (e) {
-      const current = App.state.drafts[key] || [];
-      if (!current.some((d) => d.id === nextDraft.id)) {
-        App.state.drafts[key] = [nextDraft, ...current];
-      }
-      App.renderComposerQueue();
-      console.warn('예약 전송 준비 실패:', e);
-    } finally {
-      App._queueDispatching.delete(sessionId);
-    }
-  },
-
+  // 큐 진행은 PromptQueue 가 맡는다 — 전달을 확인한 뒤에만 큐에서 지운다(유실 0).
   handleQueuedDone(sessionId) {
-    App.dispatchNextQueued(sessionId);
+    void PromptQueue.onSessionDone(sessionId);
   },
 
   async clearQueuedPrompts(sessionId) {
+    PromptQueue.onSessionGone(sessionId);
     const key = App.queueKey(sessionId);
     if (!Object.prototype.hasOwnProperty.call(App.state.drafts, key)) return;
     delete App.state.drafts[key];

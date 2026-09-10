@@ -65,6 +65,8 @@ const App = {
       if (!s) return;
       const prevStatus = s.status;
       s.status = status;
+      // 예약 큐의 전달 확인 1순위 근거 — 보낸 프롬프트로 실제 턴이 시작됐다는 뜻이다
+      if (status === 'running') PromptQueue.onSessionRunning(sessionId);
       if (status === 'done') {
         App.onDone(s, busyMs);
         // 반복 done 이벤트가 다음 예약까지 소진하지 않도록 실제 실행 완료 전이만 처리한다.

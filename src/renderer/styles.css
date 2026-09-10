@@ -776,6 +776,9 @@ button:disabled:hover { border-color: var(--border); }
 .composer-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-item button { flex: none; padding: 1px 7px; font-size: 10px; }
 .composer-remove { color: var(--exited); }
+/* 전달이 확인되지 않아 멈춘 예약 — 항목은 큐에 남아 있고 사용자의 결정을 기다린다 */
+.composer-item.queue-paused { background: rgba(248, 81, 73, .14); }
+.composer-item.queue-paused .composer-kind { color: var(--exited); }
 
 #empty-state {
   position: absolute; inset: 0;
