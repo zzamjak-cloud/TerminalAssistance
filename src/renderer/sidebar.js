@@ -66,7 +66,30 @@ function refreshSessionTitleSurfaces() {
   if (App.renderPanePresets) App.renderPanePresets();
 }
 
-function startSessionTitleRename(id) {
+// 편집 중에 사이드바가 다시 그려지면 입력이 DOM 에서 빠진다. WebKit(맥 WKWebView)은 이때
+// blur 를 쏘지 않아 finish 가 돌지 못하고 editingSessionId 잠금이 영영 남는다 → 이후 이름 변경이 전부 막힌다.
+// 렌더 직전에 편집 상태를 걷어(잠금 해제) 두고, 렌더 뒤 같은 행에 그대로 되살린다.
+function captureSessionRename() {
+  if (!editingSessionId) return null;
+  const input = document.querySelector('#project-list .session-rename');
+  editingSessionId = null;
+  if (!input) return null;
+  const value = input.value;
+  const start = typeof input.selectionStart === 'number' ? input.selectionStart : value.length;
+  const end = typeof input.selectionEnd === 'number' ? input.selectionEnd : value.length;
+  const id = input.dataset.sid;
+  // 크로미움(윈도우 WebView2)은 제거 시 blur 를 쏜다 — 편집 중이던 중간값이 저장되지 않게 먼저 끈다
+  if (input._abortRename) input._abortRename();
+  return { id, value, start, end };
+}
+
+function restoreSessionRename(snapshot) {
+  if (snapshot && snapshot.id) startSessionTitleRename(snapshot.id, snapshot);
+}
+
+function startSessionTitleRename(id, restore) {
+  // 입력은 사라졌는데 잠금만 남은 상태를 스스로 푼다 (렌더 경로를 빠뜨려도 먹통이 되지 않게)
+  if (editingSessionId && !document.querySelector('#project-list .session-rename')) editingSessionId = null;
   const s = App.state.sessions.find((x) => x.id === id);
   const row = s && document.querySelector(`#project-list .session-row[data-sid="${id}"]`);
   const titleEl = row && row.querySelector('.session-title');
@@ -78,11 +101,13 @@ function startSessionTitleRename(id) {
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'session-rename';
-  input.value = oldTitle;
+  input.dataset.sid = id;
+  input.value = restore ? restore.value : oldTitle;
   input.spellcheck = false;
   titleEl.replaceWith(input);
   input.focus();
-  input.select();
+  if (restore) input.setSelectionRange(restore.start, restore.end);
+  else input.select();
 
   let done = false;
   const finish = (commit) => {
@@ -112,6 +137,9 @@ function startSessionTitleRename(id) {
     }
   };
 
+  // 재렌더가 편집을 옮겨 담을 때 쓰는 중단 스위치 — 이 입력의 blur 저장을 무효화한다
+  input._abortRename = () => { done = true; editingSessionId = null; };
+
   input.onclick = (e) => e.stopPropagation();
   input.ondblclick = (e) => e.stopPropagation();
   input.onmousedown = (e) => e.stopPropagation();
@@ -135,6 +163,7 @@ function updateSessionStatus(s) {
 
 function renderSidebar() {
   initSidebarSessionRenameKeys();
+  const pendingRename = captureSessionRename(); // 진행 중이던 제목 편집 보존
   const list = document.getElementById('project-list');
   list.textContent = '';
   const { projects, sessions, activeId } = App.state;
@@ -371,4 +400,5 @@ function renderSidebar() {
   }
 
   initSidebarSort();
+  restoreSessionRename(pendingRename);
 }

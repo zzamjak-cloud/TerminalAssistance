@@ -15,7 +15,7 @@ class FakeElement {
     this.dataset = {};
     this.style = {};
     this.className = '';
-    this.textContent = '';
+    this._text = '';
     this.value = '';
     this.type = '';
     this.title = '';
@@ -28,6 +28,15 @@ class FakeElement {
     this.classList = {
       contains: (name) => this.className.split(/\s+/).includes(name),
     };
+  }
+
+  get textContent() { return this._text; }
+
+  // 실제 DOM 과 동일하게 textContent 대입은 자식을 모두 걷어낸다 (renderSidebar 가 목록을 비우는 방식)
+  set textContent(v) {
+    this._text = v;
+    for (const child of this.children) child.parentNode = null;
+    this.children = [];
   }
 
   appendChild(child) {
@@ -218,5 +227,40 @@ exports.run = function run(t) {
     const close = row.querySelector('.session-close');
     row.ondblclick(event(close));
     t.check('닫기 버튼 더블 클릭은 세션 제목 편집을 시작하지 않는다', !row.querySelector('.session-rename'));
+  }
+
+  // 상태 이벤트 등으로 편집 도중 사이드바가 다시 그려지는 경우.
+  // WebKit(맥) 은 입력이 DOM 에서 빠져도 blur 를 쏘지 않아, 예전에는 편집 잠금이 남아 이름 변경이 영영 막혔다.
+  {
+    const { api, document, calls } = loadSidebar();
+    api.renderSidebar();
+    const row = document.querySelector('.session-row[data-sid="s1"]');
+    row.ondblclick(event(row));
+    const input = row.querySelector('.session-rename');
+    input.value = 'Half typed';
+    input.setSelectionRange(4, 4);
+    api.renderSidebar(); // 편집 중 재렌더 (blur 없음)
+    const revived = document.querySelector('.session-rename');
+    t.check('편집 중 재렌더에도 입력 필드가 살아남는다', !!revived);
+    t.check('재렌더 후에도 치던 내용이 보존된다', revived && revived.value === 'Half typed');
+    t.check('재렌더 후에도 커서 위치가 보존된다', revived && revived.selectionStart === 4 && revived.selectionEnd === 4);
+    t.check('재렌더만으로는 중간값을 저장하지 않는다', calls.length === 0);
+    revived.onkeydown(event(revived, 'Enter'));
+    t.check('되살아난 입력에서 Enter 로 저장된다', calls.length === 1 && calls[0][1] === 'Half typed');
+  }
+
+  {
+    const { api, document, calls, App } = loadSidebar();
+    api.renderSidebar();
+    const row = document.querySelector('.session-row[data-sid="s1"]');
+    row.ondblclick(event(row));
+    const gone = App.state.sessions.splice(0, 1)[0];
+    api.renderSidebar(); // 행이 사라진 채 재렌더 → 편집을 되살릴 자리가 없다
+    App.state.sessions.push(gone);
+    api.renderSidebar();
+    const back = document.querySelector('.session-row[data-sid="s1"]');
+    back.ondblclick(event(back));
+    t.check('편집이 사라진 뒤에도 다시 이름을 바꿀 수 있다', !!back.querySelector('.session-rename'));
+    t.check('되살리지 못한 편집은 저장하지 않는다', calls.length === 0);
   }
 };
