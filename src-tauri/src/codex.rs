@@ -175,6 +175,18 @@ fn safe_session_id(id: &str) -> bool {
     !id.is_empty() && !id.contains('/') && !id.contains('\\') && !id.contains("..")
 }
 
+/// 서브에이전트 스레드가 남긴 rollout 인지 판별.
+/// 이런 파일은 `codex resume <id>` 로 되살릴 수 없고(부모를 먼저 띄워야 한다),
+/// payload.id 가 부모의 session_id 와 달라 세션 목록에 노출되면 재개가 실패한다.
+fn is_subagent_meta(p: &serde_json::Value) -> bool {
+    p.get("thread_source").and_then(|x| x.as_str()) == Some("subagent")
+        || p.get("source")
+            .and_then(|s| s.get("subagent"))
+            .is_some_and(|s| !s.is_null())
+}
+
+/// rollout 파일의 session_meta 에서 (세션 id, cwd) 를 읽는다.
+/// 서브에이전트 rollout 은 재개 불가라 None 을 돌려 목록에서 제외한다.
 fn codex_meta(path: &Path) -> Option<(String, String)> {
     let f = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(f.take(SESSION_SCAN_CAP));
@@ -192,6 +204,9 @@ fn codex_meta(path: &Path) -> Option<(String, String)> {
             continue;
         }
         let p = v.get("payload")?;
+        if is_subagent_meta(p) {
+            return None;
+        }
         let id = p
             .get("id")
             .or_else(|| p.get("session_id"))
@@ -426,6 +441,33 @@ mod tests {
             ]
         });
         assert_eq!(codex_user_text(&v).as_deref(), Some("실제 요청"));
+    }
+
+    #[test]
+    fn codex_meta_rejects_subagent_rollout() {
+        // 서브에이전트 rollout — payload.id 가 부모와 달라 resume 이 실패한다
+        let sub = json!({
+            "session_id": "parent-id",
+            "id": "child-id",
+            "parent_thread_id": "parent-id",
+            "thread_source": "subagent",
+            "source": { "subagent": { "thread_spawn": { "depth": 1 } } },
+            "cwd": "D:/proj"
+        });
+        assert!(is_subagent_meta(&sub));
+
+        // 포크된 일반 세션 — 재개 가능하므로 걸러내면 안 된다
+        let forked = json!({
+            "session_id": "own-id",
+            "id": "own-id",
+            "forked_from_id": "other-id",
+            "thread_source": "user",
+            "cwd": "D:/proj"
+        });
+        assert!(!is_subagent_meta(&forked));
+
+        // thread_source 가 없는 구버전 rollout
+        assert!(!is_subagent_meta(&json!({ "id": "own-id", "cwd": "D:/proj" })));
     }
 
     #[test]
