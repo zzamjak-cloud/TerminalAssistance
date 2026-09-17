@@ -59,6 +59,7 @@
       shell: patch.shell ?? null,
       notifyOnDone: patch.notifyOnDone ?? null,
       notifyOnWaiting: patch.notifyOnWaiting ?? null,
+      showPromptInput: patch.showPromptInput ?? null,
       lineHeight: patch.lineHeight ?? null,
       letterSpacing: patch.letterSpacing ?? null,
       minContrast: patch.minContrast ?? null

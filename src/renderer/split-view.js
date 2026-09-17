@@ -197,7 +197,8 @@ Object.assign(App, {
       const c = TerminalView.composers[i];
       if (!c || !c.input) continue;
       App.focusPane(i); // 활성 세션·포커스 링 갱신 (입력창 포커스는 아래에서)
-      c.input.focus();
+      if (App.isPromptInputEnabled() && !c.input.disabled) c.input.focus();
+      else TerminalView.focusTerminal(sid);
       return true;
     }
     return false;

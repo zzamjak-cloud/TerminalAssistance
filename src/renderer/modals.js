@@ -45,6 +45,53 @@ Object.assign(App, {
     onOpen(m, close);
   },
 
+  // ── 세션 모두 초기화 ──
+  // 삭제 대상을 먼저 나열해 보여 준 뒤 확인을 받는다 — 되돌릴 수 없는 작업이므로
+  // “몇 개가 닫히는가”를 숫자가 아니라 이름으로 확인할 수 있게 한다.
+  showClearSessionsModal() {
+    const { sessions, projects } = App.state;
+    if (!sessions.length) {
+      App.showToast('닫을 세션이 없습니다');
+      return;
+    }
+    // 프로젝트가 없거나 사라진 세션은 사이드바와 동일하게 ‘일반 터미널’로 묶어 보인다
+    const projectName = (s) => {
+      const p = projects.find((x) => x.id === s.projectId);
+      return p ? p.name : '일반 터미널';
+    };
+    const rows = sessions.map((s) => `
+      <li>
+        <span class="clear-session-project">${escapeHtml(projectName(s))}</span>
+        <span class="clear-session-title">${escapeHtml(s.title)}</span>
+      </li>`).join('');
+    App.modal(`
+      <h3>세션 모두 초기화</h3>
+      <p style="color:var(--fg-dim);line-height:1.6;margin-bottom:8px">
+        아래 ${sessions.length}개 세션이 모두 닫힙니다. 실행 중인 명령과 예약된 프롬프트도 함께 종료되며, 되돌릴 수 없습니다.
+      </p>
+      <ul id="m-clear-list">${rows}</ul>
+      <p style="margin-top:12px;font-weight:700">정말로 초기화하시겠습니까?</p>
+      <div class="modal-actions">
+        <button id="m-cancel">취소</button>
+        <button id="m-clear" class="confirm">모두 초기화</button>
+      </div>`,
+      (m, close) => {
+        m.querySelector('#m-cancel').onclick = close;
+        m.querySelector('#m-clear').onclick = async () => {
+          const btn = m.querySelector('#m-clear');
+          btn.disabled = true;
+          btn.textContent = '초기화 중…';
+          try {
+            await App.closeAllSessions();
+          } catch (error) {
+            App.showToast('세션 초기화 중 오류가 발생했습니다: ' + String(error));
+          }
+          close();
+        };
+        m.querySelector('#m-cancel').focus(); // 기본 포커스는 취소 — Enter 연타로 삭제되지 않게
+      });
+  },
+
   CHANGELOG_URL: 'https://github.com/zzamjak-cloud/TerminalAssistance/blob/main/CHANGELOG.md',
 
   async checkUpdate() {
@@ -484,6 +531,8 @@ Object.assign(App, {
       <div class="form-help">설치된 셸만 표시됩니다. 새로 만드는 세션부터 적용됩니다.</div>
       <div class="check"><input type="checkbox" id="m-notify" ${st.notifyOnDone ? 'checked' : ''}><label for="m-notify" style="margin:0">비활성 세션 작업 완료 시 알림</label></div>
       <div class="check"><input type="checkbox" id="m-notify-wait" ${st.notifyOnWaiting ? 'checked' : ''}><label for="m-notify-wait" style="margin:0">비활성 세션 허가 대기 시 알림</label></div>
+      <div class="check"><input type="checkbox" id="m-show-prompt-input" ${st.showPromptInput === true ? 'checked' : ''}><label for="m-show-prompt-input" style="margin:0">하단 프롬프트 입력창 사용</label></div>
+      <div class="form-help">기본적으로 숨깁니다. 사용하지 않으면 Cmd/Ctrl+J 커서 전환도 비활성화됩니다.</div>
       <label>AI 도구 연동 — 허가 대기(🟡) 감지</label>
       <div class="check"><input type="checkbox" id="m-hook-claude" ${hooks.claude ? 'checked' : ''}><label for="m-hook-claude" style="margin:0">Claude Code 훅 (~/.claude/settings.json 병합, 백업 생성)</label></div>
       <div class="check"><input type="checkbox" id="m-hook-codex" ${hooks.codex ? 'checked' : ''}><label for="m-hook-codex" style="margin:0">Codex 알림 (~/.codex/config.toml 병합, 백업 생성)</label></div>
@@ -579,6 +628,7 @@ Object.assign(App, {
             shell: m.querySelector('#m-shell').value,
             notifyOnDone: m.querySelector('#m-notify').checked,
             notifyOnWaiting: m.querySelector('#m-notify-wait').checked,
+            showPromptInput: m.querySelector('#m-show-prompt-input').checked,
             lineHeight: Number(m.querySelector('#m-line-height').value),
             letterSpacing: Number(m.querySelector('#m-letter-spacing').value),
             minContrast: Number(m.querySelector('#m-min-contrast').value)
@@ -596,6 +646,7 @@ Object.assign(App, {
           TerminalView.setFontFamily();
           TerminalView.applyReadability();
           close();
+          TerminalView.syncComposerStates();
         };
       });
   }

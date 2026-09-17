@@ -358,6 +358,7 @@ fn update_settings(
     shell: Option<String>,
     notify_on_done: Option<bool>,
     notify_on_waiting: Option<bool>,
+    show_prompt_input: Option<bool>,
     line_height: Option<f32>,
     letter_spacing: Option<f32>,
     min_contrast: Option<f32>,
@@ -377,6 +378,9 @@ fn update_settings(
     }
     if let Some(v) = notify_on_waiting {
         s.data.settings.notify_on_waiting = v;
+    }
+    if let Some(v) = show_prompt_input {
+        s.data.settings.show_prompt_input = v;
     }
     if let Some(v) = line_height {
         s.data.settings.line_height = v.clamp(1.0, 2.0);

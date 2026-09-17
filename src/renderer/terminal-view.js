@@ -44,8 +44,6 @@ const TerminalView = {
   buildComposer(paneIdx, pane) {
     const root = document.createElement('div');
     root.className = 'pane-prompt hidden';
-    const images = document.createElement('div');
-    images.className = 'pane-prompt-images hidden'; // 이 세션에 첨부한 최근 이미지
     const list = document.createElement('div');
     list.className = 'pane-prompt-list hidden';
     const compose = document.createElement('div');
@@ -74,10 +72,10 @@ const TerminalView = {
     const fanout = mkBtn('pp-fanout', '일괄', '선택한 여러 세션에 즉시 전송');
     actions.append(send, schedule, fanout);
     compose.append(input, actions);
-    root.append(images, list, compose);
+    root.append(list, compose);
     pane.appendChild(root);
 
-    const c = { paneIdx, root, images, list, input, send, schedule, fanout };
+    const c = { paneIdx, root, list, input, send, schedule, fanout };
     const target = () => App.paneSessionId(paneIdx); // 전송 시점의 배정 세션을 그때그때 조회
     // xterm의 키/IME 보정과 완전히 분리해 일반 textarea의 편집 감각을 유지한다.
     input.addEventListener('keydown', (ev) => {
@@ -388,27 +386,33 @@ const TerminalView = {
 
   // 패널별 작성기 활성/잠금 + 그 패널 세션의 작성 중 텍스트 복원
   syncComposerStates(opts) {
+    const enabled = App.isPromptInputEnabled();
+    let layoutChanged = false;
     for (let i = 0; i < SPLIT_MAX_PANES; i++) {
       const c = this.composers[i];
       if (!c) continue;
       const sid = App.paneSessionId(i);
       const live = !!(sid && this.views.has(sid));
       const wasHidden = c.root.classList.contains('hidden');
-      c.root.classList.toggle('hidden', !live);
-      for (const el of [c.input, c.send, c.schedule, c.fanout]) el.disabled = !live;
+      const visible = live && enabled;
+      c.root.classList.toggle('hidden', !visible);
+      if (wasHidden !== !visible) layoutChanged = true;
+      for (const el of [c.input, c.send, c.schedule, c.fanout]) el.disabled = !visible;
       const text = live ? (App._composerTexts.get(sid) || '') : '';
       if (c.input.value !== text) {
         c.input.value = text;
         this.resizeComposer(c);
-      } else if (live && wasHidden) {
+      } else if (visible && wasHidden) {
         this.resizeComposer(c); // 숨김 중엔 높이 계산이 불가 — 처음 보일 때 기본/실측 높이로 재계산
       }
     }
     App.renderComposerQueue();
+    if (layoutChanged) this.fitActive();
     if (opts && opts.noFocus) return;
     const focused = App.isSplit && App.isSplit() ? App.split.focused : 0;
     const fc = this.composers[focused];
     if (fc && !fc.input.disabled) fc.input.focus();
+    else this.focusTerminal(App.paneSessionId(focused));
   },
 
   ansiColor(index) {

@@ -13,13 +13,11 @@ const App = {
     recipes: [],
     settings: {
       fontSize: 13, fontFamily: '', shell: '', notifyOnDone: true, notifyOnWaiting: true,
-      lineHeight: 1, letterSpacing: 0, minContrast: 1
+      lineHeight: 1, letterSpacing: 0, minContrast: 1, showPromptInput: false
     },
     sessions: [],   // { id, projectId, title, status, cwd }
     activeId: null,
     platform: '',   // 백엔드가 알려주는 OS (windows | macos | linux)
-    images: {},     // sessionId → [{ path, src }] 최근 첨부 이미지
-    imageStripFolded: JSON.parse(localStorage.getItem('ta-image-strip-fold') || '{}'), // sessionId → 참조 이미지 접힘 상태
     branches: {},   // sessionId → git 브랜치명 (헤더 표시용, 2초 폴링)
     gitRemote: {},  // cwd → { branch, hasUpstream, behind, ahead, fetchFailed } | null(=git 저장소 아님)
                     // 보이는 cwd 만 공유하며 브랜치 전환·앱 복귀·저빈도 폴링 때 갱신한다
@@ -114,6 +112,7 @@ const App = {
     };
 
     document.getElementById('btn-add-project').onclick = () => App.showProjectModal();
+    document.getElementById('btn-clear-sessions').onclick = () => App.showClearSessionsModal();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
     document.getElementById('btn-dashboard').onclick = () => App.toggleDashboard();
     document.getElementById('btn-dashboard-close').onclick = () => App.closeDashboard();
@@ -228,7 +227,6 @@ const App = {
     App.renderExplorer();
     App.renderSplit(); // renderPanePresets(패널 헤더·프리셋 드롭다운) 포함
     App.renderTopbar();
-    App.renderImageStrip();
     App.renderClaudeList();
     App.renderPlanList();
     void App.migrateLegacyMemos();
@@ -306,7 +304,7 @@ const App = {
     // J: 현재 패널의 터미널 ↔ 프롬프트 입력창 커서 토글
     if (key === 'j') {
       ev.preventDefault();
-      App.toggleTerminalPromptFocus();
+      if (App.isPromptInputEnabled()) App.toggleTerminalPromptFocus();
       return true;
     }
     return false;
@@ -341,6 +339,7 @@ const App = {
     if (!run) return false;
     ev.preventDefault();
     ev.stopPropagation();
+    if (key === 'j' && !App.isPromptInputEnabled()) return true;
     run.call(App);
     return true;
   },
@@ -352,7 +351,12 @@ const App = {
   // (잘라내기는 추적이 확실할 때만 — 확신이 없으면 터미널 내용을 건드리지 않고 커서만 옮긴다)
   // 프롬프트 입력창에 있으면 터미널로 되돌리고, 그 밖(사이드바·탐색기 등)에 있으면
   // 입력창으로 들여보낸다. 세션이 죽어 입력창이 잠긴 경우에만 터미널로 보낸다.
+  isPromptInputEnabled() {
+    return App.state.settings.showPromptInput === true;
+  },
+
   toggleTerminalPromptFocus() {
+    if (!App.isPromptInputEnabled()) return false;
     const id = (App.isSplit() ? App.paneSessionId(App.split.focused) : null) || App.state.activeId;
     if (!id || !TerminalView.views.has(id)) return false;
     const c = TerminalView.composerForSession(id);
@@ -675,57 +679,6 @@ const App = {
     }
   },
 
-  // 최근 첨부 이미지 — 패널 작성기 안에 그린다 (창 하단 고정 스트립은 입력창을 가렸다)
-  renderImageStrip() {
-    let layoutChanged = false;
-    for (let i = 0; i < SPLIT_MAX_PANES; i++) {
-      const c = TerminalView.composers[i];
-      if (c && App.renderPaneImages(c, App.paneSessionId(i))) layoutChanged = true;
-    }
-    if (layoutChanged) TerminalView.fitActive(); // 스트립 유무가 터미널 높이를 바꾼다
-  },
-
-  // 스트립 표시 여부가 바뀌면 true (터미널 재fit 필요)
-  renderPaneImages(c, sessionId) {
-    const strip = c.images;
-    strip.textContent = '';
-    const imgs = (sessionId && App.state.images[sessionId]) || [];
-    const folded = !!(sessionId && App.state.imageStripFolded[sessionId]);
-    const was = strip.classList.contains('hidden');
-    const wasFolded = strip.classList.contains('folded');
-    strip.classList.toggle('hidden', !imgs.length);
-    strip.classList.toggle('folded', folded);
-    const changed = was !== strip.classList.contains('hidden') || wasFolded !== folded;
-    if (!imgs.length) return changed;
-    const label = document.createElement('span');
-    label.className = 'strip-label';
-    label.textContent = `참조 이미지 ${imgs.length}개`;
-    strip.appendChild(label);
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'strip-fold-btn';
-    toggle.textContent = folded ? '펼치기' : '접기';
-    toggle.title = folded ? '참조 이미지 펼치기' : '참조 이미지 접기';
-    toggle.onclick = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      App.state.imageStripFolded[sessionId] = !folded;
-      localStorage.setItem('ta-image-strip-fold', JSON.stringify(App.state.imageStripFolded));
-      App.renderImageStrip();
-    };
-    strip.appendChild(toggle);
-    if (folded) return changed;
-    for (const im of imgs.slice(0, IMAGE_STRIP_MAX)) {
-      const el = document.createElement('img');
-      el.className = 'strip-thumb';
-      el.src = im.src;
-      el.title = im.path + ' (클릭=원본 열기)';
-      el.onclick = () => ta.openPath(im.path);
-      strip.appendChild(el);
-    }
-    return changed;
-  },
-
   // ── 세션 ──
   async createSession(projectId, opts) {
     try {
@@ -807,7 +760,6 @@ const App = {
     App._composerTexts.delete(id);
     App.dropComposerPersist(id); // 저장분·예약 타이머 정리
     App.state.sessions = App.state.sessions.filter((s) => s.id !== id);
-    delete App.state.images[id];
     delete App.state.branches[id];
     App.clearDoneTimers(id);
     App._lastNotifyAt.delete(id);
@@ -819,6 +771,24 @@ const App = {
       if (next) App.activateSession(next.id);
     }
     App.renderAll();
+  },
+
+  // 열려 있는 세션을 전부 닫는다 (사이드바 상단 ‘세션 모두 초기화’).
+  // closeSession 을 그대로 재사용해 정리 로직이 갈라지지 않게 하되,
+  // 활성 세션을 먼저 비워 둘러가며 ‘다음 세션 활성화’가 매번 도는 헛수고를 막는다.
+  async closeAllSessions() {
+    const ids = App.state.sessions.map((s) => s.id);
+    if (!ids.length) return 0;
+    App.state.activeId = null;
+    App.state.projectEmptyId = null;
+    localStorage.removeItem('ta-active-session');
+    for (const id of ids) await App.closeSession(id);
+    // 존재하지 않는 세션을 가리키는 ‘마지막 선택’ 기록도 함께 비운다
+    App.lastSessionByProject = {};
+    localStorage.removeItem('ta-last-session-by-project');
+    App.renderAll();
+    App.showToast(`세션 ${ids.length}개를 모두 닫았습니다`);
+    return ids.length;
   },
 
   ackIfDone(id) {
@@ -937,7 +907,7 @@ const App = {
     else TerminalView.paste(id, quotePath(path) + ' ');
   },
 
-  // 화면 좌표 아래의 패널 작성기 (입력창·이미지 스트립 등 작성기 영역 전체)
+  // 화면 좌표 아래의 패널 작성기 (입력창·예약 목록 등 작성기 영역 전체)
   composerAtPoint(x, y) {
     const el = document.elementFromPoint(x, y);
     const root = el && el.closest ? el.closest('.pane-prompt') : null;
@@ -949,10 +919,6 @@ const App = {
   attachImage(id, path, composer) {
     if (composer) App.insertComposerText(composer, id, quotePath(path) + ' ');
     else TerminalView.paste(id, quotePath(path) + ' ');
-    if (!App.state.images[id]) App.state.images[id] = [];
-    App.state.images[id].unshift({ path, src: ta.fileSrc(path) });
-    if (App.state.images[id].length > IMAGE_STRIP_MAX) App.state.images[id].length = IMAGE_STRIP_MAX;
-    App.renderImageStrip();
   },
 
   // position: Tauri drag-drop 물리 좌표 — 분할 중이면 드롭 지점 아래 패널의 세션을 대상으로

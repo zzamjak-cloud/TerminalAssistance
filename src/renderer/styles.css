@@ -90,8 +90,34 @@ button:disabled:hover { border-color: var(--border); }
   padding: 12px;
   border-bottom: 1px solid var(--border);
 }
-/* 버전 표기는 OS 창 제목으로 옮겨 헤더가 비었다 — ＋(프로젝트 추가) 버튼만 우측으로 민다 */
-#sidebar-head #btn-add-project { margin-left: auto; }
+/* 버전 표기는 OS 창 제목으로 옮겨 헤더가 비었다 — 우측 버튼 묶음(초기화・＋)을 통째로 오른쪽에 붙인다 */
+#sidebar-head #btn-clear-sessions { margin-left: auto; }
+/* 휴지통 아이콘은 글자 버튼(＋)과 높이를 맞추고, 호버 시에만 위험색을 드러낸다 */
+#sidebar-head #btn-clear-sessions {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--fg-dim);
+}
+#sidebar-head #btn-clear-sessions:hover { color: var(--exited); border-color: var(--exited); }
+
+/* 세션 모두 초기화 확인 팝업의 삭제 대상 목록 */
+#m-clear-list {
+  list-style: none; margin: 0; padding: 6px;
+  max-height: 240px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-hover);
+}
+#m-clear-list li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 4px; font-size: 12px;
+}
+#m-clear-list .clear-session-project {
+  flex: 0 0 auto; max-width: 40%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg-dim);
+}
+#m-clear-list .clear-session-title {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 #project-list { flex: 1; overflow-y: auto; padding: 6px; }
 .project {
   border-radius: 8px;
@@ -798,30 +824,6 @@ button:disabled:hover { border-color: var(--border); }
   padding: 9px 22px;
 }
 #btn-empty-new:hover { background: var(--accent-fill-hi); }
-
-/* ── 이미지 스트립 (패널 작성기 안 — 창 하단 고정 시 입력창을 가렸다) ── */
-.pane-prompt-images {
-  display: flex; gap: 6px; align-items: center;
-  padding: 4px 6px;
-  border: 1px solid var(--border); border-radius: 6px;
-  background: var(--bg);
-  overflow-x: auto;
-}
-.pane-prompt-images.hidden { display: none; }
-.pane-prompt-images.folded {
-  overflow-x: hidden;
-}
-.strip-label { font-size: 11px; color: var(--fg-dim); flex: none; }
-.strip-fold-btn {
-  flex: none;
-  padding: 2px 7px;
-  font-size: 11px;
-}
-.strip-thumb {
-  height: 38px; border-radius: 4px; cursor: pointer;
-  border: 1px solid var(--border); flex: none;
-}
-.strip-thumb:hover { border-color: var(--accent); }
 
 /* ── 모달 ── */
 #modal-backdrop {

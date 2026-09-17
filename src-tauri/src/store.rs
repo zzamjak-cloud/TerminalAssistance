@@ -69,6 +69,9 @@ pub struct Settings {
     /// 비활성 세션이 실행 허가를 기다릴 때 데스크톱 알림
     #[serde(rename = "notifyOnWaiting", default = "default_true")]
     pub notify_on_waiting: bool,
+    /// 하단 프롬프트 입력창 표시 여부 (기본 숨김)
+    #[serde(rename = "showPromptInput", default)]
+    pub show_prompt_input: bool,
     /// 터미널 줄 간격 배수 (1.0 = xterm 기본)
     #[serde(rename = "lineHeight", default = "default_line_height")]
     pub line_height: f32,
@@ -101,6 +104,7 @@ impl Default for Settings {
             shell: String::new(),
             notify_on_done: true,
             notify_on_waiting: true,
+            show_prompt_input: false,
             line_height: 1.0,
             letter_spacing: 0.0,
             min_contrast: 1.0,
