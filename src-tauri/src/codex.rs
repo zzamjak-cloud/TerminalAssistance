@@ -10,8 +10,10 @@ use std::time::UNIX_EPOCH;
 
 // rate_limits 는 token_count 마다 기록되므로 파일 꼬리에서 금방 나온다
 const TAIL_CAP: u64 = 128 * 1024;
-// 날짜 디렉토리 스캔 범위 — 자정을 넘긴 장기 세션도 시작일 파일에 계속 기록되므로 여유를 둔다
-const SCAN_DAYS: usize = 3;
+// 사용량 스캔 범위 — 한동안 코덱스를 쓰지 않아도 마지막 기록으로 게이지를 계속 띄우기 위해 넓게 본다
+const USAGE_SCAN_DAYS: usize = 30;
+// rate_limits 가 없는 짧은 세션 파일이 이어질 때 꼬리 읽기가 무한정 늘지 않도록 상한을 둔다
+const USAGE_FILE_CAP: usize = 20;
 const SESSION_LIST_CAP: usize = 30;
 const SESSION_SCAN_DAYS: usize = 30;
 const SESSION_SCAN_CAP: u64 = 2 * 1024 * 1024;
@@ -101,16 +103,30 @@ fn recent_rollouts(scan_days: usize) -> Vec<(PathBuf, u64)> {
     files
 }
 
-/// 최근 SCAN_DAYS 개 날짜 디렉토리에서 mtime 이 가장 최신인 rollout 파일
-fn latest_rollout() -> Option<(PathBuf, u64)> {
-    recent_rollouts(SCAN_DAYS).into_iter().next()
+/// 최근 기록 중 rate_limits 가 담긴 가장 최신 rollout 의 (rate_limits, 파일 mtime)
+fn latest_rate_limits() -> Option<(serde_json::Value, u64)> {
+    recent_rollouts(USAGE_SCAN_DAYS)
+        .into_iter()
+        .take(USAGE_FILE_CAP)
+        .find_map(|(p, mtime_ms)| tail_rate_limits(&p).map(|rl| (rl, mtime_ms)))
 }
 
-fn window_of(v: &serde_json::Value) -> Option<CodexWindow> {
+/// 코덱스 CLI 설치 여부 — 홈의 설정 디렉토리 존재로 판단한다 (GUI 실행 시 PATH 를 믿을 수 없다)
+pub fn is_installed() -> bool {
+    crate::claude::home_dir().is_some_and(|h| h.join(".codex").is_dir())
+}
+
+/// now_secs 는 리셋 판정용 현재 시각(unix 초).
+fn window_of(v: &serde_json::Value, now_secs: u64) -> Option<CodexWindow> {
+    let window_minutes = v.get("window_minutes")?.as_u64()?;
+    let used_percent = v.get("used_percent")?.as_f64()?;
+    let resets_at = v.get("resets_at").and_then(|x| x.as_u64());
+    // 리셋 시각이 지났으면 한도가 회복된 상태 — 오래된 기록을 그대로 쓰지 않고 0% 로 본다
+    let reset = resets_at.is_some_and(|t| t <= now_secs);
     Some(CodexWindow {
-        window_minutes: v.get("window_minutes")?.as_u64()?,
-        used_percent: v.get("used_percent")?.as_f64()?,
-        resets_at: v.get("resets_at").and_then(|x| x.as_u64()),
+        window_minutes,
+        used_percent: if reset { 0.0 } else { used_percent },
+        resets_at: if reset { None } else { resets_at },
     })
 }
 
@@ -139,13 +155,16 @@ fn tail_rate_limits(path: &PathBuf) -> Option<serde_json::Value> {
 /// 코덱스 사용량 (없으면 None). async 커맨드 → 파일 탐색이 UI 를 막지 않는다.
 #[tauri::command]
 pub async fn codex_usage() -> Option<CodexUsage> {
-    let (path, mtime_ms) = latest_rollout()?;
-    let rl = tail_rate_limits(&path)?;
+    let (rl, mtime_ms) = latest_rate_limits()?;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let mut windows = Vec::new();
-    if let Some(w) = rl.get("primary").and_then(window_of) {
+    if let Some(w) = rl.get("primary").and_then(|v| window_of(v, now_secs)) {
         windows.push(w);
     }
-    if let Some(w) = rl.get("secondary").and_then(window_of) {
+    if let Some(w) = rl.get("secondary").and_then(|v| window_of(v, now_secs)) {
         windows.push(w);
     }
     if windows.is_empty() {
@@ -427,6 +446,17 @@ pub async fn codex_session_messages(cwd: String, id: String) -> Vec<crate::claud
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expired_window_counts_as_reset() {
+        let v = json!({"used_percent": 82.0, "window_minutes": 300, "resets_at": 1_000_u64});
+        // 리셋 시각이 지난 기록은 한도가 회복된 상태로 본다
+        let w = window_of(&v, 2_000).unwrap();
+        assert_eq!((w.used_percent, w.resets_at), (0.0, None));
+        // 아직 리셋 전이면 기록값 그대로
+        let w = window_of(&v, 500).unwrap();
+        assert_eq!((w.used_percent, w.resets_at), (82.0, Some(1_000)));
+    }
+
     use super::*;
     use serde_json::json;
 

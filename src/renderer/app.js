@@ -566,13 +566,20 @@ const App = {
   // Pull 실행(runGitPull)과 실패 진단 팝업은 git-pull.js 에 있다
 
   // ── AI 도구 남은 사용량 (상단바 표시) ──
-  // 코덱스·Claude Code 각각 최근 사용 흔적이 있을 때만 표시한다. 조회 실패는 미표시.
+  // 설치된 도구는 항상 표시한다. 사용량을 못 구하면 값 자리를 '--' 로 두고 게이지는 유지.
   // u 형태: { windows: [{windowMinutes, usedPercent, resetsAt}], plan, mtimeMs }
-  renderUsageGauge(elId, name, u) {
+  renderUsageGauge(elId, name, u, installed) {
     const el = document.getElementById(elId);
     if (!el) return;
-    if (!u || !u.windows.length || Date.now() - u.mtimeMs > 12 * 3600 * 1000) {
+    if (!installed) {            // 설치되지 않은 도구는 자리조차 차지하지 않는다
       el.className = 'hidden';
+      el.textContent = '';
+      return;
+    }
+    if (!u || !u.windows.length) {
+      el.className = 'gauge idle';
+      el.textContent = name + ' --';
+      el.title = name + ' 남은 사용량을 가져오지 못했습니다 (로그인·네트워크 확인)';
       return;
     }
     const label = (m) => m === 300 ? '5시간' : m === 10080 ? '주간' : Math.round(m / 60) + '시간';
@@ -591,19 +598,24 @@ const App = {
       `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleTimeString()}`;
   },
 
-  // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 최근 12시간 내 기록이 있을 때만 표시.
+  // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 리셋이 지난 윈도우는 0% 로 환산된다.
   async pollCodexUsage() {
-    let u = null;
-    try { u = await ta.codexUsage(); } catch (_) { /* 조회 실패 = 미표시 */ }
-    App.renderUsageGauge('panel-codex', 'Codex', u);
+    let u = null, installed = false;
+    try {
+      installed = !!(await ta.aiToolsInstalled()).codex;   // 앱 실행 중 설치돼도 반영되도록 매번 확인
+      if (installed) u = await ta.codexUsage();
+    } catch (_) { /* 조회 실패 = 값 없음 */ }
+    App.renderUsageGauge('panel-codex', 'Codex', u, installed);
   },
 
   // Claude Code 는 사용률을 로컬에 남기지 않아 Rust 쪽에서 Anthropic 사용량 API 를 조회한다.
-  // 최근 12시간 내 Claude Code 사용 흔적이 없거나 토큰이 만료면 null → 미표시.
   async pollClaudeUsage() {
-    let u = null;
-    try { u = await ta.claudeUsage(); } catch (_) { /* 조회 실패 = 미표시 */ }
-    App.renderUsageGauge('panel-claude', 'Claude', u);
+    let u = null, installed = false;
+    try {
+      installed = !!(await ta.aiToolsInstalled()).claude;
+      if (installed) u = await ta.claudeUsage();
+    } catch (_) { /* 조회 실패 = 값 없음 */ }
+    App.renderUsageGauge('panel-claude', 'Claude', u, installed);
   },
 
   // ── 시스템 메모리 폴링 (상단바 표시) ──

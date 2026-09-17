@@ -371,6 +371,8 @@ button:disabled:hover { border-color: var(--border); }
 .gauge.mid  { color: var(--warn); background: var(--warn-tint); }
 .gauge.warn { color: var(--caution); background: var(--caution-tint); }
 .gauge.crit { color: var(--exited); background: var(--exited-tint-hi); animation: pulse 1.2s ease-in-out infinite; }
+/* 설치돼 있지만 사용량을 못 구한 상태 — 자리는 지키고 값만 비운다 */
+.gauge.idle { color: var(--fg-dim); }
 #waiting-indicator {
   color: var(--waiting); background: var(--waiting-tint);
   border: 1px solid var(--waiting); border-radius: 6px;

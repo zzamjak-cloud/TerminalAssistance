@@ -66,6 +66,13 @@ fn get_memory(mem: State<MemState>) -> serde_json::Value {
     })
 }
 
+// ── 설치된 AI CLI (상단바 사용량 게이지 표시 대상) ──
+// 설치된 도구만 게이지를 띄우기 위한 판별. 사용 기록이 없어도 설치되어 있으면 게이지는 유지한다.
+#[tauri::command]
+fn ai_tools_installed() -> serde_json::Value {
+    json!({ "claude": claude_usage::is_installed(), "codex": codex::is_installed() })
+}
+
 // ── '다음 프롬프트' 초안 (프로젝트별 영속화, 키: projectId 또는 "") ──
 #[tauri::command]
 fn set_drafts(store: StoreState, key: String, drafts: Vec<store::Draft>) -> Result<(), String> {
@@ -1067,6 +1074,7 @@ fn main() {
             codex::codex_session_messages,
             codex::codex_usage,
             claude_usage::claude_usage,
+            ai_tools_installed,
             pty::list_shells,
             hooks::hooks_status,
             hooks::claude_session_of,

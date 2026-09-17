@@ -1,16 +1,14 @@
 // Claude Code 남은 사용량 조회 — 코덱스와 달리 Claude Code 는 사용률을 로컬 파일에 남기지 않는다.
 // 그래서 ~/.claude/.credentials.json 에 저장된 OAuth 액세스 토큰으로 Anthropic 사용량 API
 // (GET /api/oauth/usage) 를 직접 조회한다. 토큰 갱신은 Claude Code 본체가 하므로 앱은 읽기만 하고,
-// 만료·오류로 조회에 실패하면 상단바 표시를 숨긴다.
+// 만료·오류로 조회에 실패하면 값 없이 게이지만 남는다 (설치 여부 판단은 is_installed).
 use crate::claude::home_dir;
 use crate::util::plock;
 use serde::Serialize;
 use std::fs;
-use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const FRESH_MS: u64 = 12 * 3600 * 1000; // 이 시간 안에 Claude Code 를 쓴 흔적이 있을 때만 표시
 const CACHE_MS: u64 = 60_000; // API 호출 간격 상한 (상단바 폴링 주기보다 훨씬 길게)
 const API_TIMEOUT_SECS: u64 = 8;
 const FIVE_HOUR_MIN: u64 = 300; // 세션(5시간) 윈도우
@@ -46,38 +44,9 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn mtime_ms(p: &Path) -> Option<u64> {
-    fs::metadata(p)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as u64)
-}
-
-/// Claude Code 를 마지막으로 쓴 시각(ms). history.jsonl 은 프롬프트를 보낼 때마다,
-/// projects/<프로젝트> 디렉토리는 새 세션 파일이 생길 때 갱신된다.
-fn last_use_ms() -> Option<u64> {
-    let root = home_dir()?.join(".claude");
-    let mut newest = mtime_ms(&root.join("history.jsonl"));
-    if let Ok(entries) = fs::read_dir(root.join("projects")) {
-        for e in entries.flatten() {
-            let Some(ms) = e
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64)
-            else {
-                continue;
-            };
-            if newest.is_none_or(|n| ms > n) {
-                newest = Some(ms);
-            }
-        }
-    }
-    newest
+/// Claude Code 설치 여부 — 홈의 설정 디렉토리 존재로 판단한다 (GUI 실행 시 PATH 를 믿을 수 없다)
+pub fn is_installed() -> bool {
+    home_dir().is_some_and(|h| h.join(".claude").is_dir())
 }
 
 /// (액세스 토큰, 구독 플랜) — 읽기 전용. 갱신은 Claude Code 본체 담당이다.
@@ -155,11 +124,7 @@ fn fetch(token: &str) -> Option<serde_json::Value> {
 /// Claude Code 남은 사용량 (없으면 None). async 커맨드 — 네트워크 호출은 블로킹 스레드로 넘긴다.
 #[tauri::command]
 pub async fn claude_usage() -> Option<ClaudeUsage> {
-    // 최근에 Claude Code 를 쓰지 않았으면 조회도 표시도 하지 않는다 (코덱스 게이지와 같은 규칙)
     let now = now_ms();
-    if last_use_ms().is_none_or(|t| now.saturating_sub(t) > FRESH_MS) {
-        return None;
-    }
     if let Some((at, u)) = plock(&CACHE).as_ref() {
         if now.saturating_sub(*at) < CACHE_MS {
             return u.clone();

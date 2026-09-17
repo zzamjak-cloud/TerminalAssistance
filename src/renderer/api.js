@@ -143,6 +143,8 @@
     codexUsage: () => invoke('codex_usage'),
     // Claude Code 사용량 — 코덱스와 같은 모양 { windows, plan, mtimeMs } | null
     claudeUsage: () => invoke('claude_usage'),
+    // 이 PC 에 설치된 AI CLI { claude, codex } — 설치된 도구의 게이지만 상단바에 띄운다
+    aiToolsInstalled: () => invoke('ai_tools_installed'),
     // 초안·예약 저장소. memo:<projectId>는 실제 Markdown 파일로 이전할 구버전 데이터다.
     setDrafts: (key, drafts) => invoke('set_drafts', { key, drafts }),
 
