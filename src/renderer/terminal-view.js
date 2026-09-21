@@ -25,6 +25,7 @@ const TerminalView = {
       this.fitActive();
     });
     requestAnimationFrame(() => this.resizeAllComposers());
+    setInterval(() => this._guardAtlas(), this.ATLAS_CHECK_MS);
   },
 
   // 각 패널 = 터미널 영역 + 전용 프롬프트 작성기. 분할하면 패널마다 따로 입력·전송한다.
@@ -1354,6 +1355,10 @@ const TerminalView = {
     const view = {
       term, fit, holder,
       webgl: null,
+      webglFailures: 0,   // 컨텍스트 소실 연속 횟수 — 상한을 넘으면 DOM 렌더러로 고정
+      webglLossAt: 0,     // 마지막 컨텍스트 소실 시각 (연속 판정용)
+      atlasResetAt: 0,    // 텍스처 아틀라스를 마지막으로 비운 시각
+      atlasPagesAtReset: 0, // 그때의 페이지 수 — 더 늘었을 때만 다시 비운다
       frozen: !!(opts && opts.frozen),
       queue: [],     // frozen 동안 도착한 ta:data 페이로드
       queueBytes: 0, // 큐 누적 바이트 (상한 관리용)
@@ -1445,19 +1450,41 @@ const TerminalView = {
     if (this.isActive(id)) this.scrollToBottom(id, true);
   },
 
-  // WebGL 렌더러 부착/해제 — 실패(WebGL 미지원·컨텍스트 소실) 시 DOM 렌더러로 자동 폴백
+  // WebGL 렌더러 부착/해제 — 실패(WebGL 미지원) 시 DOM 렌더러로 자동 폴백
   _attachWebgl(v) {
     if (v.webgl || typeof WebglAddon === 'undefined') return;
+    if (v.webglFailures >= this.WEBGL_MAX_FAILURES) {
+      // 짧은 시간에 연달아 실패했으면 DOM 렌더러로 내려간다. 다만 영구 강등은 아니다 —
+      // 마지막 소실로부터 충분히 지난 뒤의 부착 시도(세션 전환·분할 변경)는 다시 받아 준다.
+      if (Date.now() - (v.webglLossAt || 0) < this.WEBGL_FAILURE_RESET_MS) return;
+      v.webglFailures = 0;
+    }
     try {
       const gl = new WebglAddon.WebglAddon();
       gl.onContextLoss(() => {
         try { gl.dispose(); } catch (_) {}
+        if (v.webgl !== gl) return;
         v.webgl = null;
+        // 몇 시간 멀쩡히 돌다 한 번 잃은 것은 '연속' 실패가 아니다 — 카운터를 되돌린다.
+        // (누적으로 세면 오래 켜 둔 창이 결국 DOM 렌더러로 영구 강등된다)
+        const now = Date.now();
+        if (now - (v.webglLossAt || 0) > this.WEBGL_FAILURE_RESET_MS) v.webglFailures = 0;
+        v.webglLossAt = now;
+        v.webglFailures += 1;
+        // 컨텍스트 소실은 GPU 프로세스 재시작·메모리 회수 같은 일시적 원인이 대부분이다.
+        // 영구히 DOM 렌더러로 강등하면 그 뒤 출력이 느려지고 화면도 한 번 흔들린다 —
+        // 아직 보이는 패널이면 다음 프레임에 다시 붙인다 (연속 실패는 위 상한이 끊는다).
+        requestAnimationFrame(() => {
+          if (!v.holder.classList.contains('active')) return;
+          this._attachWebgl(v);
+        });
       });
       v.term.loadAddon(gl);
       v.webgl = gl;
+      v.atlasResetAt = Date.now();
     } catch (_) {
       v.webgl = null;
+      v.webglFailures = (v.webglFailures || 0) + 1;
     }
   },
 
@@ -1465,6 +1492,74 @@ const TerminalView = {
     if (v.webgl) {
       try { v.webgl.dispose(); } catch (_) {}
       v.webgl = null;
+    }
+  },
+
+  // ── WebGL 텍스처 아틀라스 과밀 방지 ──
+  // 글리프(문자 × 전경·배경색 × 굵기)마다 아틀라스에 칸을 잡는다. 한글·이모지·박스문자가
+  // 섞인 출력을 오래 흘리면 페이지가 계속 늘고, 개수가 max(4, maxAtlasPages) 에 닿는 순간
+  // xterm 이 페이지 4장을 하나로 병합하며 글리프의 texturePage 를 다시 매긴다. 이 재배치에서
+  // 좌표가 어긋나 글자가 엉뚱한 모양으로 뭉개져 그려진다. 병합 직전에 아틀라스를 비워
+  // 그 경로를 아예 밟지 않게 한다. maxAtlasPages 는 GL_MAX_TEXTURE_IMAGE_UNITS(보통 16) 이다.
+  // (깨진 뒤 스플리터를 살짝 움직이면 낫던 이유 = fit 의 리사이즈가 모델을 다시 만들어서다)
+  WEBGL_MAX_FAILURES: 3,
+  WEBGL_FAILURE_RESET_MS: 5 * 60 * 1000,
+  ATLAS_CHECK_MS: 20000,
+  ATLAS_MAX_AGE_MS: 15 * 60 * 1000, // 페이지 수를 못 읽을 때를 위한 시간 기반 예비 초기화
+
+  _atlas(v) {
+    try {
+      return (v.webgl && v.webgl._renderer && v.webgl._renderer._charAtlas) || null;
+    } catch (_) {
+      return null;
+    }
+  },
+
+  // xterm 이 공개 API 로 노출하지 않는 값이라 내부를 읽는다 — 실패하면 0 (판정 보류).
+  _atlasPages(v) {
+    const atlas = this._atlas(v);
+    const pages = atlas && atlas.pages;
+    return pages ? pages.length : 0;
+  },
+
+  // 병합이 시작되는 페이지 수. 정적 필드를 못 읽으면 WebGL2 하한(16)으로 가정한다.
+  _atlasMergeAt(v) {
+    const atlas = this._atlas(v);
+    let n = NaN;
+    try {
+      n = Number(atlas && atlas.constructor && atlas.constructor.maxAtlasPages);
+    } catch (_) {}
+    return Math.max(4, Number.isFinite(n) && n > 0 ? n : 16);
+  },
+
+  _guardAtlas() {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    const now = Date.now();
+    for (const v of this.views.values()) {
+      if (!v.webgl || !v.holder.classList.contains('active')) continue;
+      const pages = this._atlasPages(v);
+      const mergeAt = this._atlasMergeAt(v);
+      // clearTexture 는 페이지 '내용'만 비우고 개수는 줄이지 않는다 — 개수만 보면 한 번
+      // 상한에 닿은 뒤 영원히 참이 되어 20초마다 전체 재래스터화를 반복한다.
+      // 마지막으로 비웠을 때보다 페이지가 더 늘었을 때만 다시 비운다.
+      if (pages > 0 && pages < mergeAt - 2) v.atlasPagesAtReset = 0; // 여유로 돌아오면 감시 재개
+      const crowded = pages > 0 && pages >= mergeAt - 2 && pages > (v.atlasPagesAtReset || 0);
+      const stale = now - (v.atlasResetAt || 0) >= this.ATLAS_MAX_AGE_MS;
+      if (!crowded && !stale) continue;
+      v.atlasResetAt = now;
+      v.atlasPagesAtReset = pages;
+      try { v.term.clearTextureAtlas(); } catch (_) {}
+    }
+  },
+
+  // 렌더링이 이미 깨진 뒤의 수동 복구 (Mod+Shift+R).
+  // clearTextureAtlas 가 아틀라스 비우기 + 모델 초기화 + 전체 재그리기까지 한다.
+  redrawVisible() {
+    for (const v of this.views.values()) {
+      if (!v.holder.classList.contains('active')) continue;
+      v.atlasResetAt = Date.now();
+      v.atlasPagesAtReset = this._atlasPages(v);
+      try { v.term.clearTextureAtlas(); } catch (_) {}
     }
   },
 

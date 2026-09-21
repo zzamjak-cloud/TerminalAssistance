@@ -266,6 +266,12 @@ const App = {
         App.toggleDashboard();
         return true;
       }
+      // R: 터미널 화면 강제 재그리기 — WebGL 글리프가 뭉개졌을 때의 수동 복구
+      if (ev.key.toLowerCase() === 'r') {
+        ev.preventDefault();
+        TerminalView.redrawVisible();
+        return true;
+      }
       return false;
     }
     const key = ev.key.toLowerCase();
@@ -323,6 +329,13 @@ const App = {
         ev.preventDefault();
         ev.stopPropagation();
         App.toggleDashboard();
+        return true;
+      }
+      // R: 터미널 화면 강제 재그리기 — 입력창에 포커스가 있어도 쓸 수 있어야 한다
+      if (ev.key.toLowerCase() === 'r') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        TerminalView.redrawVisible();
         return true;
       }
       return false;
