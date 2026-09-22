@@ -904,23 +904,21 @@ const TerminalView = {
     window.addEventListener('mousedown', panWindowDown, true);
     window.addEventListener('wheel', panWheel, { capture: true, passive: true });
 
-    // ── TUI 마우스 트래킹 중에도 스크롤백은 휠로 볼 수 있게 ──
-    // 트래킹이 켜지면 xterm 은 휠을 마우스 리포트로 바꿔 TUI 로 보내고 화면은 움직이지
-    // 않는다. 일반 버퍼에서 위로 굴리거나 이미 스크롤백을 보는 중이면 앱이 직접 뷰포트를
-    // 스크롤한다 (대체 버퍼(alt) TUI 의 휠 동작은 그대로 보존).
+    // ── 일반 버퍼의 휠 스크롤은 앱이 직접 처리한다 ──
+    // xterm 은 휠을 뷰포트 DOM 의 scrollTop 에 더하고 다음 프레임의 scroll 이벤트로 버퍼를
+    // 옮기는데, 새 줄이 도착할 때마다 scrollTop 을 버퍼 위치로 되돌리는 동기화(_innerRefresh)
+    // 가 "다음 scroll 이벤트 하나를 무시" 플래그를 세운다. 브라우저는 한 프레임의 scrollTop
+    // 변경을 scroll 이벤트 하나로 합치므로, 출력이 흐르는 동안(특히 스크롤백 5000줄이 가득
+    // 차 줄마다 ydisp 가 바뀔 때) 사용자의 휠 입력이 이 플래그에 먹혀 사라진다 — 위로 굴려도
+    // 제자리이거나 한 칸씩 끊기던 증상. → scrollLines 로 버퍼를 직접 옮겨 그 경로를 우회한다.
+    // 줄 수 변환은 xterm 자신의 getLinesScrolled 를 빌려 감도·deltaMode·부분 누적을 그대로
+    // 따른다. 대체 버퍼(alt) TUI 의 휠은 그대로 xterm(→ TUI 마우스 리포트)에 맡긴다.
     const wheelHandler = (ev) => {
-      try {
-        const b = term.buffer && term.buffer.active;
-        if (!b || b.type !== 'normal') return;
-        const mouseSvc = term._core && term._core.coreMouseService;
-        if (!mouseSvc || !mouseSvc.areMouseEventsActive) return;
-        if (b.viewportY < b.baseY || ev.deltaY < 0) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const lines = Math.sign(ev.deltaY) * Math.max(1, Math.round(Math.abs(ev.deltaY) / 40));
-          term.scrollLines(lines);
-        }
-      } catch (_) {}
+      const lines = this.wheelLinesFor(term, ev);
+      if (lines === null) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (lines) { try { term.scrollLines(lines); } catch (_) {} }
     };
     holder.addEventListener('wheel', wheelHandler, { capture: true, passive: false });
 
@@ -1642,6 +1640,31 @@ const TerminalView = {
     const b = v.term.buffer && v.term.buffer.active;
     if (!b) return true;
     return b.viewportY >= b.baseY;
+  },
+
+  // 휠 이벤트를 앱이 직접 처리할 때 옮길 줄 수. null 이면 xterm 에 맡긴다.
+  //  - 대체 버퍼(alt, 전체 화면 TUI): xterm 이 마우스 리포트/화살표로 변환 — 건드리지 않는다
+  //  - Shift+휠(가로)·deltaY 0: xterm 도 무시하는 입력 — 건드리지 않는다
+  //  - 일반 버퍼에서 TUI 가 마우스 트래킹을 켠 상태: 바닥에서 아래로 굴리는 것만 TUI 로
+  //    보내고(기존 동작 보존), 위로 굴리거나 이미 스크롤백을 보는 중이면 앱이 스크롤한다
+  //  - 그 밖의 일반 버퍼: 항상 앱이 스크롤한다 (출력 중 휠 유실 방지)
+  wheelLinesFor(term, ev) {
+    let b = null;
+    try { b = term.buffer && term.buffer.active; } catch (_) { return null; }
+    if (!b || b.type !== 'normal') return null;
+    if (ev.shiftKey || !ev.deltaY) return null;
+    const core = term._core || {};
+    const mouseSvc = core.coreMouseService;
+    if (mouseSvc && mouseSvc.areMouseEventsActive && !(b.viewportY < b.baseY || ev.deltaY < 0)) return null;
+    let lines = null;
+    const vp = core.viewport;
+    if (vp && typeof vp.getLinesScrolled === 'function') {
+      try { lines = vp.getLinesScrolled(ev); } catch (_) { lines = null; }
+    }
+    if (lines === null || !Number.isFinite(lines)) {
+      lines = Math.sign(ev.deltaY) * Math.max(1, Math.round(Math.abs(ev.deltaY) / 40));
+    }
+    return lines;
   },
 
   scrollToBottom(id, force) {
