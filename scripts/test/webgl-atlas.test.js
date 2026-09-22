@@ -1,4 +1,4 @@
-// WebGL 렌더링 깨짐 방어 검증 — 텍스처 아틀라스 과밀 초기화와 컨텍스트 소실 재부착.
+// WebGL 렌더링 깨짐 방어 검증 — 아틀라스 페이지 병합 뒤 재그리기와 컨텍스트 소실 재부착.
 // terminal-view.js 를 vm 샌드박스에 그대로 로드해 실제 구현을 돌린다.
 const fs = require('fs');
 const path = require('path');
@@ -20,29 +20,27 @@ function loadTerminalView() {
   return vm.runInNewContext(fs.readFileSync(SRC, 'utf8') + ';TerminalView', sandbox);
 }
 
-// 아틀라스 페이지 수와 상한을 흉내 내는 가짜 TextureAtlas.
-// 실제 xterm 의 clearTexture 는 페이지 '내용'만 비우고 개수는 그대로 두므로 여기서도 그렇게 둔다.
-function fakeAtlas(pages, limit) {
-  const Atlas = function () {};
-  Atlas.maxAtlasPages = limit;
-  const atlas = new Atlas();
-  atlas.pages = new Array(pages).fill(null).map(() => ({}));
-  return atlas;
+// 아틀라스 페이지 수를 흉내 내는 가짜 TextureAtlas (실제 xterm 은 설정이 같은 터미널끼리 공유)
+function fakeAtlas(pages) {
+  return { pages: new Array(pages).fill(null).map(() => ({})) };
 }
 
-// 실제 xterm 은 폰트·테마·DPR 이 같은 터미널끼리 아틀라스를 공유한다 → atlas 를 넘겨 공유 재현
-function fakeAddon(pages, limit, atlas) {
-  return { _renderer: { _charAtlas: atlas || fakeAtlas(pages, limit) } };
+// onAddTextureAtlasCanvas 를 흉내 내는 가짜 WebglAddon — 테스트가 직접 발화시킨다
+function fakeAddon(atlas) {
+  const listeners = [];
+  return {
+    _renderer: { _charAtlas: atlas },
+    onAddTextureAtlasCanvas(cb) { listeners.push(cb); },
+    fire() { for (const cb of listeners) cb({}); },
+  };
 }
 
 function fakeView(opts) {
   const o = opts || {};
-  let active = o.active !== false;
+  const active = o.active !== false;
   return {
-    webgl: o.webgl === undefined ? fakeAddon(o.pages || 1, o.limit || 16, o.atlas) : o.webgl,
+    webgl: o.webgl === undefined ? fakeAddon(o.atlas || fakeAtlas(o.pages || 1)) : o.webgl,
     webglFailures: 0,
-    atlasResetAt: o.atlasResetAt === undefined ? Date.now() : o.atlasResetAt,
-    atlasPagesAtReset: 0,
     cleared: 0,
     refreshed: 0,
     holder: { classList: { contains: () => active } },
@@ -60,98 +58,91 @@ function mount(TV, id, v) {
   return v;
 }
 
+// 실제 xterm 의 _createNewPage 병합 순서를 재현한다: 4장 삭제 → 병합 1장 push + 발화 → 새 1장 push + 발화
+function simulateMerge(atlas, addon) {
+  atlas.pages.splice(0, 4);
+  atlas.pages.push({});
+  addon.fire();
+  atlas.pages.push({});
+  addon.fire();
+}
+
 exports.name = 'WebGL 텍스처 아틀라스 · 컨텍스트 소실 방어';
 
 exports.run = function run(t) {
   const TV = loadTerminalView();
 
-  // ── 과밀 판정: 상한 - 2 이상이면 비운다 ──
-  const crowded = mount(TV, 'a', fakeView({ pages: 14, limit: 16 }));
-  const roomy = mount(TV, 'b', fakeView({ pages: 5, limit: 16 }));
-  TV._guardAtlas();
-  t.check('병합 직전(14/16)이면 아틀라스를 비운다', crowded.cleared === 1, `cleared=${crowded.cleared}`);
-  t.check('여유가 있으면(5/16) 건드리지 않는다', roomy.cleared === 0, `cleared=${roomy.cleared}`);
+  // ── 회귀(0.18.6~0.18.7): 아틀라스를 선제적으로 비우는 경로가 없어야 한다 ──
+  // 아틀라스는 세션끼리 공유되고 clearTextureAtlas 는 호출한 뷰만 모델을 다시 만들므로,
+  // 주기적으로 비우면 출력이 멈춘 패널이 빈 화면으로 남는다.
+  t.check('주기 감시 타이머가 없다', typeof TV._guardAtlas !== 'function' && TV.ATLAS_CHECK_MS === undefined);
+  t.check('시간 기반 강제 초기화가 없다', TV.ATLAS_MAX_AGE_MS === undefined && typeof TV._clearAtlas !== 'function');
 
-  // 회귀: clearTexture 는 페이지 개수를 줄이지 않는다 → 개수만 보면 영원히 참이 되어
-  // 20초마다 전체 재래스터화를 반복한다. 페이지가 더 늘었을 때만 다시 비워야 한다.
-  TV._guardAtlas();
-  TV._guardAtlas();
-  t.check('같은 페이지 수로는 다시 비우지 않는다', crowded.cleared === 1, `cleared=${crowded.cleared}`);
-  crowded.webgl._renderer._charAtlas.pages.push({});
-  TV._guardAtlas();
-  t.check('페이지가 더 늘면 다시 비운다', crowded.cleared === 2, `cleared=${crowded.cleared}`);
-  TV.views.clear();
+  // ── 병합 감지 → 모든 뷰 재그리기 ──
+  // 병합은 어떤 뷰의 프레임 도중 일어나 그 프레임은 병합 전 좌표로 그려진다. xterm 은 플래그를
+  // 세워 다음 renderRows 에서 모델을 다시 만들지만, 출력이 멈춘 뷰에는 그 계기가 없다.
+  const shared = fakeAtlas(16);
+  const busyAddon = fakeAddon(shared);
+  const busy = mount(TV, 'a', fakeView({ webgl: busyAddon }));
+  const idle = mount(TV, 'b', fakeView({ atlas: shared }));
+  const idleHidden = mount(TV, 'c', fakeView({ atlas: shared, active: false }));
+  TV._watchAtlasMerge(busy, busyAddon);
 
-  // ── 시간 기반 예비 초기화: 페이지 수를 못 읽어도 오래되면 비운다 ──
-  const opaque = mount(TV, 'c', fakeView({
-    webgl: {}, atlasResetAt: Date.now() - TV.ATLAS_MAX_AGE_MS - 1,
-  }));
-  const fresh = mount(TV, 'd', fakeView({ webgl: {}, atlasResetAt: Date.now() }));
-  TV._guardAtlas();
-  t.check('내부를 못 읽어도 오래됐으면 비운다', opaque.cleared === 1, `cleared=${opaque.cleared}`);
-  t.check('막 비운 뒤에는 다시 비우지 않는다', fresh.cleared === 0, `cleared=${fresh.cleared}`);
-  t.check('비운 시각이 갱신된다', opaque.atlasResetAt > Date.now() - 1000);
-  TV.views.clear();
-
-  // ── 화면에 없거나 WebGL 이 없는 뷰는 대상이 아니다 ──
-  const hidden = mount(TV, 'e', fakeView({ pages: 16, limit: 16, active: false }));
-  const dom = mount(TV, 'f', fakeView({ webgl: null, atlasResetAt: 0 }));
-  TV._guardAtlas();
-  t.check('숨은 패널은 건너뛴다', hidden.cleared === 0, `cleared=${hidden.cleared}`);
-  t.check('DOM 렌더러 뷰는 건너뛴다', dom.cleared === 0, `cleared=${dom.cleared}`);
-  TV.views.clear();
-
-  // ── 수동 재그리기 ──
-  const shown = mount(TV, 'g', fakeView({ pages: 2 }));
-  const off = mount(TV, 'h', fakeView({ pages: 2, active: false }));
-  TV.redrawVisible();
-  t.check('보이는 터미널은 아틀라스를 버리고 다시 그린다', shown.cleared === 1, `cleared=${shown.cleared}`);
-  t.check('숨은 터미널의 아틀라스는 버리지 않는다', off.cleared === 0, `cleared=${off.cleared}`);
-  t.check('숨은 터미널에도 재그리기는 요청한다(보일 때 갚는다)', off.refreshed >= 1, `refreshed=${off.refreshed}`);
-  TV.views.clear();
-
-  // ── 회귀: 아틀라스는 세션끼리 공유된다 (xterm acquireTextureAtlas) ──
-  // 한 뷰에서 비우면 다른 뷰가 쓰던 글리프 픽셀까지 지워지는데 xterm 은 호출한 뷰만 다시
-  // 그린다 → 출력이 멈춰 있던 패널이 빈 화면으로 남았다(스플리터를 끌면 복구되던 증상).
-  const shared = fakeAtlas(14, 16);
-  const busy = mount(TV, 'i', fakeView({ atlas: shared }));
-  const idle = mount(TV, 'j', fakeView({ atlas: shared }));
-  const idleHidden = mount(TV, 'k', fakeView({ atlas: shared, active: false }));
-  TV._guardAtlas();
-  t.check('공유 아틀라스는 한 틱에 한 번만 비운다',
-    busy.cleared + idle.cleared === 1, `busy=${busy.cleared} idle=${idle.cleared}`);
-  t.check('출력이 멈춘 패널에도 재그리기가 전파된다',
-    busy.refreshed + idle.refreshed >= 1, `busy=${busy.refreshed} idle=${idle.refreshed}`);
-  t.check('숨은 패널에도 재그리기가 전파된다', idleHidden.refreshed >= 1, `refreshed=${idleHidden.refreshed}`);
-  t.check('공유 뷰의 감시 기준점도 같이 맞춰진다',
-    idle.atlasPagesAtReset === 14 && idleHidden.atlasPagesAtReset === 14,
-    `idle=${idle.atlasPagesAtReset} hidden=${idleHidden.atlasPagesAtReset}`);
-  const sharedCleared = busy.cleared + idle.cleared;
-  TV._guardAtlas();
-  t.check('공유 뷰 때문에 매 틱 반복해 비우지 않는다',
-    busy.cleared + idle.cleared === sharedCleared, `cleared=${busy.cleared + idle.cleared}`);
+  // 단순 페이지 증가는 좌표가 그대로 → 재그리기 불필요
   shared.pages.push({});
-  TV._guardAtlas();
-  t.check('공유 아틀라스도 페이지가 늘면 다시 비운다',
-    busy.cleared + idle.cleared === sharedCleared + 1, `cleared=${busy.cleared + idle.cleared}`);
+  busyAddon.fire();
+  t.check('페이지가 단순히 늘어난 것은 병합이 아니다', idle.refreshed === 0 && (TV.atlasMerges || 0) === 0,
+    `refreshed=${idle.refreshed} merges=${TV.atlasMerges}`);
+
+  simulateMerge(shared, busyAddon);
+  t.check('병합을 한 번으로 감지한다', TV.atlasMerges === 1, `merges=${TV.atlasMerges}`);
+  t.check('출력이 멈춘 패널을 다시 그린다', idle.refreshed >= 1, `refreshed=${idle.refreshed}`);
+  t.check('숨은 패널에도 재그리기를 요청한다(보일 때 갚는다)', idleHidden.refreshed >= 1, `refreshed=${idleHidden.refreshed}`);
+  t.check('병합 감지는 아틀라스를 비우지 않는다',
+    busy.cleared + idle.cleared + idleHidden.cleared === 0,
+    `cleared=${busy.cleared + idle.cleared + idleHidden.cleared}`);
+
+  // 두 번째 병합도 감지한다 (기준 페이지 수가 갱신되어야 한다)
+  while (shared.pages.length < 16) shared.pages.push({});
+  busyAddon.fire();
+  const before = idle.refreshed;
+  simulateMerge(shared, busyAddon);
+  t.check('이어지는 병합도 감지한다', TV.atlasMerges === 2 && idle.refreshed > before,
+    `merges=${TV.atlasMerges} refreshed=${idle.refreshed}`);
+  TV.views.clear();
+  TV.atlasMerges = 0;
+
+  // 페이지 수를 못 읽는 환경에서는 보수적으로 매번 재그리기를 요청한다
+  const opaqueAddon = { _renderer: {}, _cb: null, onAddTextureAtlasCanvas(cb) { this._cb = cb; } };
+  const opaque = mount(TV, 'd', fakeView({ webgl: opaqueAddon }));
+  TV._watchAtlasMerge(opaque, opaqueAddon);
+  opaqueAddon._cb({});
+  t.check('페이지 수를 못 읽으면 캔버스 추가마다 다시 그린다', opaque.refreshed === 1, `refreshed=${opaque.refreshed}`);
   TV.views.clear();
 
-  // 수동 복구도 공유 아틀라스를 중복으로 비우지 않고 모든 뷰를 다시 그린다
-  const shared2 = fakeAtlas(3, 16);
-  const m1 = mount(TV, 'l', fakeView({ atlas: shared2 }));
-  const m2 = mount(TV, 'm', fakeView({ atlas: shared2 }));
-  TV.redrawVisible();
-  t.check('수동 복구는 공유 아틀라스를 한 번만 비운다',
-    m1.cleared + m2.cleared === 1, `m1=${m1.cleared} m2=${m2.cleared}`);
-  t.check('수동 복구는 두 패널 모두 다시 그린다',
-    m1.refreshed + m2.refreshed >= 1 && (m1.cleared ? m2.refreshed >= 1 : m1.refreshed >= 1),
-    `m1=${m1.refreshed} m2=${m2.refreshed}`);
+  // 이벤트를 노출하지 않는 애드온이어도 부착이 깨지지 않는다
+  const legacyAddon = { _renderer: {} };
+  const legacy = mount(TV, 'e', fakeView({ webgl: legacyAddon }));
+  let threw = false;
+  try { TV._watchAtlasMerge(legacy, legacyAddon); } catch (_) { threw = true; }
+  t.check('병합 이벤트가 없는 애드온에도 안전하다', !threw);
   TV.views.clear();
 
-  // WebGL 이 아예 없는 환경(DOM 렌더러)에서도 수동 복구는 재그리기를 시도한다
-  const domOnly = mount(TV, 'n', fakeView({ webgl: null }));
+  // ── 수동 재그리기 (Mod+Shift+R) ──
+  // 공유 뷰 각각에 clearTextureAtlas 를 부른다 — 첫 호출이 아틀라스를 비우고 나머지는
+  // xterm 이 조기 반환해 그 뷰의 모델 초기화 + 재그리기만 한다. 한 뷰만 부르면 나머지는 빈 화면.
+  const shared2 = fakeAtlas(3);
+  const m1 = mount(TV, 'f', fakeView({ atlas: shared2 }));
+  const m2 = mount(TV, 'g', fakeView({ atlas: shared2 }));
+  const off = mount(TV, 'h', fakeView({ atlas: shared2, active: false }));
+  const dom = mount(TV, 'i', fakeView({ webgl: null }));
   TV.redrawVisible();
-  t.check('DOM 렌더러만 있어도 재그리기를 시도한다', domOnly.refreshed >= 1, `refreshed=${domOnly.refreshed}`);
+  t.check('보이는 WebGL 뷰는 각각 모델을 다시 만든다(공유 아틀라스 함정 회피)',
+    m1.cleared === 1 && m2.cleared === 1, `m1=${m1.cleared} m2=${m2.cleared}`);
+  t.check('숨은 뷰는 건드리지 않는다', off.cleared === 0 && off.refreshed === 0,
+    `cleared=${off.cleared} refreshed=${off.refreshed}`);
+  t.check('DOM 렌더러 뷰는 재그리기만 요청한다', dom.cleared === 0 && dom.refreshed === 1,
+    `cleared=${dom.cleared} refreshed=${dom.refreshed}`);
   TV.views.clear();
 
   // ── 컨텍스트 소실 → 재부착, 연속 실패는 상한에서 멈춘다 ──
@@ -175,7 +166,7 @@ exports.run = function run(t) {
   });
 
   const view = {
-    webgl: null, webglFailures: 0, atlasResetAt: 0,
+    webgl: null, webglFailures: 0,
     holder: { classList: { contains: () => true } },
     term: { rows: 24, loadAddon() {} },
   };
@@ -228,7 +219,7 @@ exports.run = function run(t) {
     WebglAddon: { WebglAddon: WebglAddonStub2 },
   });
   const hiddenView = {
-    webgl: null, webglFailures: 0, atlasResetAt: 0,
+    webgl: null, webglFailures: 0,
     holder: { classList: { contains: () => visible } },
     term: { rows: 24, loadAddon() {} },
   };

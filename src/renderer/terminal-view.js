@@ -25,7 +25,6 @@ const TerminalView = {
       this.fitActive();
     });
     requestAnimationFrame(() => this.resizeAllComposers());
-    setInterval(() => this._guardAtlas(), this.ATLAS_CHECK_MS);
   },
 
   // 각 패널 = 터미널 영역 + 전용 프롬프트 작성기. 분할하면 패널마다 따로 입력·전송한다.
@@ -1357,8 +1356,6 @@ const TerminalView = {
       webgl: null,
       webglFailures: 0,   // 컨텍스트 소실 연속 횟수 — 상한을 넘으면 DOM 렌더러로 고정
       webglLossAt: 0,     // 마지막 컨텍스트 소실 시각 (연속 판정용)
-      atlasResetAt: 0,    // 텍스처 아틀라스를 마지막으로 비운 시각
-      atlasPagesAtReset: 0, // 그때의 페이지 수 — 더 늘었을 때만 다시 비운다
       frozen: !!(opts && opts.frozen),
       queue: [],     // frozen 동안 도착한 ta:data 페이로드
       queueBytes: 0, // 큐 누적 바이트 (상한 관리용)
@@ -1481,7 +1478,7 @@ const TerminalView = {
       });
       v.term.loadAddon(gl);
       v.webgl = gl;
-      v.atlasResetAt = Date.now();
+      this._watchAtlasMerge(v, gl);
     } catch (_) {
       v.webgl = null;
       v.webglFailures = (v.webglFailures || 0) + 1;
@@ -1495,17 +1492,26 @@ const TerminalView = {
     }
   },
 
-  // ── WebGL 텍스처 아틀라스 과밀 방지 ──
+  // ── WebGL 텍스처 아틀라스 페이지 병합 뒤 재그리기 ──
   // 글리프(문자 × 전경·배경색 × 굵기)마다 아틀라스에 칸을 잡는다. 한글·이모지·박스문자가
-  // 섞인 출력을 오래 흘리면 페이지가 계속 늘고, 개수가 max(4, maxAtlasPages) 에 닿는 순간
-  // xterm 이 페이지 4장을 하나로 병합하며 글리프의 texturePage 를 다시 매긴다. 이 재배치에서
-  // 좌표가 어긋나 글자가 엉뚱한 모양으로 뭉개져 그려진다. 병합 직전에 아틀라스를 비워
-  // 그 경로를 아예 밟지 않게 한다. maxAtlasPages 는 GL_MAX_TEXTURE_IMAGE_UNITS(보통 16) 이다.
-  // (깨진 뒤 스플리터를 살짝 움직이면 낫던 이유 = fit 의 리사이즈가 모델을 다시 만들어서다)
+  // 섞인 출력을 오래 흘리면 페이지가 늘고, 개수가 max(4, maxAtlasPages)(보통 16) 에 닿으면
+  // xterm 이 페이지 4장을 하나로 병합하며 글리프의 texturePage 를 다시 매긴다.
+  //
+  // 병합은 어떤 뷰의 렌더 프레임 '도중'(getRasterizedGlyph 안)에 일어나므로, 그 프레임에서
+  // 이미 정점 버퍼에 올라간 좌표는 병합 전 페이지를 가리킨 채 그려진다 → 글자가 뭉개진다.
+  // xterm 은 이때 아틀라스에 _requestClearModel 플래그를 세우고(다시 내리지 않는다) 다음
+  // renderRows 에서 모델을 전부 다시 만들므로, 출력이 흐르는 뷰는 다음 write 로 곧 낫는다.
+  // 그러나 출력이 멈춘 뷰에는 다음 renderRows 가 오지 않아 뭉개진 채 남는다(스플리터를
+  // 끌면 리사이즈가 renderRows 를 일으켜 낫던 것이 이 증상이다).
+  //
+  // → 병합을 감지하면(WebglAddon.onAddTextureAtlasCanvas: 새 페이지·병합 페이지 추가 시
+  //   발화) 살아 있는 모든 뷰에 뷰포트 전체 refresh 를 요청한다. 플래그 덕분에 refresh 만으로
+  //   모델이 다시 만들어지므로 충분하다. 아틀라스 자체는 절대 선제적으로 비우지 않는다 —
+  //   아틀라스는 설정이 같은 터미널끼리 공유되고(acquireTextureAtlas), clearTextureAtlas 는
+  //   모델 초기화를 호출한 뷰에만 하기 때문에, 다른 뷰는 지워진 좌표를 가리켜 빈 화면이 된다.
+  //   (0.18.6~0.18.7 이 이 경로를 밟아 유휴 패널이 통째로 사라졌다.)
   WEBGL_MAX_FAILURES: 3,
   WEBGL_FAILURE_RESET_MS: 5 * 60 * 1000,
-  ATLAS_CHECK_MS: 20000,
-  ATLAS_MAX_AGE_MS: 15 * 60 * 1000, // 페이지 수를 못 읽을 때를 위한 시간 기반 예비 초기화
 
   _atlas(v) {
     try {
@@ -1515,94 +1521,62 @@ const TerminalView = {
     }
   },
 
-  // xterm 이 공개 API 로 노출하지 않는 값이라 내부를 읽는다 — 실패하면 0 (판정 보류).
-  _atlasPages(v) {
-    const atlas = this._atlas(v);
-    const pages = atlas && atlas.pages;
-    return pages ? pages.length : 0;
-  },
-
-  // 병합이 시작되는 페이지 수. 정적 필드를 못 읽으면 WebGL2 하한(16)으로 가정한다.
-  _atlasMergeAt(v) {
-    const atlas = this._atlas(v);
-    let n = NaN;
-    try {
-      n = Number(atlas && atlas.constructor && atlas.constructor.maxAtlasPages);
-    } catch (_) {}
-    return Math.max(4, Number.isFinite(n) && n > 0 ? n : 16);
-  },
-
   // 뷰포트 행 전체를 dirty 로 표시해 다시 그리게 한다.
   // 숨은 뷰는 xterm 이 요청을 보류하고(_isPaused) 다시 보일 때 전체 재그리기로 갚는다.
   _refreshViewport(v) {
     try { v.term.refresh(0, Math.max(0, (v.term.rows || 1) - 1)); } catch (_) {}
   },
 
-  // 텍스처 아틀라스는 폰트·테마·DPR 이 같은 터미널끼리 '공유'된다 (xterm acquireTextureAtlas
-  // 가 config 가 같으면 같은 인스턴스를 ownedBy 에 추가해 돌려준다). 그래서 한 뷰에서 비우면
-  // 다른 뷰가 쓰던 글리프 픽셀까지 발밑에서 같이 지워지는데, xterm 의 clearTextureAtlas 는
-  // 모델 초기화와 전체 재그리기를 '호출한 뷰에만' 요청한다. 출력이 흐르는 패널은 다음 write
-  // 가 다시 그려서 멀쩡하지만, 멈춰 있던 패널은 다시 그릴 계기가 없어 빈 화면으로 남는다
-  // (스플리터를 끌면 리사이즈가 전체 재그리기를 일으켜 돌아오던 것이 이 증상이다).
-  // → 비운 뒤 살아 있는 모든 뷰에 뷰포트 전체 재그리기를 요청한다.
-  _clearAtlas(v, now) {
-    const atlas = this._atlas(v);
-    const pages = this._atlasPages(v);
-    v.atlasResetAt = now;
-    v.atlasPagesAtReset = pages;
-    try { v.term.clearTextureAtlas(); } catch (_) {}
-    for (const other of this.views.values()) {
-      // 같은 아틀라스를 공유하는 뷰는 방금 함께 비워진 것이므로 감시 기준점도 같이 맞춘다
-      if (other !== v && atlas && this._atlas(other) === atlas) {
-        other.atlasResetAt = now;
-        other.atlasPagesAtReset = pages;
-      }
-      // v 자신은 xterm 이 이미 전체 재그리기를 요청했지만, 요청은 rAF 로 합쳐지므로 중복이 싸다
-      this._refreshViewport(other);
-    }
+  // 살아 있는 모든 뷰에 전체 재그리기를 요청한다 (병합 뒤 · 수동 복구 뒤).
+  refreshAll() {
+    for (const v of this.views.values()) this._refreshViewport(v);
   },
 
-  _guardAtlas() {
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    const now = Date.now();
-    const handled = new Set(); // 공유 아틀라스는 한 틱에 한 번만 비운다
-    for (const v of this.views.values()) {
-      if (!v.webgl || !v.holder.classList.contains('active')) continue;
-      const atlas = this._atlas(v);
-      if (atlas && handled.has(atlas)) continue;
-      const pages = this._atlasPages(v);
-      const mergeAt = this._atlasMergeAt(v);
-      // clearTexture 는 페이지 '내용'만 비우고 개수는 줄이지 않는다 — 개수만 보면 한 번
-      // 상한에 닿은 뒤 영원히 참이 되어 20초마다 전체 재래스터화를 반복한다.
-      // 마지막으로 비웠을 때보다 페이지가 더 늘었을 때만 다시 비운다.
-      if (pages > 0 && pages < mergeAt - 2) v.atlasPagesAtReset = 0; // 여유로 돌아오면 감시 재개
-      const crowded = pages > 0 && pages >= mergeAt - 2 && pages > (v.atlasPagesAtReset || 0);
-      const stale = now - (v.atlasResetAt || 0) >= this.ATLAS_MAX_AGE_MS;
-      if (!crowded && !stale) continue;
-      if (atlas) handled.add(atlas);
-      this._clearAtlas(v, now);
-    }
+  // 아틀라스 페이지 수가 줄었거나 같은데 캔버스가 추가됐다 = 병합. 새 페이지가 단순히
+  // 늘어난 경우는 좌표가 그대로라 재그리기가 필요 없지만, 병합 직후 새 페이지 추가가 같은
+  // 호출에서 연달아 일어나므로 '이전보다 페이지가 2장 이상 늘지 않았다' 를 병합 신호로 본다.
+  // 페이지 수를 못 읽는 환경이면 보수적으로 매번 재그리기를 요청한다 (refresh 는 싸다).
+  _watchAtlasMerge(v, gl) {
+    if (!gl || typeof gl.onAddTextureAtlasCanvas !== 'function') return;
+    let lastPages = this._atlasPageCount(v);
+    try {
+      gl.onAddTextureAtlasCanvas(() => {
+        const pages = this._atlasPageCount(v);
+        const merged = pages === 0 || pages <= lastPages;
+        lastPages = pages;
+        if (merged) this._afterAtlasMerge();
+      });
+    } catch (_) {}
+  },
+
+  _atlasPageCount(v) {
+    const atlas = this._atlas(v);
+    const pages = atlas && atlas.pages;
+    return pages ? pages.length : 0;
+  },
+
+  // 병합은 프레임 도중 일어나므로 같은 프레임에서 refresh 를 요청해도 rAF 로 합쳐져
+  // 다음 프레임에 그려진다 — 병합 후 상태로 모델을 다시 만들게 된다.
+  _afterAtlasMerge() {
+    this.atlasMerges = (this.atlasMerges || 0) + 1;
+    this.refreshAll();
   },
 
   // 렌더링이 이미 깨진 뒤의 수동 복구 (Mod+Shift+R).
-  // clearTextureAtlas 가 아틀라스 비우기 + 모델 초기화 + 전체 재그리기까지 하고,
-  // _clearAtlas 가 공유 아틀라스를 쓰는 다른 뷰의 재그리기까지 전파한다.
+  // 아틀라스를 공유하는 뷰 '각각'에 clearTextureAtlas 를 같은 틱에 호출한다. 첫 호출이 공유
+  // 아틀라스를 비우고, 이후 호출은 xterm 의 clearTexture 가 (이미 빈 아틀라스라) 조기 반환해
+  // 그 뷰의 모델 초기화 + 전체 재그리기만 한다 → 모든 뷰가 새 좌표로 다시 래스터화된다.
+  // 숨은 뷰는 WebGL 이 떼어져 있으므로(syncLayout) 보이는 뷰만 대상이고, DOM 렌더러 뷰는
+  // 아틀라스가 없어 refresh 만 요청한다.
   redrawVisible() {
-    const now = Date.now();
-    const handled = new Set();
-    let cleared = false;
     for (const v of this.views.values()) {
       if (!v.holder.classList.contains('active')) continue;
-      const atlas = this._atlas(v);
-      if (atlas) {
-        if (handled.has(atlas)) continue;
-        handled.add(atlas);
+      if (v.webgl) {
+        try { v.term.clearTextureAtlas(); } catch (_) {}
+      } else {
+        this._refreshViewport(v);
       }
-      this._clearAtlas(v, now);
-      cleared = true;
     }
-    // WebGL 이 없거나(DOM 렌더러) 아틀라스를 못 읽어 하나도 비우지 못했어도 재그리기는 시도한다
-    if (!cleared) for (const v of this.views.values()) this._refreshViewport(v);
   },
 
   activate(id, opts) {
