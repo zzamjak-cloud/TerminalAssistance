@@ -5,6 +5,8 @@
 // 터미널 terminal-view.js. 각 파일이 Object.assign(App, ...) 으로 메서드를 붙인다.
 const GIT_REMOTE_FETCH_MIN_MS = 15_000;
 const GIT_REMOTE_POLL_MS = 60_000;
+// 사용량 값이 이보다 오래되면 게이지를 옅게 표시한다 (마지막 값은 유지)
+const USAGE_STALE_MS = 10 * 60_000;
 
 const App = {
   state: {
@@ -128,12 +130,16 @@ const App = {
     setInterval(() => {
       if (document.visibilityState === 'visible') App.refreshVisibleGitRemote({ fetch: true });
     }, GIT_REMOTE_POLL_MS);
-    // 코덱스 사용량 폴링 (10초 — 파일 꼬리 읽기라 가볍지만 데이터 갱신 주기도 느리다)
-    setInterval(() => App.pollCodexUsage(), 10000);
-    App.pollCodexUsage();
-    // Claude Code 사용량 폴링 (30초 — 실제 API 호출은 Rust 쪽에서 1분 캐시로 묶인다)
-    setInterval(() => App.pollClaudeUsage(), 30000);
-    App.pollClaudeUsage();
+    // AI 사용량 폴링 — 실제 API 호출 간격은 Rust 쪽이 정한다(성공 1분, 실패는 종류별 재시도·429 백오프).
+    // 프런트 주기가 짧아도 호출은 늘지 않고, 토큰 갱신·일시 오류 뒤 회복만 빨라진다. 숨김 상태에서는 건너뛴다.
+    const pollUsage = () => { App.pollCodexUsage(); App.pollClaudeUsage(); };
+    setInterval(() => { if (document.visibilityState === 'visible') App.pollCodexUsage(); }, 15000);
+    setInterval(() => { if (document.visibilityState === 'visible') App.pollClaudeUsage(); }, 20000);
+    // 창으로 돌아오면 바로 갱신 (캐시 덕에 네트워크는 분당 최대 1회)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') pollUsage();
+    });
+    pollUsage();
     if (localStorage.getItem('ta-prompt-panel') === '1') {
       document.getElementById('prompt-panel').classList.remove('hidden');
     }
@@ -589,26 +595,56 @@ const App = {
       el.textContent = '';
       return;
     }
-    if (!u || !u.windows.length) {
+    const reason = App.usageErrorText(name, u);
+    if (!u || !u.windows.length) {   // 한 번도 값을 구하지 못했을 때만 비운다
       el.className = 'gauge idle';
       el.textContent = name + ' --';
-      el.title = name + ' 남은 사용량을 가져오지 못했습니다 (로그인·네트워크 확인)';
+      el.title = name + ' 남은 사용량을 가져오지 못했습니다\n' + (reason || '로그인·네트워크를 확인하세요');
       return;
     }
     const label = (m) => m === 300 ? '5시간' : m === 10080 ? '주간' : Math.round(m / 60) + '시간';
-    const parts = u.windows.map((w) => `${label(w.windowMinutes)} ${Math.max(0, 100 - Math.round(w.usedPercent))}%`);
+    const level = (left) => {
+      if (left <= 10) return 'crit';     // ≤ 10% 남음 : 소진 임박 (빨강)
+      if (left <= 25) return 'warn';
+      if (left <= 50) return 'mid';
+      return 'ok';                       // > 50% 남음 : 여유 (녹색)
+    };
+    // 배경·이름은 가장 적게 남은 윈도우 기준, 각 윈도우 값은 자기 수준의 색으로 칠한다.
+    // 주간(긴 윈도우)은 옅게 표시해 5시간 값과 한눈에 구분되게 한다.
     const worstLeft = Math.min(...u.windows.map((w) => 100 - w.usedPercent));
-    let cls = 'ok';                      // > 50% 남음 : 여유 (녹색)
-    if (worstLeft <= 10) cls = 'crit';   // ≤ 10% 남음 : 소진 임박 (빨강)
-    else if (worstLeft <= 25) cls = 'warn';
-    else if (worstLeft <= 50) cls = 'mid';
-    el.className = 'gauge ' + cls;
-    el.textContent = name + ' ' + parts.join('·');
+    // 마지막 조회가 실패했거나 값이 오래됐으면 마지막 값을 그대로 두되 옅게 표시한다
+    const stale = !!u.error || Date.now() - u.mtimeMs > USAGE_STALE_MS;
+    el.className = 'gauge ' + level(worstLeft) + (stale ? ' stale' : '');
+    el.textContent = name + ' ';
+    u.windows.forEach((w, i) => {
+      const seg = document.createElement('span');
+      seg.className = 'seg ' + level(100 - w.usedPercent) + (i > 0 ? ' seg-long' : '');
+      seg.textContent = `${label(w.windowMinutes)} ${Math.max(0, 100 - Math.round(w.usedPercent))}%`;
+      el.appendChild(seg);
+    });
     el.title = name + ' 남은 사용량:\n' + u.windows.map((w) =>
       `${label(w.windowMinutes)} ${(100 - w.usedPercent).toFixed(1)}% 남음` +
       (w.resetsAt ? ` (리셋 ${new Date(w.resetsAt * 1000).toLocaleString()})` : '')
     ).join('\n') + (u.plan ? `\n플랜: ${u.plan}` : '') +
-      `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleTimeString()}`;
+      `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleString()}` +
+      (reason ? `\n⚠ ${reason}` : '');
+  },
+
+  // 사용량 조회 실패 이유 → 툴팁 문구 (실패가 아니면 '')
+  usageErrorText(name, u) {
+    if (!u || !u.error) return '';
+    const retry = u.retryAtMs ? Math.max(1, Math.ceil((u.retryAtMs - Date.now()) / 60000)) : 0;
+    const after = retry ? ` — 약 ${retry}분 뒤 재시도` : '';
+    switch (u.error) {
+      case 'token_expired': return '로그인 토큰 만료 — Claude Code 를 실행하면 자동 갱신됩니다';
+      case 'forbidden': return '사용량 API 접근 거부(403) — Claude Code 에서 /login 으로 다시 로그인해 보세요';
+      case 'no_data': return '사용량 API 가 한도 정보를 주지 않았습니다 (한도 없는 플랜일 수 있음)';
+      case 'rate_limited': return '사용량 API 호출 제한(429)' + after;
+      case 'network': return '네트워크·서버 오류' + after;
+      case 'no_credentials': return 'Claude Code 로그인 정보가 없습니다 (claude 에서 /login)';
+      case 'unavailable': return name + ' 사용량 API 조회 실패 — 코덱스를 실행하면 토큰이 갱신됩니다';
+      default: return '조회 실패 (' + u.error + ')';
+    }
   },
 
   // 코덱스가 세션 기록에 남기는 rate_limits 를 읽는다. 리셋이 지난 윈도우는 0% 로 환산된다.
@@ -617,7 +653,7 @@ const App = {
     try {
       installed = !!(await ta.aiToolsInstalled()).codex;   // 앱 실행 중 설치돼도 반영되도록 매번 확인
       if (installed) u = await ta.codexUsage();
-    } catch (_) { /* 조회 실패 = 값 없음 */ }
+    } catch (_) { return; /* IPC 실패 — 직전 표시를 그대로 둔다 */ }
     App.renderUsageGauge('panel-codex', 'Codex', u, installed);
   },
 
@@ -627,7 +663,7 @@ const App = {
     try {
       installed = !!(await ta.aiToolsInstalled()).claude;
       if (installed) u = await ta.claudeUsage();
-    } catch (_) { /* 조회 실패 = 값 없음 */ }
+    } catch (_) { return; /* IPC 실패 — 직전 표시를 그대로 둔다 */ }
     App.renderUsageGauge('panel-claude', 'Claude', u, installed);
   },
 

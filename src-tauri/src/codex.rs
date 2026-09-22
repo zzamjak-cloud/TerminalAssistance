@@ -1,12 +1,21 @@
-// 코덱스(Codex CLI) 사용량 조회 — ~/.codex/sessions/<년>/<월>/<일>/rollout-*.jsonl 의
-// 마지막 token_count 이벤트에 담긴 rate_limits(사용률·윈도우·리셋 시각)를 읽는다.
-// 코덱스가 세션 중 주기적으로 기록하므로, 최신 파일의 꼬리만 읽으면 현재 사용량이 나온다.
-// 읽기 전용 — 코덱스 저장소를 건드리지 않는다.
+// 코덱스(Codex CLI) 사용량 조회 — 두 출처를 합친다.
+// 1) ChatGPT 사용량 API (GET /backend-api/wham/usage, 코덱스 `/status` 와 같은 출처):
+//    ~/.codex/auth.json 의 액세스 토큰으로 조회한다. 다른 PC·IDE·웹에서 쓴 양까지 반영되므로
+//    앱을 켜자마자(이 PC 에서 코덱스를 아직 안 돌렸어도) 실제 남은 양이 나온다.
+// 2) ~/.codex/sessions/<년>/<월>/<일>/rollout-*.jsonl 의 마지막 token_count 이벤트의 rate_limits:
+//    코덱스가 실행 중이면 API 캐시보다 최신일 수 있고, API 가 실패할 때 대체값이 된다.
+// 둘 다 읽기 전용 — 토큰 갱신은 코덱스 본체 담당이고 코덱스 저장소를 건드리지 않는다.
+use crate::util::plock;
 use serde::Serialize;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
+
+// 사용량 API 호출 간격 상한 — 프런트 폴링이 잦아도 네트워크는 이 주기로만 나간다
+const API_CACHE_MS: u64 = 60_000;
+const API_TIMEOUT_SECS: u64 = 8;
 
 // rate_limits 는 token_count 마다 기록되므로 파일 꼬리에서 금방 나온다
 const TAIL_CAP: u64 = 128 * 1024;
@@ -28,7 +37,7 @@ pub struct CodexSession {
     pub preview: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct CodexWindow {
     #[serde(rename = "windowMinutes")]
     pub window_minutes: u64,
@@ -38,13 +47,28 @@ pub struct CodexWindow {
     pub resets_at: Option<u64>, // unix 초
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct CodexUsage {
     pub windows: Vec<CodexWindow>, // primary(짧은 윈도우) → secondary(주간) 순
     pub plan: Option<String>,
     #[serde(rename = "mtimeMs")]
-    pub mtime_ms: u64, // 데이터 신선도 판단용 (파일 mtime)
+    pub mtime_ms: u64, // 데이터 신선도 판단용 (API 조회 시각 또는 rollout 파일 mtime)
+    // 이번 조회에서 사용량 API 가 실패했으면 "unavailable" — 표시값은 마지막으로 구한 값이다
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<&'static str>,
 }
+
+// (조회 시각, 결과) — 실패(None)도 캐시해 API 가 죽었을 때 폴링마다 재시도하지 않는다
+static API_CACHE: Mutex<Option<(u64, Result<CodexUsage, ApiFail>)>> = Mutex::new(None);
+
+/// 사용량 API 를 못 쓴 이유 — 토큰이 아예 없으면(API 키 로그인 등) 실패로 보지 않는다
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ApiFail {
+    NoToken,
+    Failed,
+}
+// 마지막으로 성공한 API 값 — API 가 실패해도 이보다 오래된 로컬 기록으로 되돌아가지 않게 한다
+static API_LAST_GOOD: Mutex<Option<CodexUsage>> = Mutex::new(None);
 
 /// 하위 디렉토리를 이름 내림차순으로 반환 (년/월/일 디렉토리는 숫자 이름이라 사전순 = 시간순)
 fn subdirs_desc(dir: &PathBuf) -> Vec<PathBuf> {
@@ -152,14 +176,140 @@ fn tail_rate_limits(path: &PathBuf) -> Option<serde_json::Value> {
     None
 }
 
-/// 코덱스 사용량 (없으면 None). async 커맨드 → 파일 탐색이 UI 를 막지 않는다.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 코덱스 사용량 (없으면 None). async 커맨드 → 파일 탐색·네트워크가 UI 를 막지 않는다.
+/// API 값·마지막 API 성공값·로컬 기록 중 가장 최근 것을 쓴다
+/// (코덱스 실행 중엔 로컬이 API 캐시보다 앞선다). API 가 실패했으면 error 를 달아 보낸다.
 #[tauri::command]
 pub async fn codex_usage() -> Option<CodexUsage> {
+    let api = api_usage_cached().await;
+    let local = tauri::async_runtime::spawn_blocking(local_usage).await.ok().flatten();
+    let last_good = {
+        let mut g = plock(&API_LAST_GOOD);
+        if let Ok(a) = &api {
+            *g = Some(a.clone());
+        }
+        g.clone()
+    };
+    let api_failed = matches!(api, Err(ApiFail::Failed));
+    let now = now_ms();
+    let mut best = pick_freshest([api.ok().or(last_good), local])?;
+    expire_passed_resets(&mut best.windows, now / 1000);
+    // API 가 실패했어도 방금 기록된 로컬 값(코덱스 실행 중)이 있으면 최신이므로 경고하지 않는다
+    if api_failed && now.saturating_sub(best.mtime_ms) > API_CACHE_MS {
+        best.error = Some("unavailable");
+    }
+    Some(best)
+}
+
+/// 리셋 시각이 지난 윈도우는 한도가 회복된 상태 — 마지막 값을 유지할 때도 옛 사용률을 그대로 쓰지 않는다
+fn expire_passed_resets(windows: &mut [CodexWindow], now_secs: u64) {
+    for w in windows {
+        if w.resets_at.is_some_and(|t| t <= now_secs) {
+            w.used_percent = 0.0;
+            w.resets_at = None;
+        }
+    }
+}
+
+/// 후보 중 mtime 이 가장 최근인 값
+fn pick_freshest<const N: usize>(cands: [Option<CodexUsage>; N]) -> Option<CodexUsage> {
+    cands.into_iter().flatten().max_by_key(|u| u.mtime_ms)
+}
+
+/// API_CACHE_MS 동안은 직전 결과를 재사용한다
+async fn api_usage_cached() -> Result<CodexUsage, ApiFail> {
+    let now = now_ms();
+    {
+        let mut g = plock(&API_CACHE);
+        if let Some((at, u)) = g.as_mut() {
+            if now.saturating_sub(*at) < API_CACHE_MS {
+                return u.clone();
+            }
+            // 조회 중에 들어온 다른 폴링이 중복 호출하지 않도록 캐시 시각을 먼저 당겨 둔다
+            *at = now;
+        } else {
+            *g = Some((now, Err(ApiFail::Failed)));
+        }
+    }
+    let usage = tauri::async_runtime::spawn_blocking(api_usage)
+        .await
+        .unwrap_or(Err(ApiFail::Failed));
+    *plock(&API_CACHE) = Some((now_ms(), usage.clone()));
+    usage
+}
+
+/// (액세스 토큰, 계정 ID) — ChatGPT 로그인(auth_mode=chatgpt)일 때만 있다. API 키 로그인은 한도 개념이 없다.
+fn oauth() -> Option<(String, Option<String>)> {
+    let path = crate::claude::home_dir()?.join(".codex").join("auth.json");
+    let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let t = v.get("tokens")?;
+    let token = t.get("access_token")?.as_str()?.to_string();
+    let account = t.get("account_id").and_then(|x| x.as_str()).map(str::to_string);
+    Some((token, account))
+}
+
+/// 사용량 API 1회 조회 (블로킹). 토큰 만료·네트워크·응답 오류는 전부 None → 로컬 기록으로 대체된다.
+fn api_usage() -> Result<CodexUsage, ApiFail> {
+    let (token, account) = oauth().ok_or(ApiFail::NoToken)?;
+    api_request(&token, account.as_deref()).ok_or(ApiFail::Failed)
+}
+
+fn api_request(token: &str, account: Option<&str>) -> Option<CodexUsage> {
+    let mut req = ureq::get("https://chatgpt.com/backend-api/wham/usage")
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("User-Agent", "codex_cli_rs")
+        .timeout(std::time::Duration::from_secs(API_TIMEOUT_SECS));
+    if let Some(a) = account {
+        req = req.set("ChatGPT-Account-Id", a);
+    }
+    let body = req.call().ok()?.into_string().ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    parse_api_usage(&v, now_ms())
+}
+
+/// 응답 → 표시용 사용량. 형태:
+/// {"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":97,"limit_window_seconds":18000,
+///  "reset_after_seconds":1200,"reset_at":1790000000},"secondary_window":{...}}}
+fn parse_api_usage(v: &serde_json::Value, now_ms: u64) -> Option<CodexUsage> {
+    let rl = v.get("rate_limit")?;
+    let now_secs = now_ms / 1000;
+    let window = |w: Option<&serde_json::Value>| -> Option<CodexWindow> {
+        let w = w?;
+        let used_percent = w.get("used_percent")?.as_f64()?;
+        let window_minutes = w.get("limit_window_seconds")?.as_u64()? / 60;
+        let resets_at = w.get("reset_at").and_then(|x| x.as_u64()).or_else(|| {
+            w.get("reset_after_seconds")
+                .and_then(|x| x.as_u64())
+                .map(|s| now_secs + s)
+        });
+        Some(CodexWindow { window_minutes, used_percent, resets_at })
+    };
+    let windows: Vec<CodexWindow> = [rl.get("primary_window"), rl.get("secondary_window")]
+        .into_iter()
+        .filter_map(window)
+        .collect();
+    if windows.is_empty() {
+        return None;
+    }
+    Some(CodexUsage {
+        windows,
+        plan: v.get("plan_type").and_then(|x| x.as_str()).map(str::to_string),
+        mtime_ms: now_ms,
+        error: None,
+    })
+}
+
+/// 로컬 rollout 기록 기준 사용량
+fn local_usage() -> Option<CodexUsage> {
     let (rl, mtime_ms) = latest_rate_limits()?;
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_secs = now_ms() / 1000;
     let mut windows = Vec::new();
     if let Some(w) = rl.get("primary").and_then(|v| window_of(v, now_secs)) {
         windows.push(w);
@@ -177,6 +327,7 @@ pub async fn codex_usage() -> Option<CodexUsage> {
             .and_then(|x| x.as_str())
             .map(str::to_string),
         mtime_ms,
+        error: None,
     })
 }
 
@@ -459,6 +610,43 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn passed_reset_clears_kept_value() {
+        let mut ws = vec![
+            CodexWindow { window_minutes: 300, used_percent: 97.0, resets_at: Some(100) },
+            CodexWindow { window_minutes: 10080, used_percent: 40.0, resets_at: Some(900) },
+        ];
+        expire_passed_resets(&mut ws, 500);
+        assert_eq!((ws[0].used_percent, ws[0].resets_at), (0.0, None));
+        assert_eq!((ws[1].used_percent, ws[1].resets_at), (40.0, Some(900)));
+    }
+
+    #[test]
+    fn freshest_value_wins() {
+        let u = |mtime_ms| CodexUsage { windows: Vec::new(), plan: None, mtime_ms, error: None };
+        // API 가 실패해도 마지막 API 값(2000)이 오래된 로컬 기록(1000)보다 우선한다
+        assert_eq!(pick_freshest([Some(u(2_000)), Some(u(1_000))]).unwrap().mtime_ms, 2_000);
+        // 코덱스 실행 중이라 로컬이 더 최신이면 로컬을 쓴다
+        assert_eq!(pick_freshest([Some(u(2_000)), Some(u(3_000))]).unwrap().mtime_ms, 3_000);
+        assert!(pick_freshest::<2>([None, None]).is_none());
+    }
+
+    #[test]
+    fn parses_usage_api_response() {
+        let v = json!({"plan_type": "plus", "rate_limit": {
+            "primary_window": {"used_percent": 97, "limit_window_seconds": 18000, "reset_at": 5_000_u64},
+            "secondary_window": {"used_percent": 40.5, "limit_window_seconds": 604800, "reset_after_seconds": 100}
+        }});
+        let u = parse_api_usage(&v, 1_000_000).unwrap();
+        assert_eq!(u.plan.as_deref(), Some("plus"));
+        assert_eq!(u.mtime_ms, 1_000_000);
+        let w: Vec<_> = u.windows.iter().map(|w| (w.window_minutes, w.used_percent, w.resets_at)).collect();
+        // reset_at 이 없으면 reset_after_seconds 로 환산한다
+        assert_eq!(w, vec![(300, 97.0, Some(5_000)), (10080, 40.5, Some(1_100))]);
+        // 한도 정보가 없는 응답(API 키 계정 등)은 표시 대상이 아니다
+        assert!(parse_api_usage(&json!({"plan_type": "plus", "rate_limit": null}), 0).is_none());
+    }
 
     #[test]
     fn codex_preview_skips_agent_instructions() {

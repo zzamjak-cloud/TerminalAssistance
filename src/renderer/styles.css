@@ -371,6 +371,19 @@ button:disabled:hover { border-color: var(--border); }
 .gauge.mid  { color: var(--warn); background: var(--warn-tint); }
 .gauge.warn { color: var(--caution); background: var(--caution-tint); }
 .gauge.crit { color: var(--exited); background: var(--exited-tint-hi); animation: pulse 1.2s ease-in-out infinite; }
+/* AI 사용량 게이지의 윈도우별 값 — 각자 수준 색, 사이에 구분선, 긴 윈도우(주간)는 옅게 */
+.gauge .seg + .seg {
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+}
+.gauge .seg.ok   { color: var(--running); }
+.gauge .seg.mid  { color: var(--warn); }
+.gauge .seg.warn { color: var(--caution); }
+.gauge .seg.crit { color: var(--exited); }
+.gauge .seg-long { font-weight: 500; opacity: 0.72; }
+/* 조회 실패·오래된 값 — 마지막 값을 유지하되 옅게, 점멸은 멈춘다 */
+.gauge.stale { opacity: 0.55; animation: none; }
 /* 설치돼 있지만 사용량을 못 구한 상태 — 자리는 지키고 값만 비운다 */
 .gauge.idle { color: var(--fg-dim); }
 #waiting-indicator {
