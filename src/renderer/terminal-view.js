@@ -1532,11 +1532,44 @@ const TerminalView = {
     return Math.max(4, Number.isFinite(n) && n > 0 ? n : 16);
   },
 
+  // 뷰포트 행 전체를 dirty 로 표시해 다시 그리게 한다.
+  // 숨은 뷰는 xterm 이 요청을 보류하고(_isPaused) 다시 보일 때 전체 재그리기로 갚는다.
+  _refreshViewport(v) {
+    try { v.term.refresh(0, Math.max(0, (v.term.rows || 1) - 1)); } catch (_) {}
+  },
+
+  // 텍스처 아틀라스는 폰트·테마·DPR 이 같은 터미널끼리 '공유'된다 (xterm acquireTextureAtlas
+  // 가 config 가 같으면 같은 인스턴스를 ownedBy 에 추가해 돌려준다). 그래서 한 뷰에서 비우면
+  // 다른 뷰가 쓰던 글리프 픽셀까지 발밑에서 같이 지워지는데, xterm 의 clearTextureAtlas 는
+  // 모델 초기화와 전체 재그리기를 '호출한 뷰에만' 요청한다. 출력이 흐르는 패널은 다음 write
+  // 가 다시 그려서 멀쩡하지만, 멈춰 있던 패널은 다시 그릴 계기가 없어 빈 화면으로 남는다
+  // (스플리터를 끌면 리사이즈가 전체 재그리기를 일으켜 돌아오던 것이 이 증상이다).
+  // → 비운 뒤 살아 있는 모든 뷰에 뷰포트 전체 재그리기를 요청한다.
+  _clearAtlas(v, now) {
+    const atlas = this._atlas(v);
+    const pages = this._atlasPages(v);
+    v.atlasResetAt = now;
+    v.atlasPagesAtReset = pages;
+    try { v.term.clearTextureAtlas(); } catch (_) {}
+    for (const other of this.views.values()) {
+      // 같은 아틀라스를 공유하는 뷰는 방금 함께 비워진 것이므로 감시 기준점도 같이 맞춘다
+      if (other !== v && atlas && this._atlas(other) === atlas) {
+        other.atlasResetAt = now;
+        other.atlasPagesAtReset = pages;
+      }
+      // v 자신은 xterm 이 이미 전체 재그리기를 요청했지만, 요청은 rAF 로 합쳐지므로 중복이 싸다
+      this._refreshViewport(other);
+    }
+  },
+
   _guardAtlas() {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     const now = Date.now();
+    const handled = new Set(); // 공유 아틀라스는 한 틱에 한 번만 비운다
     for (const v of this.views.values()) {
       if (!v.webgl || !v.holder.classList.contains('active')) continue;
+      const atlas = this._atlas(v);
+      if (atlas && handled.has(atlas)) continue;
       const pages = this._atlasPages(v);
       const mergeAt = this._atlasMergeAt(v);
       // clearTexture 는 페이지 '내용'만 비우고 개수는 줄이지 않는다 — 개수만 보면 한 번
@@ -1546,21 +1579,30 @@ const TerminalView = {
       const crowded = pages > 0 && pages >= mergeAt - 2 && pages > (v.atlasPagesAtReset || 0);
       const stale = now - (v.atlasResetAt || 0) >= this.ATLAS_MAX_AGE_MS;
       if (!crowded && !stale) continue;
-      v.atlasResetAt = now;
-      v.atlasPagesAtReset = pages;
-      try { v.term.clearTextureAtlas(); } catch (_) {}
+      if (atlas) handled.add(atlas);
+      this._clearAtlas(v, now);
     }
   },
 
   // 렌더링이 이미 깨진 뒤의 수동 복구 (Mod+Shift+R).
-  // clearTextureAtlas 가 아틀라스 비우기 + 모델 초기화 + 전체 재그리기까지 한다.
+  // clearTextureAtlas 가 아틀라스 비우기 + 모델 초기화 + 전체 재그리기까지 하고,
+  // _clearAtlas 가 공유 아틀라스를 쓰는 다른 뷰의 재그리기까지 전파한다.
   redrawVisible() {
+    const now = Date.now();
+    const handled = new Set();
+    let cleared = false;
     for (const v of this.views.values()) {
       if (!v.holder.classList.contains('active')) continue;
-      v.atlasResetAt = Date.now();
-      v.atlasPagesAtReset = this._atlasPages(v);
-      try { v.term.clearTextureAtlas(); } catch (_) {}
+      const atlas = this._atlas(v);
+      if (atlas) {
+        if (handled.has(atlas)) continue;
+        handled.add(atlas);
+      }
+      this._clearAtlas(v, now);
+      cleared = true;
     }
+    // WebGL 이 없거나(DOM 렌더러) 아틀라스를 못 읽어 하나도 비우지 못했어도 재그리기는 시도한다
+    if (!cleared) for (const v of this.views.values()) this._refreshViewport(v);
   },
 
   activate(id, opts) {
@@ -1600,6 +1642,10 @@ const TerminalView = {
         try { v.fit.fit(); } catch (_) {}
         this._attachWebgl(v);
         this._syncPtySize(sid, v);
+        // 치수가 안 바뀌면 fit 이 리사이즈를 안 하고, 그러면 새로 보이게 된 패널을 다시 그릴
+        // 계기가 없다 (xterm 은 dirty 행만 그린다) — 출력이 멈춘 세션이 빈 화면으로 남지 않게
+        // 배치가 바뀔 때마다 뷰포트 전체를 한 번 다시 그린다.
+        this._refreshViewport(v);
         // 새로 보이게 된 세션만 바닥으로 강제 스크롤 — 이미 보이던 패널의 스크롤백 열람 위치는
         // 포커스 이동(패널 클릭·드래그 선택 시작)만으로 잃지 않아야 한다.
         // opts.toBottom: 허가 대기 배지 클릭처럼 명시적 점프 의도만 예외.

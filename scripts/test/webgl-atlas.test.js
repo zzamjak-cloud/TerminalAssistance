@@ -20,29 +20,36 @@ function loadTerminalView() {
   return vm.runInNewContext(fs.readFileSync(SRC, 'utf8') + ';TerminalView', sandbox);
 }
 
-// 아틀라스 페이지 수와 상한을 흉내 내는 가짜 WebglAddon.
+// 아틀라스 페이지 수와 상한을 흉내 내는 가짜 TextureAtlas.
 // 실제 xterm 의 clearTexture 는 페이지 '내용'만 비우고 개수는 그대로 두므로 여기서도 그렇게 둔다.
-function fakeAddon(pages, limit) {
+function fakeAtlas(pages, limit) {
   const Atlas = function () {};
   Atlas.maxAtlasPages = limit;
   const atlas = new Atlas();
   atlas.pages = new Array(pages).fill(null).map(() => ({}));
-  return { _renderer: { _charAtlas: atlas } };
+  return atlas;
+}
+
+// 실제 xterm 은 폰트·테마·DPR 이 같은 터미널끼리 아틀라스를 공유한다 → atlas 를 넘겨 공유 재현
+function fakeAddon(pages, limit, atlas) {
+  return { _renderer: { _charAtlas: atlas || fakeAtlas(pages, limit) } };
 }
 
 function fakeView(opts) {
   const o = opts || {};
   let active = o.active !== false;
   return {
-    webgl: o.webgl === undefined ? fakeAddon(o.pages || 1, o.limit || 16) : o.webgl,
+    webgl: o.webgl === undefined ? fakeAddon(o.pages || 1, o.limit || 16, o.atlas) : o.webgl,
     webglFailures: 0,
     atlasResetAt: o.atlasResetAt === undefined ? Date.now() : o.atlasResetAt,
     atlasPagesAtReset: 0,
     cleared: 0,
+    refreshed: 0,
     holder: { classList: { contains: () => active } },
     term: {
       rows: 24,
       clearTextureAtlas() { this._v.cleared++; },
+      refresh() { this._v.refreshed++; },
     },
   };
 }
@@ -99,7 +106,52 @@ exports.run = function run(t) {
   const off = mount(TV, 'h', fakeView({ pages: 2, active: false }));
   TV.redrawVisible();
   t.check('보이는 터미널은 아틀라스를 버리고 다시 그린다', shown.cleared === 1, `cleared=${shown.cleared}`);
-  t.check('숨은 터미널은 다시 그리지 않는다', off.cleared === 0, `cleared=${off.cleared}`);
+  t.check('숨은 터미널의 아틀라스는 버리지 않는다', off.cleared === 0, `cleared=${off.cleared}`);
+  t.check('숨은 터미널에도 재그리기는 요청한다(보일 때 갚는다)', off.refreshed >= 1, `refreshed=${off.refreshed}`);
+  TV.views.clear();
+
+  // ── 회귀: 아틀라스는 세션끼리 공유된다 (xterm acquireTextureAtlas) ──
+  // 한 뷰에서 비우면 다른 뷰가 쓰던 글리프 픽셀까지 지워지는데 xterm 은 호출한 뷰만 다시
+  // 그린다 → 출력이 멈춰 있던 패널이 빈 화면으로 남았다(스플리터를 끌면 복구되던 증상).
+  const shared = fakeAtlas(14, 16);
+  const busy = mount(TV, 'i', fakeView({ atlas: shared }));
+  const idle = mount(TV, 'j', fakeView({ atlas: shared }));
+  const idleHidden = mount(TV, 'k', fakeView({ atlas: shared, active: false }));
+  TV._guardAtlas();
+  t.check('공유 아틀라스는 한 틱에 한 번만 비운다',
+    busy.cleared + idle.cleared === 1, `busy=${busy.cleared} idle=${idle.cleared}`);
+  t.check('출력이 멈춘 패널에도 재그리기가 전파된다',
+    busy.refreshed + idle.refreshed >= 1, `busy=${busy.refreshed} idle=${idle.refreshed}`);
+  t.check('숨은 패널에도 재그리기가 전파된다', idleHidden.refreshed >= 1, `refreshed=${idleHidden.refreshed}`);
+  t.check('공유 뷰의 감시 기준점도 같이 맞춰진다',
+    idle.atlasPagesAtReset === 14 && idleHidden.atlasPagesAtReset === 14,
+    `idle=${idle.atlasPagesAtReset} hidden=${idleHidden.atlasPagesAtReset}`);
+  const sharedCleared = busy.cleared + idle.cleared;
+  TV._guardAtlas();
+  t.check('공유 뷰 때문에 매 틱 반복해 비우지 않는다',
+    busy.cleared + idle.cleared === sharedCleared, `cleared=${busy.cleared + idle.cleared}`);
+  shared.pages.push({});
+  TV._guardAtlas();
+  t.check('공유 아틀라스도 페이지가 늘면 다시 비운다',
+    busy.cleared + idle.cleared === sharedCleared + 1, `cleared=${busy.cleared + idle.cleared}`);
+  TV.views.clear();
+
+  // 수동 복구도 공유 아틀라스를 중복으로 비우지 않고 모든 뷰를 다시 그린다
+  const shared2 = fakeAtlas(3, 16);
+  const m1 = mount(TV, 'l', fakeView({ atlas: shared2 }));
+  const m2 = mount(TV, 'm', fakeView({ atlas: shared2 }));
+  TV.redrawVisible();
+  t.check('수동 복구는 공유 아틀라스를 한 번만 비운다',
+    m1.cleared + m2.cleared === 1, `m1=${m1.cleared} m2=${m2.cleared}`);
+  t.check('수동 복구는 두 패널 모두 다시 그린다',
+    m1.refreshed + m2.refreshed >= 1 && (m1.cleared ? m2.refreshed >= 1 : m1.refreshed >= 1),
+    `m1=${m1.refreshed} m2=${m2.refreshed}`);
+  TV.views.clear();
+
+  // WebGL 이 아예 없는 환경(DOM 렌더러)에서도 수동 복구는 재그리기를 시도한다
+  const domOnly = mount(TV, 'n', fakeView({ webgl: null }));
+  TV.redrawVisible();
+  t.check('DOM 렌더러만 있어도 재그리기를 시도한다', domOnly.refreshed >= 1, `refreshed=${domOnly.refreshed}`);
   TV.views.clear();
 
   // ── 컨텍스트 소실 → 재부착, 연속 실패는 상한에서 멈춘다 ──
