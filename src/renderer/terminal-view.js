@@ -125,14 +125,24 @@ const TerminalView = {
   // Windows/Linux 입력창의 커서 이동·삭제를 Mac 과 맞춘다 —
   // Ctrl+←/→ = 줄(문단) 시작/끝 (Mac 의 Cmd+←/→), Alt+←/→ = 단어 그룹 단위 (Mac 의 Opt+←/→),
   // Ctrl+Backspace = 줄 시작까지 삭제 (Mac 의 Cmd+Delete), Alt+Backspace = 단어 삭제 (Mac 의 Opt+Delete).
-  // Shift+방향키 조합은 선택 확장. Mac 은 네이티브 동작이 이미 이 규칙이므로 손대지 않는다.
+  // Shift+방향키 조합은 선택 확장.
+  // Mac 은 Cmd+←/→ 와 Cmd+Delete 만 가로챈다 — 네이티브 동작은 줄바꿈된 화면상 줄(visual line)
+  // 기준이므로, Windows 의 Ctrl 조합과 같이 문단(개행 경계) 기준으로 맞춘다.
+  // 나머지(Opt+←/→, Opt+Delete)는 네이티브 동작에 맡긴다.
   // 처리했으면 true 를 반환한다 (호출부가 이후 키 처리를 건너뛰게).
   handleComposerEditKeys(input, ev) {
-    if (App.state.platform === 'macos') return false;
     const arrow = ev.key === 'ArrowLeft' || ev.key === 'ArrowRight';
-    if (!arrow && ev.key !== 'Backspace') return false;
-    // Ctrl 또는 Alt 중 정확히 하나만 — Ctrl+Alt 동시(AltGr)는 건드리지 않는다
-    if (ev.metaKey || ev.ctrlKey === ev.altKey) return false;
+    if (!arrow && ev.key !== 'Backspace') return false; // Mac 의 Delete 키도 'Backspace'
+    // lineMove = 줄(문단) 단위 조합인가 (Mac: Cmd, 그 외: Ctrl)
+    let lineMove;
+    if (App.state.platform === 'macos') {
+      if (!ev.metaKey || ev.ctrlKey || ev.altKey) return false;
+      lineMove = true;
+    } else {
+      // Ctrl 또는 Alt 중 정확히 하나만 — Ctrl+Alt 동시(AltGr)는 건드리지 않는다
+      if (ev.metaKey || ev.ctrlKey === ev.altKey) return false;
+      lineMove = ev.ctrlKey;
+    }
     const v = input.value;
     // 줄 시작/끝 — 캐럿이 있는 줄의 개행 경계까지
     // (lastIndexOf 는 음수 fromIndex 를 0 으로 취급하므로 캐럿 0 은 따로 처리)
@@ -165,7 +175,7 @@ const TerminalView = {
       if (input.selectionStart !== input.selectionEnd) return false;
       ev.preventDefault(); // 기본 단어 삭제(Ctrl+Backspace)를 막고 아래 규칙으로 대체
       const pos = input.selectionStart;
-      const from = ev.ctrlKey ? lineStart(pos) : wordLeft(pos);
+      const from = lineMove ? lineStart(pos) : wordLeft(pos);
       if (from >= pos) return true; // 지울 범위 없음 (줄 시작 등)
       // execCommand 경유 삭제는 네이티브 실행 취소(undo) 이력과 input 이벤트를 보존한다
       input.setSelectionRange(from, pos);
@@ -182,7 +192,7 @@ const TerminalView = {
     // 선택이 있으면 이동 중인 쪽(focus) 끝을 기준으로 계산한다
     const backward = input.selectionDirection === 'backward';
     const focusPos = backward ? input.selectionStart : input.selectionEnd;
-    const pos = ev.ctrlKey
+    const pos = lineMove
       ? (left ? lineStart(focusPos) : lineEnd(focusPos))
       : (left ? wordLeft(focusPos) : wordRight(focusPos));
     if (ev.shiftKey) {

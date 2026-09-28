@@ -4472,7 +4472,7 @@ dependencies = [
 
 [[package]]
 name = "terminal-assistance"
-version = "0.18.10"
+version = "0.18.11"
 dependencies = [
  "image",
  "mac-notification-sys",
