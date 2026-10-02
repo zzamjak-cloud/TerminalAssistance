@@ -697,7 +697,9 @@ Object.assign(App, {
       </div>
       <div class="check"><input type="checkbox" id="m-rm-on-done" ${push.onDone ? 'checked' : ''}><label for="m-rm-on-done" style="margin:0">작업 완료 시</label></div>
       <div class="check"><input type="checkbox" id="m-rm-on-waiting" ${push.onWaiting ? 'checked' : ''}><label for="m-rm-on-waiting" style="margin:0">허가 대기 시</label></div>
-      <div class="form-help">알림 본문에는 세션 이름과 상태만 담깁니다. 공개 ntfy.sh 는 토픽을 아는 누구나 구독할 수 있으니 추측하기 어려운 토픽을 쓰세요.</div>
+      <div class="check"><input type="checkbox" id="m-rm-include-project" ${push.includeProject ? 'checked' : ''}><label for="m-rm-include-project" style="margin:0">알림에 프로젝트 이름 포함</label></div>
+      <div class="form-help">기본은 세션 제목과 상태만 보냅니다. 공개 ntfy.sh 는 토픽을 아는 누구나 구독할 수 있으니 추측하기 어려운 토픽을 쓰세요.</div>
+      <div class="form-help warn hidden" id="m-rm-push-warn"></div>
       <div class="remote-actions">
         <button type="button" id="m-rm-test">테스트 발송</button>
         <button type="button" id="m-rm-apply">원격 설정 적용</button>
@@ -723,6 +725,7 @@ Object.assign(App, {
     $('#m-rm-ntfy-url').value = push.url || '';
     $('#m-rm-ntfy-topic').value = push.topic || '';
     if (view.bindWarning) { $('#m-rm-warn').textContent = '⚠ ' + view.bindWarning; $('#m-rm-warn').classList.remove('hidden'); }
+    if (view.pushWarning) { $('#m-rm-push-warn').textContent = '⚠ ' + view.pushWarning; $('#m-rm-push-warn').classList.remove('hidden'); }
     if (view.error) { $('#m-rm-error').textContent = '서버 오류: ' + view.error; $('#m-rm-error').classList.remove('hidden'); }
     const urls = view.running ? (view.urls || []) : [];
     if (urls.length) {
@@ -750,12 +753,14 @@ Object.assign(App, {
         url: $('#m-rm-ntfy-url').value.trim() || 'https://ntfy.sh',
         topic: $('#m-rm-ntfy-topic').value.trim(),
         onDone: $('#m-rm-on-done').checked,
-        onWaiting: $('#m-rm-on-waiting').checked
+        onWaiting: $('#m-rm-on-waiting').checked,
+        includeProject: $('#m-rm-include-project').checked
       }
     });
     const apply = async () => {
       const cfg = readCfg();
       if (cfg.push.kind === 'ntfy' && !cfg.push.topic) { alert('ntfy 토픽을 입력하세요.'); return null; }
+      if (needsRemoteBindConfirm(view, cfg) && !confirm(remoteBindConfirmText(remoteBindLevel(cfg.bind)))) return null;
       try {
         const next = await ta.remoteSetConfig(cfg);
         App.renderRemoteSettings(body, next);
@@ -766,9 +771,8 @@ Object.assign(App, {
     // 테스트는 저장된 설정으로 보낸다 — 화면 값이 다르면 먼저 적용한다
     $('#m-rm-test').onclick = async () => {
       const btn = $('#m-rm-test');
-      const saved = JSON.stringify({ kind: push.kind, url: push.url, topic: push.topic });
-      const cur = readCfg().push;
-      if (JSON.stringify({ kind: cur.kind, url: cur.url, topic: cur.topic }) !== saved) {
+      const pick = (x) => JSON.stringify({ kind: x.kind, url: x.url, topic: x.topic, includeProject: !!x.includeProject });
+      if (pick(readCfg().push) !== pick(push)) {
         if (!(await apply())) return;
         // apply 가 섹션을 다시 그렸으므로 새 버튼에서 이어서 보낸다
         return void body.querySelector('#m-rm-test').onclick();
@@ -867,6 +871,45 @@ Object.assign(App, {
     App._remotePairTimer = setInterval(tick, 1000);
   }
 });
+
+// 바인드 주소 위험 등급 — 백엔드 remote/auth.rs 분류와 같은 기준 (적용 전 확인용).
+// 형식을 모르는 값은 null — 판정은 백엔드 검증에 맡긴다.
+function remoteBindLevel(bind) {
+  const b = String(bind || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (b === 'localhost' || b === '::1') return 'loopback';
+  if (b === '::' || b === '0.0.0.0') return 'public';
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(b);
+  if (v4) {
+    const o = v4.slice(1).map(Number);
+    if (o.some((n) => n > 255)) return null;
+    if (o[0] === 127) return 'loopback';
+    if (o[0] === 100 && (o[1] & 0xc0) === 64) return 'tailscale';
+    if (o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168)
+      || (o[0] === 169 && o[1] === 254)) return 'lan';
+    return 'public';
+  }
+  if (b.includes(':')) {
+    const head = parseInt(b.split(':')[0] || '0', 16);
+    if ((head & 0xfe00) === 0xfc00 || (head & 0xffc0) === 0xfe80) return 'lan';
+    return 'public';
+  }
+  return null;
+}
+
+// 켜진 상태로 LAN·공인 주소에 새로 여는 경우에만 묻는다 (푸시 설정만 바꿀 때마다 묻지 않게)
+function needsRemoteBindConfirm(view, cfg) {
+  if (!cfg.enabled) return false;
+  const level = remoteBindLevel(cfg.bind);
+  if (level !== 'lan' && level !== 'public') return false;
+  return !(view.enabled && view.bind === cfg.bind && view.port === cfg.port);
+}
+
+function remoteBindConfirmText(level) {
+  const where = level === 'lan' ? '같은 네트워크(LAN·공용 Wi-Fi)의 기기' : '인터넷의 누구나';
+  return `${where}가 이 원격 서버에 접속을 시도할 수 있습니다.\n\n`
+    + '통신은 암호화되지 않은 HTTP 라, 같은 망에서 엿보면 기기 인증 토큰과 터미널 내용이 노출될 수 있습니다.\n'
+    + 'Tailscale IP(100.x) 바인드를 권장합니다.\n\n그래도 적용할까요?';
+}
 
 // 설정 팝업 글꼴 드롭다운 후보 — 널리 쓰이는 코딩·모노스페이스 글꼴 (설치된 것만 표시)
 const FONT_CANDIDATES = [

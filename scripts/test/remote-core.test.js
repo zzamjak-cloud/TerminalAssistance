@@ -11,7 +11,8 @@ vm.runInContext(
   fs.readFileSync(SRC, 'utf8')
   + ';globalThis.__r = { shouldKeepChunk, remoteKeySequence, REMOTE_KEY_BAR, buildPromptWrites,'
   + ' fitTerminalFont, reconnectDelay, parseServerMessage, pairCodeFromHash, normalizePairCode,'
-  + ' upsertSession, presetsForSession, REMOTE_FONT_MIN, RECONNECT_MAX_MS };',
+  + ' upsertSession, presetsForSession, REMOTE_FONT_MIN, RECONNECT_MAX_MS,'
+  + ' SNAP_RESET, snapModeSuffix, newReqId, isReplyTo, nextViewportBaseline, isKeyboardOpen };',
   sandbox
 );
 const r = sandbox.__r;
@@ -87,4 +88,28 @@ exports.run = function (t) {
   t.check('전역 먼저, 그다음 세션 프로젝트 전용',
     r.presetsForSession(presets, { projectId: 'x' }).map((p) => p.id).join(',') === 'g1,p1');
   t.check('홈 세션은 전역만', r.presetsForSession(presets, { projectId: null }).map((p) => p.id).join(',') === 'g1');
+
+  // ── 스냅샷 초기화 · bracketed paste 상태 ──
+  t.check('스냅샷 초기화는 write 큐를 타는 RIS', r.SNAP_RESET === '\x1bc');
+  t.check('서버가 켜짐을 알리면 2004h', r.snapModeSuffix({ bracketedPaste: true }) === '\x1b[?2004h');
+  t.check('서버가 꺼짐을 알리면 2004l', r.snapModeSuffix({ bracketedPaste: false }) === '\x1b[?2004l');
+  t.check('필드가 없으면 스트림 추적에 맡긴다', r.snapModeSuffix({}) === '' && r.snapModeSuffix(null) === '');
+
+  // ── 새 세션 요청 짝 맞추기 ──
+  const a = r.newReqId();
+  t.check('reqId 는 매번 다르다', a !== r.newReqId() && typeof a === 'string');
+  t.check('같은 reqId 응답만 짝', r.isReplyTo({ reqId: 'x' }, { t: 'createResult', reqId: 'x' })
+    && !r.isReplyTo({ reqId: 'x' }, { t: 'createResult', reqId: 'y' })
+    && !r.isReplyTo({ reqId: 'x' }, { t: 'error', msg: 'e' })
+    && !r.isReplyTo(null, { reqId: 'x' }));
+  t.check('createResult 는 알려진 메시지', r.parseServerMessage('{"t":"createResult","reqId":"x"}').reqId === 'x');
+
+  // ── 키보드 판정 · 회전 ──
+  let base = r.nextViewportBaseline(null, 390, 800);
+  t.check('키보드 없으면 닫힘', !r.isKeyboardOpen(base, 800));
+  base = r.nextViewportBaseline(base, 390, 450);
+  t.check('같은 폭에서 높이가 크게 줄면 열림', r.isKeyboardOpen(base, 450) && base.height === 800);
+  base = r.nextViewportBaseline(base, 800, 390);
+  t.check('회전(폭 변경) 시 기준을 다시 잰다 → 가로 화면을 키보드로 오판하지 않는다',
+    base.height === 390 && !r.isKeyboardOpen(base, 390));
 };

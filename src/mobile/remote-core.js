@@ -129,7 +129,7 @@ function reconnectDelay(attempt) {
 
 // ── 서버 메시지 파싱 ──
 const SERVER_MESSAGE_TYPES = new Set([
-  'sessions', 'status', 'created', 'exited', 'snap', 'data', 'resize', 'error', 'pong'
+  'sessions', 'status', 'created', 'createResult', 'exited', 'snap', 'data', 'resize', 'error', 'pong'
 ]);
 
 function parseServerMessage(text) {
@@ -161,4 +161,41 @@ function upsertSession(list, info) {
     return next;
   }
   return list.concat([info]);
+}
+
+// ── 스냅샷 → xterm 초기화 시퀀스 ──
+// reset() 은 즉시 실행돼 아직 큐에 남은 이전 write 가 그 뒤에 그려질 수 있다.
+// RIS(ESC c)를 write 큐에 넣어 순서를 보장하고, 서버가 추적한 bracketed paste 상태를
+// 같은 큐로 되살린다 — 스냅샷 tail 에 \e[?2004h 가 잘려 나가도 xterm 의 modes 가 맞는다.
+// 필드가 없으면(구버전 서버) 모드를 건드리지 않고 스트림 추적에 맡긴다.
+const SNAP_RESET = '\x1bc';
+
+function snapModeSuffix(snap) {
+  if (!snap || typeof snap.bracketedPaste !== 'boolean') return '';
+  return snap.bracketedPaste ? '\x1b[?2004h' : '\x1b[?2004l';
+}
+
+// ── 새 세션 요청 추적 ──
+// create 에 reqId 를 실어 보내고 createResult/error 의 reqId 로만 짝을 맞춘다
+// (projectId 로 맞추면 데스크톱이 같은 프로젝트에 만든 세션을 잘못 열 수 있다)
+const CREATE_TIMEOUT_MS = 10000;
+
+function newReqId(rand) {
+  const r = typeof rand === 'function' ? rand : Math.random;
+  return 'c' + Date.now().toString(36) + Math.floor(r() * 1e9).toString(36);
+}
+
+function isReplyTo(pending, msg) {
+  return !!(pending && msg && msg.reqId !== undefined && msg.reqId === pending.reqId);
+}
+
+// ── 키보드 열림 판정 ──
+// 기준 높이는 같은 폭(=같은 방향)에서 본 가장 큰 뷰포트 높이 — 회전하면 폭이 바뀌어 다시 잰다
+function nextViewportBaseline(prev, width, height) {
+  if (!prev || prev.width !== width) return { width, height };
+  return { width, height: Math.max(prev.height, height) };
+}
+
+function isKeyboardOpen(baseline, height) {
+  return !!baseline && height < baseline.height * 0.8;
 }

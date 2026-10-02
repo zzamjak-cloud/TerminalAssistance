@@ -17,7 +17,8 @@ const Remote = {
   term: null,
   termCols: 0,
   termRows: 0,
-  pendingCreate: undefined, // 새 세션 요청한 projectId (생성되면 바로 연다)
+  pendingCreate: null, // { reqId, timer } — 내가 요청한 새 세션 (createResult 로 오면 바로 연다)
+  termGen: 0, // 터미널을 비울 때마다 증가 — 그 전에 건 write 콜백을 무시한다
   dashTimer: null,
 
   // ── 부팅 ──
@@ -213,10 +214,17 @@ const Remote = {
         Remote.state.sessions = upsertSession(Remote.state.sessions, info);
         Remote.lastChangeAt.set(info.id, Date.now());
         Remote.refresh();
-        if (Remote.pendingCreate !== undefined && (info.projectId || null) === Remote.pendingCreate) {
-          Remote.pendingCreate = undefined;
-          Remote.openView(info.id);
-        }
+        break;
+      }
+      case 'createResult': {
+        if (!isReplyTo(Remote.pendingCreate, msg)) break;
+        Remote.clearPendingCreate();
+        const info = msg.session;
+        if (!info || !info.id) break;
+        Remote.state.sessions = upsertSession(Remote.state.sessions, info);
+        Remote.lastChangeAt.set(info.id, Date.now());
+        Remote.refresh();
+        Remote.openView(info.id);
         break;
       }
       case 'exited': {
@@ -228,13 +236,16 @@ const Remote = {
         Remote.refresh();
         break;
       }
-      case 'snap':
+      case 'snap': {
         if (msg.id !== Remote.viewId || !Remote.term) break;
-        Remote.term.reset();
         Remote.resizeTerm(msg.cols, msg.rows);
         Remote.snapOff = msg.off;
-        if (msg.data) Remote.term.write(msg.data, () => Remote.term && Remote.term.scrollToBottom());
+        const gen = ++Remote.termGen;
+        Remote.term.write(SNAP_RESET + (msg.data || '') + snapModeSuffix(msg), () => {
+          if (Remote.term && Remote.termGen === gen) Remote.term.scrollToBottom();
+        });
         break;
+      }
       case 'data':
         // 스냅샷 전 도착분은 스냅샷에 포함된다 — 버린다
         if (msg.id !== Remote.viewId || !Remote.term || Remote.snapOff === null) break;
@@ -245,6 +256,7 @@ const Remote = {
         if (msg.id === Remote.viewId) Remote.resizeTerm(msg.cols, msg.rows);
         break;
       case 'error':
+        if (isReplyTo(Remote.pendingCreate, msg)) Remote.clearPendingCreate();
         Remote.toast(msg.msg || '오류', true);
         break;
     }
@@ -366,14 +378,28 @@ const Remote = {
       btn.className = 'primary';
       btn.textContent = '시작';
       btn.onclick = () => {
-        if (!Remote.send({ t: 'create', projectId: p.id })) { Remote.toast('연결이 끊겨 있습니다', true); return; }
-        Remote.pendingCreate = p.id;
+        const reqId = newReqId();
+        if (!Remote.send({ t: 'create', projectId: p.id, reqId })) { Remote.toast('연결이 끊겨 있습니다', true); return; }
+        Remote.clearPendingCreate();
+        Remote.pendingCreate = {
+          reqId,
+          timer: setTimeout(() => {
+            if (!Remote.pendingCreate || Remote.pendingCreate.reqId !== reqId) return;
+            Remote.pendingCreate = null;
+            Remote.toast('세션 생성 응답이 없습니다', true);
+          }, CREATE_TIMEOUT_MS)
+        };
         Remote.closeSheet();
         Remote.toast('세션 만드는 중…');
       };
       row.append(sw, main, btn);
       body.appendChild(row);
     }
+  },
+
+  clearPendingCreate() {
+    if (Remote.pendingCreate) clearTimeout(Remote.pendingCreate.timer);
+    Remote.pendingCreate = null;
   },
 
   // ── 세션 뷰 ──
@@ -384,13 +410,16 @@ const Remote = {
     Remote.snapOff = null;
     Remote.show('term');
     Remote.ensureTerm();
-    Remote.term.reset();
+    Remote.termGen++;
+    Remote.term.write(SNAP_RESET);
     Remote.renderTermHeader();
     Remote.subscribe(id);
     Remote.ackIfNeeded(s);
   },
 
   closeView(silent) {
+    // 목록으로 돌아간 뒤 늦게 온 생성 응답이 화면을 다시 끌고 가지 않게 한다
+    Remote.clearPendingCreate();
     if (!Remote.viewId) return;
     Remote.viewId = null;
     Remote.snapOff = null;
@@ -433,6 +462,12 @@ const Remote = {
       theme: { background: '#0f1116', foreground: '#d5d9e4', cursor: '#d5d9e4' }
     });
     term.open(document.getElementById('term'));
+    // 터미널을 탭하면 xterm 숨은 textarea 가 포커스를 받아 키보드가 올라온다 — 막는다
+    if (term.textarea) {
+      term.textarea.setAttribute('inputmode', 'none');
+      term.textarea.readOnly = true;
+      term.textarea.tabIndex = -1;
+    }
     Remote.term = term;
     Remote.termCols = 100;
     Remote.termRows = 30;
@@ -627,15 +662,19 @@ const Remote = {
   bindViewport() {
     const vv = window.visualViewport;
     if (!vv) return;
-    const fullHeight = window.innerHeight;
+    let baseline = null;
     const apply = () => {
+      // 회전하면 폭이 바뀌므로 기준 높이를 그 방향에서 새로 잰다
+      baseline = nextViewportBaseline(baseline, Math.round(vv.width), Math.max(vv.height, window.innerHeight));
       document.documentElement.style.setProperty('--app-h', vv.height + 'px');
-      document.body.classList.toggle('kb-open', vv.height < fullHeight * 0.8);
+      document.body.classList.toggle('kb-open', isKeyboardOpen(baseline, vv.height));
       // iOS 는 포커스 시 문서를 밀어 올린다 — 고정 레이아웃이므로 되돌린다
       if (window.scrollY) window.scrollTo(0, 0);
       Remote.fitFont();
     };
     vv.addEventListener('resize', apply);
+    // iOS 는 키보드가 뜰 때 크기 대신 오프셋만 바꾸기도 한다
+    vv.addEventListener('scroll', apply);
     window.addEventListener('orientationchange', () => setTimeout(apply, 300));
     apply();
   }

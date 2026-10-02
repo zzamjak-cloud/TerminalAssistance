@@ -42,6 +42,14 @@ const App = {
     // 아래의 터미널 생성·스크롤백 주입·분할 배치 복원 경로를 그대로 탄다.
     // (웹뷰 리로드일 때는 백엔드에 세션이 이미 살아 있어 아무것도 하지 않는다)
     const restoreResult = await App.restoreSessions();
+    // 원격 생성 세션 이벤트는 getState 보다 먼저 받는다 — 그 사이 만들어진 세션을 놓치지 않게.
+    // 부팅이 끝날 때까지는 모아 두었다가 처리한다 (id 중복은 adoptRemoteSession 이 거른다)
+    const createdDuringBoot = [];
+    let booted = false;
+    await ta.onSessionCreated((info) => {
+      if (booted) void App.adoptRemoteSession(info);
+      else createdDuringBoot.push(info);
+    });
     const st = await ta.getState();
     Object.assign(App.state, {
       projects: st.projects, presets: st.presets, recipes: st.recipes || [], settings: st.settings, sessions: st.sessions,
@@ -81,7 +89,6 @@ const App = {
       App.renderTopbar();
       App.renderComposerQueue(); // 보이는 패널 전부의 예약 목록 갱신
     });
-    ta.onSessionCreated((info) => { void App.adoptRemoteSession(info); });
     ta.onExit(({ sessionId }) => {
       TerminalView.write(sessionId, '\r\n\x1b[31m[세션 종료됨 — 닫기(✕)로 정리]\x1b[0m\r\n');
     });
@@ -186,6 +193,9 @@ const App = {
 
     // 자동 업데이트 확인 (백그라운드 — 실패는 조용히 무시)
     setTimeout(() => App.checkUpdate(), 2500);
+
+    booted = true;
+    for (const info of createdDuringBoot.splice(0)) void App.adoptRemoteSession(info);
   },
 
   // ── 크래시 복구 가시화 ──
@@ -788,7 +798,22 @@ const App = {
     }
     if (!App.state.activeId) App.activateSession(info.id);
     else App.renderAll();
+    await App.resyncAdoptedStatus(info.id);
     return true;
+  },
+
+  // 세션이 목록에 들어가기 전 도착한 ta:status 는 버려졌다 — 백엔드의 현재 상태로 맞춘다
+  async resyncAdoptedStatus(id) {
+    let st;
+    try { st = await ta.getState(); } catch (_) { return; }
+    const live = (st.sessions || []).find((x) => x.id === id);
+    const s = App.state.sessions.find((x) => x.id === id);
+    if (!live || !s || live.status === s.status) return;
+    s.status = live.status;
+    App.noteStatusForDashboard(id, live.status);
+    updateSessionStatus(s);
+    App.refreshPickerStatus(s);
+    App.renderTopbar();
   },
 
   activateSession(id, opts) {

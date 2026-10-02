@@ -6,7 +6,7 @@ const vm = require('vm');
 const ROOT = path.join(__dirname, '..', '..', 'src', 'renderer');
 
 function loadApp() {
-  const calls = { create: [], restore: [], activate: [], render: 0, git: 0 };
+  const calls = { create: [], restore: [], activate: [], render: 0, git: 0, statusRow: [] };
   const context = {
     console,
     localStorage: { getItem: () => null, setItem() {} },
@@ -14,6 +14,7 @@ function loadApp() {
     window: { addEventListener() {} },
     setTimeout, clearTimeout, setInterval, clearInterval,
     ta: { getScrollback: (id) => Promise.resolve({ data: 'snap-' + id, off: 10 }) },
+    updateSessionStatus: (s) => calls.statusRow.push(s.id + ':' + s.status),
     TerminalView: {
       create: (info, size, opts) => calls.create.push({ id: info.id, frozen: !!(opts && opts.frozen) }),
       restore: (id, snap) => calls.restore.push({ id, snap })
@@ -26,6 +27,9 @@ function loadApp() {
   App.refreshGitRemoteForSessions = () => { calls.git++; };
   App.renderAll = () => { calls.render++; };
   App.activateSession = (id) => { calls.activate.push(id); App.state.activeId = id; };
+  App.noteStatusForDashboard = () => {};
+  App.refreshPickerStatus = () => {};
+  App.renderTopbar = () => {};
   return { App, calls, context };
 }
 
@@ -36,8 +40,13 @@ exports.run = async function (t) {
   const appSrc = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   t.check('api.js 가 ta:session-created 를 구독한다',
     /onSessionCreated:\s*\(cb\)\s*=>\s*listen\('ta:session-created'/.test(apiSrc));
-  t.check('app.js 부팅 시 수신 → adoptRemoteSession 으로 연결',
-    /ta\.onSessionCreated\(\(info\)\s*=>\s*\{\s*void App\.adoptRemoteSession\(info\);/.test(appSrc));
+  const boot = appSrc.slice(appSrc.indexOf('  async boot() {'), appSrc.indexOf('\n  },', appSrc.indexOf('  async boot() {')));
+  t.check('부팅: getState 보다 먼저 ta:session-created 를 구독한다',
+    boot.indexOf('await ta.onSessionCreated(') >= 0
+    && boot.indexOf('await ta.onSessionCreated(') < boot.indexOf('await ta.getState()'));
+  t.check('부팅 중 도착분은 모아 두었다가 부팅 끝에 처리한다',
+    /if \(booted\) void App\.adoptRemoteSession\(info\);\s*else createdDuringBoot\.push\(info\);/.test(boot)
+    && /booted = true;\s*for \(const info of createdDuringBoot\.splice\(0\)\) void App\.adoptRemoteSession\(info\);\s*$/.test(boot));
 
   const { App, calls } = loadApp();
   App.state.sessions = [{ id: 'old', projectId: null, title: 'S1' }];
@@ -78,4 +87,13 @@ exports.run = async function (t) {
   failing.App.state.activeId = 'q';
   await failing.App.adoptRemoteSession({ id: 'f', projectId: null, title: 'S1' });
   t.check('스냅샷 실패 시 restore(null)', failing.calls.restore.length === 1 && failing.calls.restore[0].snap === null);
+
+  // 들이기 전 도착해 버려진 ta:status 를 백엔드 현재 상태로 맞춘다
+  const late = loadApp();
+  late.App.state.sessions = [];
+  late.App.state.activeId = 'q';
+  late.context.ta.getState = () => Promise.resolve({ sessions: [{ id: 'w', status: 'waiting' }] });
+  await late.App.adoptRemoteSession({ id: 'w', projectId: null, title: 'S1', status: 'idle' });
+  t.check('adopt 후 상태 재동기화', late.App.state.sessions[0].status === 'waiting'
+    && late.calls.statusRow.join(',') === 'w:waiting');
 };
