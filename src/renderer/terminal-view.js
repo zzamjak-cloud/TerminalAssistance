@@ -1621,9 +1621,8 @@ const TerminalView = {
       for (const sid of assign.keys()) {
         const v = this.views.get(sid);
         if (!v) continue;
-        try { v.fit.fit(); } catch (_) {}
+        this._fitView(sid, v);
         this._attachWebgl(v);
-        this._syncPtySize(sid, v);
         // 치수가 안 바뀌면 fit 이 리사이즈를 안 하고, 그러면 새로 보이게 된 패널을 다시 그릴
         // 계기가 없다 (xterm 은 dirty 행만 그린다) — 출력이 멈춘 세션이 빈 화면으로 남지 않게
         // 배치가 바뀔 때마다 뷰포트 전체를 한 번 다시 그린다.
@@ -1712,6 +1711,71 @@ const TerminalView = {
     }
   },
 
+  // 패널 크기에 맞춰 xterm 을 맞추고 PTY 에 알린다.
+  // 폰이 제어권을 쥐고 있으면 PTY 는 폰 크기다 — xterm 은 그 크기에 고정하고(남으면 여백,
+  // 넘치면 holder 스크롤), 패널에 맞는 크기는 '데스크톱 희망 크기'로만 백엔드에 보낸다
+  // (백엔드가 기록해 두었다가 제어권 반환 시 복원한다).
+  _fitView(id, v) {
+    if (!v.remoteSize) {
+      try { v.fit.fit(); } catch (_) {}
+      this._syncPtySize(id, v);
+      return;
+    }
+    let dims = null;
+    try { dims = v.fit.proposeDimensions(); } catch (_) {}
+    if (dims && dims.cols >= 2 && dims.rows >= 1 && (dims.cols !== v.lastCols || dims.rows !== v.lastRows)) {
+      v.lastCols = dims.cols;
+      v.lastRows = dims.rows;
+      ta.resize(id, dims.cols, dims.rows);
+    }
+    const { cols, rows } = v.remoteSize;
+    if (v.term.cols !== cols || v.term.rows !== rows) {
+      try { v.term.resize(cols, rows); } catch (_) {}
+    }
+  },
+
+  // ta:remote-control — 폰이 제어권을 가져가면 배너 + 되찾기, 반환되면 원래 맞춤으로 돌아간다
+  setRemoteControl(p) {
+    const v = p && this.views.get(p.id);
+    if (!v) return;
+    const held = !!p.holder && p.cols > 0 && p.rows > 0;
+    v.remoteSize = held ? { cols: p.cols, rows: p.rows } : null;
+    v.holder.classList.toggle('remote-held', held);
+    if (held) {
+      if (!v.remoteBanner) {
+        const bar = document.createElement('div');
+        bar.className = 'remote-control-banner';
+        const text = document.createElement('span');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = '되찾기';
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          btn.disabled = true;
+          ta.remoteReleaseControl(p.id)
+            .catch((err) => App.showToast('제어권 되찾기 실패: ' + err))
+            .finally(() => { btn.disabled = false; });
+        };
+        bar.append(text, btn);
+        v.holder.appendChild(bar);
+        v.remoteBanner = { root: bar, text };
+      }
+      v.remoteBanner.text.textContent = remoteControlBannerText(p);
+    } else if (v.remoteBanner) {
+      v.remoteBanner.root.remove();
+      v.remoteBanner = null;
+    }
+    if (v.holder.classList.contains('active')) this._fitView(p.id, v);
+  },
+
+  // 부팅·세션 들이기 — 이미 폰이 쥐고 있던 제어권을 SessionInfo 로 되살린다 (리로드 대응)
+  applySessionControl(s) {
+    if (!s || !s.controlHolder) return;
+    this.setRemoteControl({
+      id: s.id, holder: s.controlHolder, deviceName: s.controlDeviceName, cols: s.cols, rows: s.rows
+    });
+  },
+
   // 패널 드래그·창 리사이즈 등 고빈도 호출을 rAF 로 코얼레싱.
   // 분할 모드에서는 화면에 보이는 모든 세션을 리핏한다.
   _fitQueued: false,
@@ -1722,8 +1786,7 @@ const TerminalView = {
       this._fitQueued = false;
       for (const [sid, v] of this.views) {
         if (!v.holder.classList.contains('active')) continue;
-        try { v.fit.fit(); } catch (_) {}
-        this._syncPtySize(sid, v);
+        this._fitView(sid, v);
         this.scrollToBottom(sid);
       }
     });
@@ -1933,3 +1996,9 @@ const TerminalView = {
     }
   }
 };
+
+// 원격 제어 배너 문구 — 기기 이름이 없으면 일반 명칭으로
+function remoteControlBannerText(p) {
+  const name = (p && p.deviceName) || '모바일 기기';
+  return `📱 ${name} 이 제어 중 (${p.cols}×${p.rows})`;
+}

@@ -6,7 +6,7 @@ const vm = require('vm');
 const ROOT = path.join(__dirname, '..', '..', 'src', 'renderer');
 
 function loadApp() {
-  const calls = { create: [], restore: [], activate: [], render: 0, git: 0, statusRow: [] };
+  const calls = { create: [], restore: [], activate: [], render: 0, git: 0, statusRow: [], control: [] };
   const context = {
     console,
     localStorage: { getItem: () => null, setItem() {} },
@@ -17,7 +17,8 @@ function loadApp() {
     updateSessionStatus: (s) => calls.statusRow.push(s.id + ':' + s.status),
     TerminalView: {
       create: (info, size, opts) => calls.create.push({ id: info.id, frozen: !!(opts && opts.frozen) }),
-      restore: (id, snap) => calls.restore.push({ id, snap })
+      restore: (id, snap) => calls.restore.push({ id, snap }),
+      applySessionControl: (s) => { if (s.controlHolder) calls.control.push(s.id + ':' + s.controlHolder); }
     }
   };
   vm.createContext(context);
@@ -46,7 +47,12 @@ exports.run = async function (t) {
     && boot.indexOf('await ta.onSessionCreated(') < boot.indexOf('await ta.getState()'));
   t.check('부팅 중 도착분은 모아 두었다가 부팅 끝에 처리한다',
     /if \(booted\) void App\.adoptRemoteSession\(info\);\s*else createdDuringBoot\.push\(info\);/.test(boot)
-    && /booted = true;\s*for \(const info of createdDuringBoot\.splice\(0\)\) void App\.adoptRemoteSession\(info\);\s*$/.test(boot));
+    && /booted = true;\s*for \(const info of createdDuringBoot\.splice\(0\)\) void App\.adoptRemoteSession\(info\);\s*for \(const p of controlDuringBoot\.splice\(0\)\) TerminalView\.setRemoteControl\(p\);\s*$/.test(boot));
+  t.check('부팅: getState 보다 먼저 ta:remote-control 을 구독하고 부팅 중엔 모아 둔다',
+    boot.indexOf('await ta.onRemoteControl(') >= 0
+    && boot.indexOf('await ta.onRemoteControl(') < boot.indexOf('await ta.getState()')
+    && /if \(booted\) TerminalView\.setRemoteControl\(p\);\s*else controlDuringBoot\.push\(p\);/.test(boot)
+    && (boot.match(/ta\.onRemoteControl\(/g) || []).length === 1);
 
   const { App, calls } = loadApp();
   App.state.sessions = [{ id: 'old', projectId: null, title: 'S1' }];
@@ -96,4 +102,11 @@ exports.run = async function (t) {
   await late.App.adoptRemoteSession({ id: 'w', projectId: null, title: 'S1', status: 'idle' });
   t.check('adopt 후 상태 재동기화', late.App.state.sessions[0].status === 'waiting'
     && late.calls.statusRow.join(',') === 'w:waiting');
+
+  // 폰이 제어 중인 세션을 들이면 고정 크기·배너를 함께 되살린다
+  const held = loadApp();
+  held.App.state.sessions = [];
+  held.App.state.activeId = 'q';
+  await held.App.adoptRemoteSession({ id: 'h', projectId: null, title: 'S1', controlHolder: 'dev', cols: 50, rows: 40 });
+  t.check('adopt 시 SessionInfo 의 제어 상태 적용', held.calls.control.join(',') === 'h:dev');
 };

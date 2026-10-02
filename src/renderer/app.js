@@ -45,10 +45,17 @@ const App = {
     // 원격 생성 세션 이벤트는 getState 보다 먼저 받는다 — 그 사이 만들어진 세션을 놓치지 않게.
     // 부팅이 끝날 때까지는 모아 두었다가 처리한다 (id 중복은 adoptRemoteSession 이 거른다)
     const createdDuringBoot = [];
+    const controlDuringBoot = [];
     let booted = false;
     await ta.onSessionCreated((info) => {
       if (booted) void App.adoptRemoteSession(info);
       else createdDuringBoot.push(info);
+    });
+    // 제어권도 같은 이유로 먼저 받는다. 부팅 끝에 순서대로 재생하면 getState 스냅샷보다
+    // 오래된 이벤트가 섞여도 마지막 이벤트가 최종 상태가 된다 (변화마다 이벤트가 나간다)
+    await ta.onRemoteControl((p) => {
+      if (booted) TerminalView.setRemoteControl(p);
+      else controlDuringBoot.push(p);
     });
     const st = await ta.getState();
     Object.assign(App.state, {
@@ -65,6 +72,7 @@ const App = {
     const restoring = st.sessions.slice();
     for (const s of restoring) {
       TerminalView.create(s, App.state.settings.fontSize, { frozen: true });
+      TerminalView.applySessionControl(s);
     }
 
     ta.onData((p) => TerminalView.feed(p));
@@ -89,6 +97,9 @@ const App = {
       App.renderTopbar();
       App.renderComposerQueue(); // 보이는 패널 전부의 예약 목록 갱신
     });
+    // 폰이 입력했다 — 데스크톱이 추적하던 입력 줄 내용은 더 이상 믿을 수 없다
+    ta.onRemoteInput((p) => App.onRemoteInput(p));
+    ta.onRemoteImage((p) => App.onRemoteImage(p));
     ta.onExit(({ sessionId }) => {
       TerminalView.write(sessionId, '\r\n\x1b[31m[세션 종료됨 — 닫기(✕)로 정리]\x1b[0m\r\n');
     });
@@ -196,6 +207,7 @@ const App = {
 
     booted = true;
     for (const info of createdDuringBoot.splice(0)) void App.adoptRemoteSession(info);
+    for (const p of controlDuringBoot.splice(0)) TerminalView.setRemoteControl(p);
   },
 
   // ── 크래시 복구 가시화 ──
@@ -791,6 +803,7 @@ const App = {
     App.state.sessions.push(info);
     App.refreshGitRemoteForSessions([info]);
     TerminalView.create(info, App.state.settings.fontSize, { frozen: true });
+    TerminalView.applySessionControl(info);
     try {
       TerminalView.restore(info.id, await ta.getScrollback(info.id));
     } catch (_) {
@@ -800,6 +813,20 @@ const App = {
     else App.renderAll();
     await App.resyncAdoptedStatus(info.id);
     return true;
+  },
+
+  // 이벤트에는 입력 내용이 없어 줄이 비었는지 알 수 없다 — reset(빈 줄로 확정) 대신
+  // invalidate 로 다음 Enter 까지 추적을 멈춘다 (틀린 내용으로 잘라내기·복원하지 않게)
+  onRemoteInput(p) {
+    if (p && p.id) TerminalView.invalidateTypedLine(p.id);
+  },
+
+  // 경로 삽입은 폰이 자기 입력창에서 한다 — 데스크톱에서 또 넣으면 경로가 두 번 들어간다.
+  // 데스크톱은 무엇이 왔는지만 알린다.
+  onRemoteImage(p) {
+    if (!p || !p.path) return;
+    const s = App.state.sessions.find((x) => x.id === p.sessionId);
+    App.showToast('📱 이미지 수신' + (s ? ' — ' + App.sessionLabel(s) : '') + ' · ' + p.path, 5000);
   },
 
   // 세션이 목록에 들어가기 전 도착한 ta:status 는 버려졌다 — 백엔드의 현재 상태로 맞춘다

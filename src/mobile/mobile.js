@@ -19,6 +19,13 @@ const Remote = {
   termRows: 0,
   pendingCreate: null, // { reqId, timer } — 내가 요청한 새 세션 (createResult 로 오면 바로 연다)
   termGen: 0, // 터미널을 비울 때마다 증가 — 그 전에 건 write 콜백을 무시한다
+  deviceId: null, // 이 기기 id (/api/me·/api/pair) — 제어권 보유 판정용
+  controls: new Map(), // sessionId → { holder, deviceName, cols, rows }
+  controlTimer: null,
+  controlWanted: null, // 이 탭이 직접 가져온 세션 (탭 로컬 — 같은 기기의 다른 탭과 구분)
+  controlPending: null, // { id, timer } — control 요청 후 응답 대기
+  controlReleasing: null, // { id, timer } — release 후 응답 대기
+  uploading: false,
   dashTimer: null,
 
   // ── 부팅 ──
@@ -32,6 +39,7 @@ const Remote = {
     const code = pairCodeFromHash(location.hash);
     let me = null;
     try { me = await Remote.api('GET', '/api/me'); } catch (_) {}
+    if (me) Remote.deviceId = me.deviceId || null;
     if (me && !code) { Remote.start(); return; }
     Remote.showPair(code);
   },
@@ -72,7 +80,8 @@ const Remote = {
     btn.disabled = true;
     errEl.textContent = '';
     try {
-      await Remote.api('POST', '/api/pair', { code, deviceName });
+      const paired = await Remote.api('POST', '/api/pair', { code, deviceName });
+      Remote.deviceId = (paired && paired.deviceId) || null;
       // 1회용 코드가 주소창·방문 기록에 남지 않게 지운다
       history.replaceState(null, '', location.pathname);
       Remote.stopped = false;
@@ -133,6 +142,8 @@ const Remote = {
       Remote.setConn('online');
       // 재연결 시 보던 세션을 다시 구독 → 스냅샷으로 끊긴 동안의 출력을 재동기화
       if (Remote.viewId) Remote.subscribe(Remote.viewId);
+      // 연결이 끊기면 서버가 보유를 자동 반환한다 — 이 탭이 쥐고 있던 것이면 새 연결로 다시 가져온다
+      if (Remote.wantsControl()) Remote.requestControl();
     };
     ws.onmessage = (ev) => {
       if (Remote.ws !== ws) return;
@@ -240,6 +251,7 @@ const Remote = {
         if (msg.id !== Remote.viewId || !Remote.term) break;
         Remote.resizeTerm(msg.cols, msg.rows);
         Remote.snapOff = msg.off;
+        if ('controlHolder' in msg) Remote.noteControlHolder(msg.id, msg.controlHolder);
         const gen = ++Remote.termGen;
         Remote.term.write(SNAP_RESET + (msg.data || '') + snapModeSuffix(msg), () => {
           if (Remote.term && Remote.termGen === gen) Remote.term.scrollToBottom();
@@ -255,8 +267,12 @@ const Remote = {
       case 'resize':
         if (msg.id === Remote.viewId) Remote.resizeTerm(msg.cols, msg.rows);
         break;
+      case 'control':
+        Remote.applyControl(msg);
+        break;
       case 'error':
         if (isReplyTo(Remote.pendingCreate, msg)) Remote.clearPendingCreate();
+        else if (Remote.controlPending) Remote.failControlRequest();
         Remote.toast(msg.msg || '오류', true);
         break;
     }
@@ -268,6 +284,11 @@ const Remote = {
 
   setSessions(list) {
     const now = Date.now();
+    for (const s of list) {
+      if ('controlHolder' in s) {
+        Remote.noteControlHolder(s.id, s.controlHolder, { deviceName: s.controlDeviceName, cols: s.cols, rows: s.rows });
+      }
+    }
     for (const s of list) if (!Remote.lastChangeAt.has(s.id)) Remote.lastChangeAt.set(s.id, now);
     Remote.state.sessions = list.slice();
     Remote.refresh();
@@ -413,6 +434,7 @@ const Remote = {
     Remote.termGen++;
     Remote.term.write(SNAP_RESET);
     Remote.renderTermHeader();
+    Remote.renderControlButton();
     Remote.subscribe(id);
     Remote.ackIfNeeded(s);
   },
@@ -421,6 +443,11 @@ const Remote = {
     // 목록으로 돌아간 뒤 늦게 온 생성 응답이 화면을 다시 끌고 가지 않게 한다
     Remote.clearPendingCreate();
     if (!Remote.viewId) return;
+    // 폰 크기로 묶인 PTY 를 두고 떠나면 데스크톱이 좁은 화면을 떠안는다 — 나가면서 돌려준다
+    if (Remote.isHolding()) Remote.send({ t: 'release', id: Remote.viewId });
+    clearTimeout(Remote.controlTimer);
+    Remote.controlWanted = null;
+    Remote.clearControlPending();
     Remote.viewId = null;
     Remote.snapOff = null;
     Remote.send({ t: 'unsub' });
@@ -434,6 +461,163 @@ const Remote = {
 
   ackIfNeeded(s) {
     if (s && (s.status === 'done' || s.status === 'waiting')) Remote.send({ t: 'ack', id: s.id });
+  },
+
+  // ── 제어권 ──
+  isHolding(id) {
+    return holdsControl(Remote.controls.get(id || Remote.viewId), Remote.deviceId);
+  },
+
+  // sessions 에는 보유자·이름·크기가, snap 에는 보유자만 온다 — 빠진 값은 이전 것을 쓴다
+  noteControlHolder(id, holder, extra) {
+    const prev = Remote.controls.get(id) || {};
+    const e = extra || {};
+    const next = {
+      id,
+      holder: holder || null,
+      deviceName: holder ? (e.deviceName || prev.deviceName || null) : null,
+      cols: e.cols || prev.cols,
+      rows: e.rows || prev.rows
+    };
+    if ((prev.holder || null) === next.holder && prev.deviceName === next.deviceName
+      && prev.cols === next.cols && prev.rows === next.rows) return;
+    Remote.applyControl(next);
+  },
+
+  applyControl(msg) {
+    const prev = Remote.controls.get(msg.id) || null;
+    const next = { holder: msg.holder || null, deviceName: msg.deviceName || null, cols: msg.cols, rows: msg.rows };
+    Remote.controls.set(msg.id, next);
+    const mine = holdsControl(next, Remote.deviceId);
+    const pending = Remote.controlPending && Remote.controlPending.id === msg.id;
+    const releasing = Remote.controlReleasing && Remote.controlReleasing.id === msg.id;
+    if (mine && pending) Remote.clearControlPending();
+    if (!mine && next.holder) {
+      // 다른 기기가 가져갔다 — 이 탭의 재보유 의사도 접는다 (서로 빼앗는 핑퐁 방지)
+      if (Remote.controlWanted === msg.id) Remote.controlWanted = null;
+      if (pending) Remote.clearControlPending();
+    }
+    if (!next.holder && releasing) Remote.clearControlReleasing();
+    if (msg.id !== Remote.viewId) return;
+    const lost = controlLostText(prev, next, Remote.deviceId);
+    // 내가 반환했거나, 재연결로 서버가 자동 반환한 직후 다시 가져오는 중이면 알리지 않는다
+    if (lost && !releasing && !(pending && !next.holder)) Remote.toast(lost);
+    Remote.renderControlButton();
+    Remote.fitFont();
+  },
+
+  renderControlButton() {
+    const btn = document.getElementById('btn-control');
+    const holding = Remote.isHolding();
+    btn.textContent = holding ? '반환' : '제어';
+    btn.classList.toggle('holding', holding);
+  },
+
+  toggleControl() {
+    const id = Remote.viewId;
+    if (!id) return;
+    if (Remote.isHolding()) {
+      Remote.controlWanted = null;
+      Remote.clearControlPending();
+      Remote.clearControlReleasing();
+      // 응답(holder:null)이 오지 않아도 표시가 영구히 막히지 않게 시간 제한을 둔다
+      Remote.controlReleasing = {
+        id, timer: setTimeout(() => Remote.clearControlReleasing(), CONTROL_REPLY_TIMEOUT_MS)
+      };
+      Remote.send({ t: 'release', id });
+      return;
+    }
+    Remote.controlWanted = id;
+    Remote.requestControl();
+  },
+
+  clearControlPending() {
+    if (Remote.controlPending) clearTimeout(Remote.controlPending.timer);
+    Remote.controlPending = null;
+  },
+
+  clearControlReleasing() {
+    if (Remote.controlReleasing) clearTimeout(Remote.controlReleasing.timer);
+    Remote.controlReleasing = null;
+  },
+
+  // 요청이 거절(error)되거나 답이 없으면 제어용 글꼴을 거두고 화면 맞춤으로 돌아간다
+  failControlRequest() {
+    if (!Remote.controlPending) return;
+    const id = Remote.controlPending.id;
+    Remote.clearControlPending();
+    if (Remote.controlWanted === id && !Remote.isHolding(id)) Remote.controlWanted = null;
+    Remote.fitFont();
+  },
+
+  // 가독 글꼴로 셀 크기를 실측한 뒤 화면에 들어가는 cols/rows 를 요청한다
+  requestControl() {
+    if (!Remote.term || !Remote.viewId) return;
+    const id = Remote.viewId;
+    // 대기 표시는 즉시 — 재연결 직후 먼저 도착하는 '보유자 없음' 목록을 반환 알림으로 오인하지 않게
+    Remote.clearControlPending();
+    Remote.controlPending = {
+      id, timer: setTimeout(() => Remote.failControlRequest(), CONTROL_REPLY_TIMEOUT_MS)
+    };
+    Remote.term.options.fontSize = CONTROL_FONT_SIZE;
+    requestAnimationFrame(() => {
+      if (Remote.viewId !== id || !Remote.term) { Remote.failControlRequest(); return; }
+      const screen = document.querySelector('#term .xterm-screen');
+      const wrap = document.getElementById('term-wrap');
+      if (!screen || !wrap) { Remote.failControlRequest(); return; }
+      const style = getComputedStyle(wrap);
+      const availW = wrap.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const availH = wrap.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      const size = controlSize(availW, availH, screen.offsetWidth / Remote.term.cols, screen.offsetHeight / Remote.term.rows);
+      if (!Remote.send({ t: 'control', id, cols: size.cols, rows: size.rows })) {
+        Remote.toast('연결이 끊겨 있습니다', true);
+        Remote.failControlRequest();
+      }
+    });
+  },
+
+  // 회전·키보드로 화면이 바뀌면 보유 중인 크기를 다시 맞춘다 (연속 변화는 한 번으로).
+  // 이 탭이 직접 가져온 경우에만 — 같은 기기의 다른 탭이 서로 크기를 빼앗지 않게
+  scheduleControlResend() {
+    if (!Remote.wantsControl()) return;
+    clearTimeout(Remote.controlTimer);
+    Remote.controlTimer = setTimeout(() => { if (Remote.wantsControl()) Remote.requestControl(); }, 400);
+  },
+
+  wantsControl() {
+    return !!Remote.viewId && Remote.controlWanted === Remote.viewId && Remote.isHolding();
+  },
+
+  // ── 이미지 첨부 ──
+  async attachImage(file) {
+    const id = Remote.viewId;
+    if (!file || !id || Remote.uploading) return;
+    Remote.uploading = true;
+    Remote.setUpload('이미지 준비 중…', 0);
+    try {
+      const blob = await prepareImage(file);
+      const res = await uploadImage(id, blob, (ratio) => Remote.setUpload('이미지 올리는 중 ' + Math.round(ratio * 100) + '%', ratio));
+      const input = document.getElementById('composer-input');
+      const next = insertAtCaret(input.value, input.selectionStart, input.selectionEnd, quoteRemotePath(res.path) + ' ');
+      input.value = next.value;
+      input.selectionStart = input.selectionEnd = next.caret;
+      autoGrow(input);
+      Remote.setUpload(null);
+    } catch (e) {
+      Remote.setUpload(uploadErrorText(e), null, true);
+      setTimeout(() => Remote.setUpload(null), 4000);
+    } finally {
+      Remote.uploading = false;
+    }
+  },
+
+  setUpload(text, ratio, isError) {
+    const box = document.getElementById('upload-status');
+    if (text === null) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    box.classList.toggle('error', !!isError);
+    document.getElementById('upload-text').textContent = text;
+    document.getElementById('upload-fill').style.width = Math.round((ratio || 0) * 100) + '%';
   },
 
   renderTermHeader() {
@@ -487,6 +671,11 @@ const Remote = {
 
   fitFont() {
     if (!Remote.term) return;
+    // 제어권 보유 중엔 PTY 가 이 화면 크기다 — 줄이지 않고 제어용 글꼴 그대로 보여 준다
+    if (Remote.isHolding()) {
+      if (Remote.term.options.fontSize !== CONTROL_FONT_SIZE) Remote.term.options.fontSize = CONTROL_FONT_SIZE;
+      return;
+    }
     const wrap = document.getElementById('term-wrap');
     const style = getComputedStyle(wrap);
     const avail = wrap.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
@@ -639,6 +828,16 @@ const Remote = {
     const input = document.getElementById('composer-input');
     input.oninput = () => autoGrow(input);
     Remote.renderKeybar();
+    document.getElementById('btn-control').onclick = () => Remote.toggleControl();
+    const imageInput = document.getElementById('image-input');
+    // pointerdown 기본 동작을 막아 입력창 포커스(=키보드)를 유지한다
+    document.getElementById('btn-image').addEventListener('pointerdown', (e) => e.preventDefault());
+    document.getElementById('btn-image').onclick = () => imageInput.click();
+    imageInput.onchange = () => {
+      const file = imageInput.files && imageInput.files[0];
+      imageInput.value = ''; // 같은 파일을 다시 골라도 change 가 오게
+      void Remote.attachImage(file);
+    };
 
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible' || Remote.stopped) return;
@@ -671,6 +870,7 @@ const Remote = {
       // iOS 는 포커스 시 문서를 밀어 올린다 — 고정 레이아웃이므로 되돌린다
       if (window.scrollY) window.scrollTo(0, 0);
       Remote.fitFont();
+      Remote.scheduleControlResend();
     };
     vv.addEventListener('resize', apply);
     // iOS 는 키보드가 뜰 때 크기 대신 오프셋만 바꾸기도 한다
@@ -679,6 +879,69 @@ const Remote = {
     apply();
   }
 };
+
+// 디코드해 보고 필요하면 캔버스로 줄여 다시 굽는다 (HEIC·초대형 사진 대응)
+async function prepareImage(file) {
+  let bitmap = null;
+  try { bitmap = await createImageBitmap(file); } catch (_) {}
+  if (!bitmap) {
+    const action = undecodableAction(file);
+    if (action === 'raw') return file;
+    throw Object.assign(new Error('decode'), { kind: action === 'heic' ? 'heic' : 'decode' });
+  }
+  const info = { type: file.type, size: file.size, width: bitmap.width, height: bitmap.height };
+  if (!imageNeedsReencode(info)) { if (bitmap.close) bitmap.close(); return file; }
+  const size = scaledImageSize(bitmap.width, bitmap.height, IMAGE_MAX_SIDE);
+  const canvas = document.createElement('canvas');
+  canvas.width = size.width;
+  canvas.height = size.height;
+  const ctx = canvas.getContext('2d');
+  const encode = (type) => new Promise((resolve) => canvas.toBlob(resolve, type, 0.85));
+  let blob = null;
+  if (reencodeType(file.type) === 'image/png') {
+    ctx.drawImage(bitmap, 0, 0, size.width, size.height);
+    blob = await encode('image/png');
+  }
+  // PNG 로 구워도 너무 크면 JPEG 로 — 투명 영역은 검게 뭉개지지 않게 흰 바탕을 깐다
+  if (!blob || blob.size > IMAGE_MAX_BYTES) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size.width, size.height);
+    ctx.drawImage(bitmap, 0, 0, size.width, size.height);
+    blob = await encode('image/jpeg');
+  }
+  if (bitmap.close) bitmap.close();
+  if (!blob) throw Object.assign(new Error('encode'), { kind: 'decode' });
+  if (blob.size > IMAGE_MAX_BYTES) throw Object.assign(new Error('size'), { status: 413 });
+  return blob;
+}
+
+// fetch 는 업로드 진행률을 주지 않는다 — XHR 로 보낸다
+function uploadImage(sessionId, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload?session=' + encodeURIComponent(sessionId));
+    xhr.setRequestHeader('Content-Type', blob.type || 'image/jpeg');
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      if (xhr.status !== 200) { reject(Object.assign(new Error('HTTP ' + xhr.status), { status: xhr.status })); return; }
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch (_) {}
+      if (body && typeof body.path === 'string' && body.path) resolve(body);
+      else reject(new Error('bad response'));
+    };
+    xhr.onerror = () => reject(Object.assign(new Error('network'), { status: 0 }));
+    xhr.send(blob);
+  });
+}
+
+function uploadErrorText(e) {
+  if (e && e.kind === 'heic') return 'HEIC 사진을 이 브라우저가 열 수 없습니다 — 카메라 설정의 \'높은 호환성\'(JPEG)으로 찍거나 스크린샷을 보내세요';
+  if (e && e.kind === 'decode') return '이 이미지 형식은 열 수 없습니다';
+  if (e && e.status === 413) return '이미지가 너무 큽니다 (최대 15MB)';
+  if (e && e.status === 415) return '지원하지 않는 이미지 형식입니다';
+  if (e && e.status === 401) return '인증이 만료되었습니다 — 다시 페어링하세요';
+  return '이미지 업로드 실패';
+}
 
 function statusTagEl(status) {
   const el = document.createElement('span');

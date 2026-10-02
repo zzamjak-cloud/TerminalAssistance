@@ -129,7 +129,8 @@ function reconnectDelay(attempt) {
 
 // ── 서버 메시지 파싱 ──
 const SERVER_MESSAGE_TYPES = new Set([
-  'sessions', 'status', 'created', 'createResult', 'exited', 'snap', 'data', 'resize', 'error', 'pong'
+  'sessions', 'status', 'created', 'createResult', 'exited', 'snap', 'data', 'resize', 'error', 'pong',
+  'control'
 ]);
 
 function parseServerMessage(text) {
@@ -198,4 +199,88 @@ function nextViewportBaseline(prev, width, height) {
 
 function isKeyboardOpen(baseline, height) {
   return !!baseline && height < baseline.height * 0.8;
+}
+
+// ── 이미지 첨부 ──
+// 데스크톱 util.js quotePath 와 같은 규칙 — 공백 포함 경로만 따옴표 (Claude Code 가 이미지 칩으로 인식)
+function quoteRemotePath(p) {
+  return /\s/.test(p) ? '"' + p + '"' : p;
+}
+
+const IMAGE_MAX_SIDE = 2048;
+const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
+// 이 크기 이하·지원 형식이면 원본 그대로 올린다 (재인코딩으로 화질을 잃을 이유가 없다)
+const IMAGE_PASSTHROUGH_BYTES = 4 * 1024 * 1024;
+const UPLOAD_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic']);
+
+// 긴 변을 maxSide 로 줄인 크기 (이미 작으면 그대로)
+function scaledImageSize(width, height, maxSide) {
+  const max = maxSide || IMAGE_MAX_SIDE;
+  const long = Math.max(width, height);
+  if (!(long > max)) return { width, height };
+  const k = max / long;
+  return { width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)) };
+}
+
+// 캔버스로 다시 그려 JPEG 로 보낼지 — HEIC(서버 디코드 불확실)·미지원 형식·큰 파일·큰 해상도
+function imageNeedsReencode(info) {
+  const type = String(info.type || '').toLowerCase();
+  if (type === 'image/heic' || type === 'image/heif' || !UPLOAD_TYPES.has(type)) return true;
+  if (info.size > IMAGE_PASSTHROUGH_BYTES) return true;
+  return Math.max(info.width || 0, info.height || 0) > IMAGE_MAX_SIDE;
+}
+
+// 재인코딩 형식 — PNG 는 투명을 지키려 PNG 로, 나머지는 JPEG (흰 배경 위에)
+function reencodeType(type) {
+  return String(type || '').toLowerCase() === 'image/png' ? 'image/png' : 'image/jpeg';
+}
+
+function isHeicFile(file) {
+  return /^image\/hei[cf]$/i.test(String(file.type || '')) || /\.hei[cf]$/i.test(String(file.name || ''));
+}
+
+// 브라우저가 디코드하지 못한 파일 처리 — 'heic': 업로드하지 않고 안내(서버도 못 열 가능성이 높다),
+// 'raw': 서버가 받는 형식이면 원본 그대로, 'fail': 열 수 없음
+function undecodableAction(file) {
+  if (isHeicFile(file)) return 'heic';
+  const type = String(file.type || '').toLowerCase();
+  if (UPLOAD_TYPES.has(type) && file.size <= IMAGE_MAX_BYTES) return 'raw';
+  return 'fail';
+}
+
+// 입력창 커서 위치에 경로 삽입 → { value, caret }
+function insertAtCaret(value, start, end, text) {
+  const v = String(value || '');
+  const s = start == null ? v.length : start;
+  const e = end == null ? s : end;
+  return { value: v.slice(0, s) + text + v.slice(e), caret: s + text.length };
+}
+
+// ── 제어권 ──
+const CONTROL_FONT_SIZE = 12;
+const CONTROL_MIN_COLS = 40;
+const CONTROL_MIN_ROWS = 10;
+// control/release 응답을 기다리는 한도 — 넘기면 요청 실패로 보고 화면 맞춤으로 돌아간다
+const CONTROL_REPLY_TIMEOUT_MS = 5000;
+
+// 화면에 들어가는 PTY 크기 — 셀 크기는 제어용 글꼴로 실측한 값
+function controlSize(availWidth, availHeight, cellWidth, cellHeight) {
+  const cols = cellWidth > 0 ? Math.floor(availWidth / cellWidth) : 0;
+  const rows = cellHeight > 0 ? Math.floor(availHeight / cellHeight) : 0;
+  return {
+    cols: Math.min(500, Math.max(CONTROL_MIN_COLS, cols)),
+    rows: Math.min(200, Math.max(CONTROL_MIN_ROWS, rows))
+  };
+}
+
+// 서버 control 메시지 → 이 기기가 쥐고 있는지
+function holdsControl(control, myDeviceId) {
+  return !!(control && control.holder && myDeviceId && control.holder === myDeviceId);
+}
+
+// 제어권이 나에게서 떠났을 때 알릴 문구 (null = 알릴 것 없음)
+function controlLostText(prev, next, myDeviceId) {
+  if (!holdsControl(prev, myDeviceId) || holdsControl(next, myDeviceId)) return null;
+  if (next && next.holder) return '제어권이 ' + (next.deviceName || '다른 기기') + '(으)로 넘어갔습니다';
+  return '제어권이 반환되었습니다';
 }

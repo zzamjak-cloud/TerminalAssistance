@@ -1526,3 +1526,16 @@ body.sorting * { cursor: grabbing !important; }
   background: var(--danger-bg); border-color: var(--exited);
   color: var(--danger-fg); font-weight: 700;
 }
+
+/* ── 원격 제어권 (terminal-view.js setRemoteControl) ── */
+/* PTY 가 폰 크기라 패널보다 크면 스크롤로 본다 (작으면 남는 영역은 여백) */
+.term-holder.remote-held { overflow: auto; }
+.remote-control-banner {
+  position: absolute; top: 6px; right: 14px; z-index: 5;
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px 4px 10px;
+  background: var(--waiting-tint-hi); color: var(--fg);
+  border: 1px solid var(--waiting); border-radius: 8px;
+  font-size: 12px; box-shadow: var(--shadow);
+}
+.remote-control-banner button { font-size: 11px; padding: 2px 9px; }

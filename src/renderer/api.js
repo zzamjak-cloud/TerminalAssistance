@@ -169,12 +169,20 @@
     remoteStartPairing: () => invoke('remote_start_pairing'),
     remoteRevokeDevice: (id) => invoke('remote_revoke_device', { id }),
     remoteTestPush: () => invoke('remote_test_push'),
+    // 폰이 쥔 제어권(PTY 크기)을 데스크톱이 되찾는다
+    remoteReleaseControl: (id) => invoke('remote_release_control', { id }),
 
     onData: (cb) => listen('ta:data', (e) => cb(e.payload)),
     onStatus: (cb) => listen('ta:status', (e) => cb(e.payload)),
     onExit: (cb) => listen('ta:exit', (e) => cb(e.payload)),
     // 원격(모바일)에서 만든 세션 — payload 는 createSession 반환값과 같은 모양
     onSessionCreated: (cb) => listen('ta:session-created', (e) => cb(e.payload)),
+    // 원격 제어권 변화 { id, holder: deviceId|null, deviceName, cols, rows }
+    onRemoteControl: (cb) => listen('ta:remote-control', (e) => cb(e.payload)),
+    // 폰이 해당 세션에 입력함 { id } (세션별 200ms 스로틀)
+    onRemoteInput: (cb) => listen('ta:remote-input', (e) => cb(e.payload)),
+    // 폰이 이미지를 올림 { sessionId, path }
+    onRemoteImage: (cb) => listen('ta:remote-image', (e) => cb(e.payload)),
     // 데스크톱 알림 클릭 → 백엔드가 창을 앞으로 올린 뒤 대상 세션 id 를 보낸다
     onActivateSession: (cb) => listen('ta:activate-session', (e) => cb(e.payload)),
     // Tauri 는 파일 드롭을 웹뷰 대신 네이티브 이벤트로 준다 (실제 경로 포함)

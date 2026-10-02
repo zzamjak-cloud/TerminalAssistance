@@ -52,11 +52,16 @@
         <span id="term-status" class="status-tag"></span>
         <span id="term-title" class="bar-title ellipsis"></span>
         <span class="conn" id="conn-term" title="연결 상태"></span>
+        <button id="btn-control" class="bar-btn" type="button" title="이 화면 크기로 터미널 크기를 바꿔 조작합니다">제어</button>
         <button id="btn-presets" class="bar-btn" type="button">프리셋</button>
       </header>
       <div id="term-wrap" class="term-wrap"><div id="term"></div></div>
       <div class="keybar" id="keybar"></div>
+      <div id="upload-status" class="upload-status hidden" role="status"><span id="upload-text"></span><span class="upload-bar"><i id="upload-fill"></i></span></div>
       <form id="composer" class="composer" autocomplete="off">
+        <!-- capture 를 주지 않아야 카메라·앨범 선택지가 함께 뜬다 -->
+        <input type="file" id="image-input" accept="image/*" class="hidden">
+        <button type="button" id="btn-image" class="composer-icon" aria-label="이미지 첨부">📎</button>
         <textarea id="composer-input" rows="1" placeholder="프롬프트 입력" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="send"></textarea>
         <button type="submit" id="composer-send" class="primary">전송</button>
       </form>

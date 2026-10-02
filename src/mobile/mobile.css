@@ -153,17 +153,20 @@ input:focus, textarea:focus { border-color: var(--accent); }
 
 .keybar {
   flex: none;
-  display: flex; gap: 6px;
-  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  /* 가로 스크롤 없이 모든 키가 보이게 — 균등 폭 8칸, 좁은 폰은 4칸 × 2줄 */
+  display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px;
   padding: 6px 8px;
   background: var(--bg-panel);
   border-top: 1px solid var(--border);
-  scrollbar-width: none;
 }
-.keybar::-webkit-scrollbar { display: none; }
 .keybar button {
-  flex: none; min-width: 44px; padding: 8px 10px;
-  font-family: Menlo, Consolas, monospace; font-size: 13px;
+  min-width: 0; padding: 8px 0;
+  font-family: Menlo, Consolas, monospace; font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: clip;
+}
+@media (max-width: 384px) {
+  .keybar { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .keybar button { font-size: 12px; padding: 7px 0; }
 }
 
 .composer {
@@ -215,3 +218,15 @@ body.kb-open .composer { padding-bottom: 8px; }
   box-shadow: 0 6px 20px rgba(0, 0, 0, .4);
 }
 .toast.error { border-color: var(--exited); color: #ff8a84; }
+
+/* ── 이미지 첨부 · 제어권 ── */
+.composer-icon { flex: none; padding: 9px 10px; font-size: 18px; line-height: 1; background: none; }
+.upload-status {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; font-size: 12px; color: var(--fg-dim);
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+}
+.upload-status.error { color: var(--exited); }
+.upload-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.upload-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+#btn-control.holding { background: var(--waiting-tint); border-color: var(--waiting); color: var(--waiting); }
