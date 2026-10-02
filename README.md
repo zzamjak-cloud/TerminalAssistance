@@ -57,6 +57,7 @@ git clone https://github.com/zzamjak-cloud/TerminalAssistance.git
 cd TerminalAssistance
 npm install
 npm run dev      # 개발 실행
+npm run dev:isolated  # 설치본과 설정·데이터를 분리해 개발 실행 (최초 1회 설치본 프로젝트·프리셋 복사)
 npm test         # 렌더러 단위 테스트 (scripts/test/*.test.js — 순수 node, 의존성 없음)
 npm run build    # 배포 빌드 (dmg / exe)
 ```
