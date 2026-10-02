@@ -31,6 +31,7 @@ const CLOSE_REVOKED: u16 = 4001;
 const WRITE_QUEUE: usize = 256;
 pub const MAX_SESSIONS: usize = 64; // 원격 생성 허용 상한 (전체 세션 수 기준)
 const IFACE_CACHE: Duration = Duration::from_secs(5);
+pub const UPLOAD_CONCURRENCY: usize = 2;
 
 pub trait Backend: Send + Sync + 'static {
     fn devices(&self) -> Vec<RemoteDevice>;
@@ -46,6 +47,22 @@ pub trait Backend: Send + Sync + 'static {
     fn ack(&self, id: &str);
     /// 블로킹 (PTY spawn + 설정 저장). MAX_SESSIONS 초과 시 Err
     fn create(&self, project_id: Option<String>) -> Result<SessionInfo, String>;
+    fn take_control(
+        &self,
+        id: &str,
+        device_id: &str,
+        device_name: &str,
+        conn_id: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String>;
+    /// 같은 기기가 쥔 경우 반환 (어느 연결이 쥐었든)
+    fn release_control(&self, id: &str, device_id: &str);
+    fn release_conn(&self, conn_id: u64);
+    /// 첨부 이미지 저장 디렉터리 (데스크톱 클립보드 이미지와 같은 곳)
+    fn image_dir(&self) -> Result<std::path::PathBuf, String>;
+    /// 업로드 저장 완료 — 데스크톱 첨부 스트립에 알린다
+    fn image_saved(&self, session: &str, path: &str);
     fn events(&self) -> broadcast::Receiver<PtyEvent>;
 }
 
@@ -58,6 +75,10 @@ pub struct Ctx {
     pub allowed_hosts: Mutex<(Instant, Vec<String>)>,
     pub revoked: broadcast::Sender<String>,
     pub shutdown: watch::Receiver<bool>,
+    /// WS 연결 일련번호 — 제어권 보유를 연결 단위로 추적
+    pub next_conn: std::sync::atomic::AtomicU64,
+    /// 동시 업로드 디코드 수 제한 — 큰 이미지 여러 장이 메모리·CPU 를 동시에 점유하지 못하게
+    pub upload_slots: tokio::sync::Semaphore,
 }
 
 impl Ctx {
@@ -82,6 +103,8 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
         .route("/api/me", get(me))
         .route("/api/state", get(api_state))
         .route("/ws", get(ws))
+        // 업로드만 큰 본문 허용 — 인증 뒤 핸들러 안에서 직접 읽는다
+        .route("/api/upload", post(upload).layer(DefaultBodyLimit::max(super::upload::UPLOAD_MAX)))
         .fallback(static_file)
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn_with_state(Arc::clone(&ctx), security_headers))
@@ -241,6 +264,63 @@ async fn api_state(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response 
     }
 }
 
+/// `?session=<id>` — 세션 id 는 new_id 의 hex 라 퍼센트 인코딩이 필요 없다
+fn session_param(uri: &Uri) -> Option<String> {
+    uri.query()?.split('&').find_map(|kv| {
+        let v = kv.strip_prefix("session=")?;
+        (!v.is_empty() && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+            .then(|| v.to_string())
+    })
+}
+
+async fn upload(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: axum::body::Body,
+) -> Response {
+    // 인증을 본문 수신보다 먼저 — 무인증 요청이 15MB 를 버퍼링시키지 못하게
+    if let Err(r) = authed(&ctx, &headers) {
+        return r;
+    }
+    let Some(session) = session_param(&uri) else {
+        return err(StatusCode::BAD_REQUEST, "session required");
+    };
+    if !ctx.backend.sessions().iter().any(|s| s.id == session) {
+        return err(StatusCode::NOT_FOUND, "no such session");
+    }
+    // 본문 수신 전에 자리 확보 — 대기하지 않고 바로 거절해 연결이 쌓이지 않게
+    let Ok(_slot) = ctx.upload_slots.try_acquire() else {
+        return err(StatusCode::TOO_MANY_REQUESTS, "upload busy");
+    };
+    let ctype = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let bytes = match axum::body::to_bytes(body, super::upload::UPLOAD_MAX).await {
+        Ok(b) => b,
+        Err(_) => return err(StatusCode::PAYLOAD_TOO_LARGE, "too large"),
+    };
+    let dir = match ctx.backend.image_dir() {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    };
+    let saved = tokio::task::spawn_blocking(move || {
+        let img = super::upload::decode(&ctype, &bytes).map_err(|e| match e {
+            super::upload::UploadError::Unsupported(m) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, m.to_string()),
+            super::upload::UploadError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "image too large".into()),
+        })?;
+        crate::images::save_png(&dir, &img).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+    })
+    .await;
+    match saved {
+        Ok(Ok(path)) => {
+            let path = path.to_string_lossy().into_owned();
+            ctx.backend.image_saved(&session, &path);
+            axum::Json(json!({ "path": path })).into_response()
+        }
+        Ok(Err((st, m))) => err(st, &m),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "upload failed"),
+    }
+}
+
 async fn static_file(method: Method, uri: Uri) -> Response {
     if method != Method::GET && method != Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
@@ -277,7 +357,7 @@ async fn ws(
     ctx.backend.touch_device(&dev.id);
     upgrade
         .max_message_size(WS_MAX_MESSAGE)
-        .on_upgrade(move |socket| run_ws(socket, ctx, dev.id))
+        .on_upgrade(move |socket| run_ws(socket, ctx, dev))
 }
 
 #[derive(Deserialize)]
@@ -294,6 +374,8 @@ enum ClientMsg {
         req_id: Option<serde_json::Value>,
     },
     Ping,
+    Control { id: String, cols: u16, rows: u16 },
+    Release { id: String },
 }
 
 /// 세션 이벤트 → 클라이언트 메시지
@@ -307,13 +389,17 @@ fn event_json(ev: &PtyEvent) -> serde_json::Value {
         PtyEvent::Resize { id, cols, rows } => {
             json!({ "t": "resize", "id": id, "cols": cols, "rows": rows })
         }
+        PtyEvent::Control { id, holder, device_name, cols, rows } => json!({
+            "t": "control", "id": id, "holder": holder, "deviceName": device_name,
+            "cols": cols, "rows": rows
+        }),
     }
 }
 
 fn snap_json(id: &str, s: &RemoteSub) -> serde_json::Value {
     json!({
         "t": "snap", "id": id, "data": s.data, "off": s.off, "cols": s.cols, "rows": s.rows,
-        "bracketedPaste": s.bracketed_paste
+        "bracketedPaste": s.bracketed_paste, "controlHolder": s.control_holder
     })
 }
 
@@ -353,7 +439,20 @@ fn device_exists(ctx: &Ctx, id: &str) -> bool {
     ctx.backend.devices().iter().any(|d| d.id == id)
 }
 
-async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
+async fn run_ws(socket: WebSocket, ctx: Arc<Ctx>, dev: RemoteDevice) {
+    let conn_id = ctx.next_conn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    run_ws_conn(socket, Arc::clone(&ctx), dev.id, dev.name, conn_id).await;
+    // 어떤 이유로 끝나든(폐기·종료·끊김) 이 연결이 쥔 제어권은 데스크톱으로 돌려준다
+    ctx.backend.release_conn(conn_id);
+}
+
+async fn run_ws_conn(
+    mut socket: WebSocket,
+    ctx: Arc<Ctx>,
+    device_id: String,
+    device_name: String,
+    conn_id: u64,
+) {
     let mut events = ctx.backend.events();
     let mut revoked = ctx.revoked.subscribe();
     let mut shutdown = ctx.shutdown.clone();
@@ -430,6 +529,16 @@ async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
                         } else {
                             true
                         }
+                    }
+                    Ok(ClientMsg::Control { id, cols, rows }) => {
+                        match ctx.backend.take_control(&id, &device_id, &device_name, conn_id, cols, rows) {
+                            Ok(()) => true, // 결과는 control 이벤트로 모든 연결에 간다
+                            Err(e) => send_json(&mut socket, json!({ "t": "error", "msg": e })).await,
+                        }
+                    }
+                    Ok(ClientMsg::Release { id }) => {
+                        ctx.backend.release_control(&id, &device_id);
+                        true
                     }
                     Ok(ClientMsg::Ack { id }) => {
                         ctx.backend.ack(&id);
@@ -543,6 +652,9 @@ mod tests {
         pub events: broadcast::Sender<PtyEvent>,
         pub n_sessions: Mutex<usize>,
         pub create_delay: Mutex<Duration>,
+        pub controls: Mutex<Vec<String>>, // 호출 기록
+        pub images: Mutex<Vec<(String, String)>>,
+        pub dir: std::path::PathBuf,
     }
 
     impl MockBackend {
@@ -554,6 +666,13 @@ mod tests {
                 events: broadcast::channel(16).0,
                 n_sessions: Mutex::new(1),
                 create_delay: Mutex::new(Duration::ZERO),
+                controls: Mutex::new(Vec::new()),
+                images: Mutex::new(Vec::new()),
+                dir: std::env::temp_dir().join(format!(
+                    "ta-upload-test-{}-{}",
+                    std::process::id(),
+                    crate::store::new_id()
+                )),
             })
         }
     }
@@ -566,6 +685,10 @@ mod tests {
             status: crate::pty::Status::Idle,
             cwd: "/tmp".into(),
             created_at_ms: 1,
+            control_holder: None,
+            control_device_name: None,
+            cols: 80,
+            rows: 24,
         }
     }
 
@@ -595,6 +718,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 bracketed_paste: true,
+                control_holder: None,
             })
         }
         fn write(&self, id: &str, data: &str) {
@@ -609,6 +733,40 @@ mod tests {
         }
         fn events(&self) -> broadcast::Receiver<PtyEvent> {
             self.events.subscribe()
+        }
+        fn take_control(
+            &self,
+            id: &str,
+            device_id: &str,
+            device_name: &str,
+            conn_id: u64,
+            cols: u16,
+            rows: u16,
+        ) -> Result<(), String> {
+            if id != "s1" {
+                return Err("no such session".into());
+            }
+            plock(&self.controls).push(format!("take {id} {conn_id}"));
+            let _ = self.events.send(PtyEvent::Control {
+                id: id.into(),
+                holder: Some(device_id.into()),
+                device_name: Some(device_name.into()),
+                cols,
+                rows,
+            });
+            Ok(())
+        }
+        fn release_control(&self, id: &str, device_id: &str) {
+            plock(&self.controls).push(format!("release {id} {device_id}"));
+        }
+        fn release_conn(&self, conn_id: u64) {
+            plock(&self.controls).push(format!("conn {conn_id}"));
+        }
+        fn image_dir(&self) -> Result<std::path::PathBuf, String> {
+            Ok(self.dir.clone())
+        }
+        fn image_saved(&self, session: &str, path: &str) {
+            plock(&self.images).push((session.into(), path.into()));
         }
     }
 
@@ -625,6 +783,8 @@ mod tests {
             allowed_hosts: Mutex::new((Instant::now(), auth::allowed_hosts(&bind, port, &[]))),
             revoked: broadcast::channel(8).0,
             shutdown: srx,
+            next_conn: std::sync::atomic::AtomicU64::new(1),
+            upload_slots: tokio::sync::Semaphore::new(UPLOAD_CONCURRENCY),
         });
         (ctx, stx)
     }
@@ -736,6 +896,72 @@ mod tests {
         plock(&backend.devices).clear();
         let r = req("GET", "/api/state", HOST).header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
         assert_eq!(status_of(&ctx, r).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn upload_validates_and_saves_like_desktop() {
+        let backend = MockBackend::new();
+        let (ctx, _s) = ctx_with(Arc::clone(&backend), 7788);
+        let up = |cookie: Option<&str>, q: &str, ctype: &str, body: Vec<u8>| {
+            let mut r = req("POST", &format!("/api/upload{q}"), HOST).header(header::CONTENT_TYPE, ctype);
+            if let Some(c) = cookie {
+                r = r.header(header::COOKIE, c);
+            }
+            r.body(Body::from(body)).unwrap()
+        };
+        let png = {
+            let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 255]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        // 무인증 → 401 (본문 크기와 무관)
+        assert_eq!(status_of(&ctx, up(None, "?session=s1", "image/png", png.clone())).await.0, StatusCode::UNAUTHORIZED);
+        let cookie = paired_cookie(&ctx).await;
+        let c = Some(cookie.as_str());
+        assert_eq!(status_of(&ctx, up(c, "", "image/png", png.clone())).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(status_of(&ctx, up(c, "?session=../../etc", "image/png", png.clone())).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(status_of(&ctx, up(c, "?session=zz", "image/png", png.clone())).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(
+            status_of(&ctx, up(c, "?session=s1", "image/jpeg", png.clone())).await.0,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        assert_eq!(
+            status_of(&ctx, up(c, "?session=s1", "image/png", b"\x89PNG\r\n\x1a\nbroken".to_vec())).await.0,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        // 15MB 초과 → 413 (다른 API 는 16KB 제한 그대로)
+        let huge = vec![0u8; super::super::upload::UPLOAD_MAX + 1];
+        assert_eq!(status_of(&ctx, up(c, "?session=s1", "image/png", huge)).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+
+        let res = router(Arc::clone(&ctx))
+            .layer(axum::extract::connect_info::MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))))
+            .oneshot(up(c, "?session=s1", "image/png", png))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let path = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["path"].as_str().unwrap().to_string();
+        let p = std::path::Path::new(&path);
+        assert_eq!(p.parent().unwrap(), backend.dir);
+        assert!(p.file_name().unwrap().to_str().unwrap().starts_with("img_"));
+        assert_eq!(image::open(p).unwrap().width(), 4);
+        assert_eq!(plock(&backend.images).as_slice(), &[("s1".to_string(), path.clone())]);
+        let _ = std::fs::remove_dir_all(&backend.dir);
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_when_slots_busy() {
+        let (ctx, _s) = ctx_with(MockBackend::new(), 7788);
+        let cookie = paired_cookie(&ctx).await;
+        let _a = ctx.upload_slots.try_acquire().unwrap();
+        let _b = ctx.upload_slots.try_acquire().unwrap();
+        let r = req("POST", "/api/upload?session=s1", HOST)
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "image/png")
+            .body(Body::from(vec![0u8; 16]))
+            .unwrap();
+        assert_eq!(status_of(&ctx, r).await.0, StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]
@@ -861,6 +1087,10 @@ mod tests {
         let first = next_json(&mut ws).await;
         assert_eq!(first["t"], "sessions");
         assert_eq!(first["list"][0]["id"], "s1");
+        // 제어 상태·크기 필드가 camelCase 로 실린다
+        let s0 = &first["list"][0];
+        assert!(s0["controlHolder"].is_null() && s0["controlDeviceName"].is_null());
+        assert_eq!((s0["cols"].as_u64(), s0["rows"].as_u64()), (Some(80), Some(24)));
 
         ws.send(TMsg::Text(json!({ "t": "sub", "id": "s1" }).to_string().into())).await.unwrap();
         let snap = next_json(&mut ws).await;
@@ -903,8 +1133,21 @@ mod tests {
         let st = next_json(&mut ws).await;
         assert_eq!((st["status"].as_str(), st["busyMs"].as_u64()), (Some("done"), Some(42)));
 
-        // 폐기 → close 4001
+        // 제어권: control 이벤트가 holder·deviceName 과 함께 오고, release 는 연결 id 로 전달
+        ws.send(TMsg::Text(json!({ "t": "control", "id": "s1", "cols": 50, "rows": 20 }).to_string().into())).await.unwrap();
+        let ctrl = next_json(&mut ws).await;
         let dev_id = plock(&backend.devices)[0].id.clone();
+        assert_eq!(ctrl["t"], "control");
+        assert_eq!((ctrl["holder"].as_str(), ctrl["deviceName"].as_str()), (Some(dev_id.as_str()), Some("폰")));
+        assert_eq!((ctrl["cols"].as_u64(), ctrl["rows"].as_u64()), (Some(50), Some(20)));
+        ws.send(TMsg::Text(json!({ "t": "control", "id": "nope", "cols": 50, "rows": 20 }).to_string().into())).await.unwrap();
+        assert_eq!(next_json(&mut ws).await["t"], "error");
+        ws.send(TMsg::Text(json!({ "t": "release", "id": "s1" }).to_string().into())).await.unwrap();
+        ws.send(TMsg::Text(json!({ "t": "ping" }).to_string().into())).await.unwrap();
+        assert_eq!(next_json(&mut ws).await["t"], "pong");
+        assert_eq!(plock(&backend.controls).as_slice(), &["take s1 1".to_string(), format!("release s1 {dev_id}")]);
+
+        // 폐기 → close 4001
         ctx.revoked.send(dev_id).unwrap();
         use futures_util::StreamExt;
         let closed = loop {
@@ -915,5 +1158,11 @@ mod tests {
             }
         };
         assert_eq!(closed, Some(CLOSE_REVOKED));
+        // 연결이 끝나면 그 연결의 제어권이 자동 반환된다
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !plock(&backend.controls).contains(&"conn 1".to_string()) {
+            assert!(Instant::now() < deadline, "release_conn 미호출");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }

@@ -4,6 +4,7 @@ mod assets;
 pub mod auth;
 mod notify;
 mod server;
+mod upload;
 
 use crate::pty::{PtyEvent, PtyManager, RemoteSub, SessionInfo};
 use crate::store::{RemoteConfig, RemoteDevice, Store};
@@ -13,12 +14,39 @@ use serde_json::json;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{broadcast, watch};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 // last_seen 디스크 저장 최소 간격 — 매 요청마다 설정 파일을 다시 쓰지 않는다
 const TOUCH_SAVE_GAP_MS: u64 = 60_000;
+// ta:remote-input 세션별 간격 — 타이핑마다 IPC 를 쏘지 않게
+const INPUT_EVENT_GAP: Duration = Duration::from_millis(200);
+
+/// 키별 선두 스로틀 — 간격 안의 반복 이벤트는 버린다
+struct Throttle {
+    gap: Duration,
+    last: std::collections::HashMap<String, Instant>,
+}
+
+impl Throttle {
+    fn new(gap: Duration) -> Self {
+        Throttle { gap, last: std::collections::HashMap::new() }
+    }
+
+    fn allow(&mut self, key: &str, now: Instant) -> bool {
+        if self.last.get(key).is_some_and(|t| now.duration_since(*t) < self.gap) {
+            return false;
+        }
+        // 닫힌 세션 키가 쌓이지 않게 오래된 항목은 정리
+        if self.last.len() > 256 {
+            let gap = self.gap;
+            self.last.retain(|_, t| now.duration_since(*t) < gap);
+        }
+        self.last.insert(key.to_string(), now);
+        true
+    }
+}
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
@@ -183,13 +211,19 @@ impl RemoteHub {
         let ifaces = if bind.is_unspecified() { iface_ips() } else { Vec::new() };
         let (stx, srx) = watch::channel(false);
         let ctx = Arc::new(server::Ctx {
-            backend: Arc::new(TauriBackend { app: app.clone(), last_saved: Mutex::new(0) }),
+            backend: Arc::new(TauriBackend {
+                app: app.clone(),
+                last_saved: Mutex::new(0),
+                input_throttle: Mutex::new(Throttle::new(INPUT_EVENT_GAP)),
+            }),
             pairing: Arc::clone(&self.pairing),
             bind,
             port: cfg.port,
             allowed_hosts: Mutex::new((Instant::now(), auth::allowed_hosts(&bind, cfg.port, &ifaces))),
             revoked: self.revoked.clone(),
             shutdown: srx.clone(),
+            next_conn: std::sync::atomic::AtomicU64::new(1),
+            upload_slots: tokio::sync::Semaphore::new(server::UPLOAD_CONCURRENCY),
         });
         let router = server::router(ctx);
         let mut sig = srx.clone();
@@ -289,12 +323,49 @@ pub fn init(app: &AppHandle) {
         });
     }
     notify::spawn_watcher(app.clone());
+    spawn_control_bridge(app.clone());
+}
+
+/// 제어권 변경을 데스크톱에 전달 (배너 표시·되찾기). 원천은 PtyManager 이벤트 하나 —
+/// 폰 요청·연결 종료·폐기·데스크톱 되찾기 어느 경로든 같은 이벤트로 나간다
+fn spawn_control_bridge(app: AppHandle) {
+    let mut rx = app.state::<PtyManager>().subscribe_events();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(PtyEvent::Control { id, holder, device_name, cols, rows }) => {
+                    let _ = app.emit(
+                        "ta:remote-control",
+                        json!({ "id": id, "holder": holder, "deviceName": device_name, "cols": cols, "rows": rows }),
+                    );
+                }
+                Ok(_) => {}
+                // 놓친 변경이 있으면 현재 보유 상태 전체를 다시 알린다
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let ptys = app.state::<PtyManager>();
+                    for s in ptys.list() {
+                        let ctrl = ptys.control_of(&s.id);
+                        let _ = app.emit(
+                            "ta:remote-control",
+                            json!({
+                                "id": s.id, "holder": ctrl.as_ref().map(|c| &c.0),
+                                "deviceName": ctrl.as_ref().map(|c| &c.1),
+                                "cols": s.cols, "rows": s.rows,
+                            }),
+                        );
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 /// Backend 의 Tauri 구현 — 저장소·PTY 매니저를 앱 상태에서 꺼내 쓴다
 struct TauriBackend {
     app: AppHandle,
     last_saved: Mutex<u64>,
+    input_throttle: Mutex<Throttle>,
 }
 
 impl server::Backend for TauriBackend {
@@ -323,10 +394,13 @@ impl server::Backend for TauriBackend {
     }
 
     fn remove_device(&self, id: &str) {
-        let store = self.app.state::<Mutex<Store>>();
-        let mut s = plock(&store);
-        s.data.remote.devices.retain(|d| d.id != id);
-        let _ = s.save();
+        {
+            let store = self.app.state::<Mutex<Store>>();
+            let mut s = plock(&store);
+            s.data.remote.devices.retain(|d| d.id != id);
+            let _ = s.save();
+        }
+        self.app.state::<PtyManager>().release_device(id);
     }
 
     fn state(&self) -> serde_json::Value {
@@ -349,6 +423,39 @@ impl server::Backend for TauriBackend {
 
     fn write(&self, id: &str, data: &str) {
         self.app.state::<PtyManager>().write(id, data);
+        // 데스크톱의 입력 줄 추적(typed-line)이 폰 입력과 어긋나지 않게 리셋을 알린다
+        if plock(&self.input_throttle).allow(id, Instant::now()) {
+            let _ = self.app.emit("ta:remote-input", json!({ "id": id }));
+        }
+    }
+
+    fn take_control(
+        &self,
+        id: &str,
+        device_id: &str,
+        device_name: &str,
+        conn_id: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        self.app.state::<PtyManager>().take_control(id, device_id, device_name, conn_id, cols, rows)
+    }
+
+    fn release_control(&self, id: &str, device_id: &str) {
+        self.app.state::<PtyManager>().release_control_by_device(id, device_id);
+    }
+
+    fn release_conn(&self, conn_id: u64) {
+        self.app.state::<PtyManager>().release_conn(conn_id);
+    }
+
+    fn image_dir(&self) -> Result<std::path::PathBuf, String> {
+        // 데스크톱 clipboard_image 와 같은 위치
+        Ok(self.app.path().app_data_dir().map_err(|e| e.to_string())?.join("images"))
+    }
+
+    fn image_saved(&self, session: &str, path: &str) {
+        let _ = self.app.emit("ta:remote-image", json!({ "sessionId": session, "path": path }));
     }
 
     fn ack(&self, id: &str) {
@@ -457,8 +564,15 @@ pub fn remote_revoke_device(
         s.save()?;
     }
     // 해시 삭제로 이후 요청은 401, 열려 있던 WS 는 이 통지로 즉시 4001 종료
+    app.state::<PtyManager>().release_device(&id);
     let _ = hub.revoked.send(id);
     Ok(hub.view(&app))
+}
+
+/// 데스크톱이 제어권을 되찾는다 — PTY 크기는 데스크톱 희망 크기로 복원된다
+#[tauri::command]
+pub fn remote_release_control(ptys: State<PtyManager>, id: String) {
+    ptys.release_control(&id);
 }
 
 #[tauri::command]
@@ -480,6 +594,16 @@ pub async fn remote_test_push(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_throttle_per_session() {
+        let t0 = Instant::now();
+        let mut t = Throttle::new(INPUT_EVENT_GAP);
+        assert!(t.allow("a", t0));
+        assert!(!t.allow("a", t0 + Duration::from_millis(150)));
+        assert!(t.allow("b", t0 + Duration::from_millis(10)));
+        assert!(t.allow("a", t0 + INPUT_EVENT_GAP));
+    }
 
     #[test]
     fn push_warning_only_for_plain_http() {

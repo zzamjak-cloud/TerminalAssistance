@@ -6,6 +6,7 @@ mod claude_usage;
 mod codex;
 mod explorer;
 mod hooks;
+mod images;
 mod plans;
 mod pty;
 mod remote;
@@ -17,7 +18,6 @@ use pty::PtyManager;
 use serde_json::json;
 use std::fs;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 use store::{new_id, LaunchRecipe, Preset, Project, SavedSession, Store};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -613,25 +613,7 @@ fn clipboard_image(app: AppHandle) -> Option<String> {
     let buf = image::RgbaImage::from_raw(w, h, rgba)?;
 
     let dir = app.path().app_data_dir().ok()?.join("images");
-    fs::create_dir_all(&dir).ok()?;
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_millis();
-    let path = dir.join(format!("img_{}.png", ts));
-    buf.save(&path).ok()?;
-
-    // 7일 지난 스냅샷 정리 (디스크 누수 방지)
-    if let Ok(entries) = fs::read_dir(&dir) {
-        let cutoff = SystemTime::now() - std::time::Duration::from_secs(7 * 24 * 3600);
-        for e in entries.flatten() {
-            if let Ok(md) = e.metadata() {
-                if md.modified().map(|m| m < cutoff).unwrap_or(false) {
-                    let _ = fs::remove_file(e.path());
-                }
-            }
-        }
-    }
+    let path = images::save_png(&dir, &buf).ok()?;
     Some(path.to_string_lossy().into_owned())
 }
 
@@ -1117,7 +1099,8 @@ fn main() {
             remote::remote_set_config,
             remote::remote_start_pairing,
             remote::remote_revoke_device,
-            remote::remote_test_push
+            remote::remote_test_push,
+            remote::remote_release_control
         ])
         .build(tauri::generate_context!())
         .expect("Terminal Assistance 실행 실패")
