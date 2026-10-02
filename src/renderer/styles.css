@@ -1484,3 +1484,45 @@ body.sorting * { cursor: grabbing !important; }
 @media (max-width: 620px) {
   .help-row { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* ── 설정 팝업: 모바일 원격 제어 섹션 (modals.js initRemoteSettings) ── */
+/* 섹션을 펼치면 팝업이 화면보다 길어진다 — 이 팝업만 자체 스크롤 */
+#modal:has(#m-remote) { max-height: 90vh; overflow-y: auto; }
+.remote-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.remote-section .hidden { display: none; }
+.remote-section > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--fg); }
+.remote-state { margin-left: auto; font-size: 11px; color: var(--fg-dim); }
+.remote-state.on { color: var(--running); }
+.remote-row { display: flex; gap: 8px; }
+.remote-row > div { flex: 1; min-width: 0; }
+.remote-row > .remote-port { flex: 0 0 96px; }
+.remote-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.remote-urls { margin-top: 8px; }
+.remote-url {
+  font-family: Menlo, Consolas, "D2Coding", monospace; font-size: 11.5px;
+  user-select: text; word-break: break-all;
+}
+.remote-pair {
+  display: flex; gap: 12px; align-items: center; margin-top: 10px;
+  padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.remote-pair img { width: 148px; height: 148px; flex: none; background: #fff; border-radius: 6px; padding: 6px; }
+.remote-pair.expired img { opacity: .2; }
+.remote-pair-info { flex: 1; min-width: 0; }
+.remote-code {
+  font-family: Menlo, Consolas, "D2Coding", monospace; font-size: 22px; font-weight: 700;
+  letter-spacing: 3px; user-select: text;
+}
+.remote-devices { display: flex; flex-direction: column; gap: 6px; }
+.remote-device {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+}
+.remote-device-main { flex: 1; min-width: 0; }
+.remote-device-name { font-size: 12px; }
+.remote-device .form-help { margin-top: 2px; }
+.remote-device button { flex: none; font-size: 11px; padding: 3px 9px; }
+.remote-device button.armed {
+  background: var(--danger-bg); border-color: var(--exited);
+  color: var(--danger-fg); font-weight: 700;
+}

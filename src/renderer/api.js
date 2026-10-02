@@ -161,9 +161,20 @@
     notify: (title, body, sessionId) => invoke('notify', { title, body, sessionId: sessionId || null }),
     fileSrc: (p) => convertFileSrc(p),
 
+    // ── 모바일 원격 제어 (설정 UI) — 응답은 RemoteView { enabled, bind, port, running, error, bindWarning, urls, devices, push } ──
+    remoteGetConfig: () => invoke('remote_get_config'),
+    // cfg = { enabled, bind, port, push: { kind: 'off'|'ntfy', url, topic, onDone, onWaiting } }
+    remoteSetConfig: (cfg) => invoke('remote_set_config', { cfg }),
+    // → { code, url, qrSvg, expiresMs } (서버 미실행 시 거부)
+    remoteStartPairing: () => invoke('remote_start_pairing'),
+    remoteRevokeDevice: (id) => invoke('remote_revoke_device', { id }),
+    remoteTestPush: () => invoke('remote_test_push'),
+
     onData: (cb) => listen('ta:data', (e) => cb(e.payload)),
     onStatus: (cb) => listen('ta:status', (e) => cb(e.payload)),
     onExit: (cb) => listen('ta:exit', (e) => cb(e.payload)),
+    // 원격(모바일)에서 만든 세션 — payload 는 createSession 반환값과 같은 모양
+    onSessionCreated: (cb) => listen('ta:session-created', (e) => cb(e.payload)),
     // 데스크톱 알림 클릭 → 백엔드가 창을 앞으로 올린 뒤 대상 세션 id 를 보낸다
     onActivateSession: (cb) => listen('ta:activate-session', (e) => cb(e.payload)),
     // Tauri 는 파일 드롭을 웹뷰 대신 네이티브 이벤트로 준다 (실제 경로 포함)

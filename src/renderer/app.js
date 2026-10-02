@@ -81,6 +81,7 @@ const App = {
       App.renderTopbar();
       App.renderComposerQueue(); // 보이는 패널 전부의 예약 목록 갱신
     });
+    ta.onSessionCreated((info) => { void App.adoptRemoteSession(info); });
     ta.onExit(({ sessionId }) => {
       TerminalView.write(sessionId, '\r\n\x1b[31m[세션 종료됨 — 닫기(✕)로 정리]\x1b[0m\r\n');
     });
@@ -770,6 +771,24 @@ const App = {
     } catch (e) {
       alert('세션 생성 실패: ' + e);
     }
+  },
+
+  // 원격(모바일)에서 만든 세션을 들인다. 사용자가 보던 화면은 빼앗지 않는다 —
+  // 활성 세션이 없을 때만 띄운다. 이벤트가 늦게 와 그 사이 출력이 지나갔을 수 있으므로
+  // frozen 으로 만들고 스크롤백 스냅샷으로 복원한다 (부팅 복구와 같은 경로).
+  async adoptRemoteSession(info) {
+    if (!info || !info.id || App.state.sessions.some((s) => s.id === info.id)) return false;
+    App.state.sessions.push(info);
+    App.refreshGitRemoteForSessions([info]);
+    TerminalView.create(info, App.state.settings.fontSize, { frozen: true });
+    try {
+      TerminalView.restore(info.id, await ta.getScrollback(info.id));
+    } catch (_) {
+      TerminalView.restore(info.id, null);
+    }
+    if (!App.state.activeId) App.activateSession(info.id);
+    else App.renderAll();
+    return true;
   },
 
   activateSession(id, opts) {

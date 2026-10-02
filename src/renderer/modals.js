@@ -536,8 +536,13 @@ Object.assign(App, {
       <label>AI 도구 연동 — 허가 대기(🟡) 감지</label>
       <div class="check"><input type="checkbox" id="m-hook-claude" ${hooks.claude ? 'checked' : ''}><label for="m-hook-claude" style="margin:0">Claude Code 훅 (~/.claude/settings.json 병합, 백업 생성)</label></div>
       <div class="check"><input type="checkbox" id="m-hook-codex" ${hooks.codex ? 'checked' : ''}><label for="m-hook-codex" style="margin:0">Codex 알림 (~/.codex/config.toml 병합, 백업 생성)</label></div>
+      <details class="remote-section" id="m-remote">
+        <summary>모바일 원격 제어</summary>
+        <div id="m-remote-body"><div class="form-help">불러오는 중…</div></div>
+      </details>
       <div class="modal-actions"><button id="m-cancel">취소</button><button id="m-save">저장</button></div>`,
       (m, close) => {
+        App.initRemoteSettings(m.querySelector('#m-remote-body'));
         // ── 테마: 즉시 적용 (렌더러 로컬 설정이라 저장 버튼과 별도로 유지된다) ──
         const bgHex = m.querySelector('#m-theme-bg');
         const accentHex = m.querySelector('#m-theme-accent');
@@ -649,6 +654,217 @@ Object.assign(App, {
           TerminalView.syncComposerStates();
         };
       });
+  }
+});
+
+// ── 모바일 원격 제어 설정 (설정 팝업 안의 접이식 섹션) ──
+// 서버를 즉시 켜고 끄는 설정이라 팝업의 저장 버튼과 별개로 '적용' 시 바로 반영한다.
+Object.assign(App, {
+  _remotePairTimer: null,
+
+  async initRemoteSettings(body) {
+    let view;
+    try { view = await ta.remoteGetConfig(); }
+    catch (e) {
+      body.innerHTML = '<div class="form-help warn"></div>';
+      body.firstChild.textContent = '원격 설정을 불러오지 못했습니다: ' + e;
+      return;
+    }
+    App.renderRemoteSettings(body, view);
+  },
+
+  renderRemoteSettings(body, view) {
+    if (!body.isConnected) return;
+    clearInterval(App._remotePairTimer);
+    const push = view.push || {};
+    const statusText = view.running ? '실행 중' : view.enabled ? '중지됨 (오류)' : '꺼짐';
+    body.innerHTML = `
+      <div class="check"><input type="checkbox" id="m-rm-enabled" ${view.enabled ? 'checked' : ''}><label for="m-rm-enabled" style="margin:0">원격 서버 사용</label>
+        <span class="remote-state${view.running ? ' on' : ''}" id="m-rm-state"></span></div>
+      <div class="remote-row">
+        <div><label>바인드 주소</label><input type="text" id="m-rm-bind" spellcheck="false" placeholder="127.0.0.1"></div>
+        <div class="remote-port"><label>포트</label><input type="number" id="m-rm-port" min="1" max="65535"></div>
+      </div>
+      <div class="form-help">Tailscale IP(100.x) 바인드를 권장합니다. 0.0.0.0·사설망 주소는 같은 네트워크의 누구나 접속을 시도할 수 있습니다 (HTTP 평문).</div>
+      <div class="form-help warn hidden" id="m-rm-warn"></div>
+      <div class="form-help warn hidden" id="m-rm-error"></div>
+      <div class="remote-urls hidden" id="m-rm-urls"></div>
+      <label>푸시 알림 (ntfy)</label>
+      <div class="check"><input type="checkbox" id="m-rm-push" ${push.kind === 'ntfy' ? 'checked' : ''}><label for="m-rm-push" style="margin:0">ntfy 로 알림 보내기</label></div>
+      <div class="remote-row">
+        <div><label>서버</label><input type="text" id="m-rm-ntfy-url" spellcheck="false" placeholder="https://ntfy.sh"></div>
+        <div><label>토픽</label><input type="text" id="m-rm-ntfy-topic" spellcheck="false"></div>
+      </div>
+      <div class="check"><input type="checkbox" id="m-rm-on-done" ${push.onDone ? 'checked' : ''}><label for="m-rm-on-done" style="margin:0">작업 완료 시</label></div>
+      <div class="check"><input type="checkbox" id="m-rm-on-waiting" ${push.onWaiting ? 'checked' : ''}><label for="m-rm-on-waiting" style="margin:0">허가 대기 시</label></div>
+      <div class="form-help">알림 본문에는 세션 이름과 상태만 담깁니다. 공개 ntfy.sh 는 토픽을 아는 누구나 구독할 수 있으니 추측하기 어려운 토픽을 쓰세요.</div>
+      <div class="remote-actions">
+        <button type="button" id="m-rm-test">테스트 발송</button>
+        <button type="button" id="m-rm-apply">원격 설정 적용</button>
+      </div>
+      <label>기기 페어링</label>
+      <div class="remote-actions"><button type="button" id="m-rm-pair" ${view.running ? '' : 'disabled'}>페어링 시작</button></div>
+      <div class="remote-pair hidden" id="m-rm-pairbox">
+        <img id="m-rm-qr" alt="페어링 QR">
+        <div class="remote-pair-info">
+          <div class="remote-code" id="m-rm-code"></div>
+          <div class="form-help" id="m-rm-expire"></div>
+          <div class="remote-url" id="m-rm-pair-url"></div>
+        </div>
+      </div>
+      <label>연결된 기기</label>
+      <div class="remote-devices" id="m-rm-devices"></div>`;
+
+    // 사용자·백엔드 값은 전부 textContent/value 로 넣는다 (템플릿 문자열에 끼우지 않는다)
+    const $ = (sel) => body.querySelector(sel);
+    $('#m-rm-state').textContent = statusText;
+    $('#m-rm-bind').value = view.bind || '';
+    $('#m-rm-port').value = view.port || '';
+    $('#m-rm-ntfy-url').value = push.url || '';
+    $('#m-rm-ntfy-topic').value = push.topic || '';
+    if (view.bindWarning) { $('#m-rm-warn').textContent = '⚠ ' + view.bindWarning; $('#m-rm-warn').classList.remove('hidden'); }
+    if (view.error) { $('#m-rm-error').textContent = '서버 오류: ' + view.error; $('#m-rm-error').classList.remove('hidden'); }
+    const urls = view.running ? (view.urls || []) : [];
+    if (urls.length) {
+      const box = $('#m-rm-urls');
+      box.classList.remove('hidden');
+      const head = document.createElement('div');
+      head.className = 'form-help';
+      head.textContent = '접속 주소';
+      box.appendChild(head);
+      for (const u of urls) {
+        const row = document.createElement('div');
+        row.className = 'remote-url';
+        row.textContent = u;
+        box.appendChild(row);
+      }
+    }
+    App.renderRemoteDevices($('#m-rm-devices'), view.devices || [], body);
+
+    const readCfg = () => ({
+      enabled: $('#m-rm-enabled').checked,
+      bind: $('#m-rm-bind').value.trim() || '127.0.0.1',
+      port: Math.max(1, Math.min(65535, Math.floor(Number($('#m-rm-port').value)) || 7788)),
+      push: {
+        kind: $('#m-rm-push').checked ? 'ntfy' : 'off',
+        url: $('#m-rm-ntfy-url').value.trim() || 'https://ntfy.sh',
+        topic: $('#m-rm-ntfy-topic').value.trim(),
+        onDone: $('#m-rm-on-done').checked,
+        onWaiting: $('#m-rm-on-waiting').checked
+      }
+    });
+    const apply = async () => {
+      const cfg = readCfg();
+      if (cfg.push.kind === 'ntfy' && !cfg.push.topic) { alert('ntfy 토픽을 입력하세요.'); return null; }
+      try {
+        const next = await ta.remoteSetConfig(cfg);
+        App.renderRemoteSettings(body, next);
+        return next;
+      } catch (e) { alert('원격 설정 적용 실패: ' + e); return null; }
+    };
+    $('#m-rm-apply').onclick = () => { void apply(); };
+    // 테스트는 저장된 설정으로 보낸다 — 화면 값이 다르면 먼저 적용한다
+    $('#m-rm-test').onclick = async () => {
+      const btn = $('#m-rm-test');
+      const saved = JSON.stringify({ kind: push.kind, url: push.url, topic: push.topic });
+      const cur = readCfg().push;
+      if (JSON.stringify({ kind: cur.kind, url: cur.url, topic: cur.topic }) !== saved) {
+        if (!(await apply())) return;
+        // apply 가 섹션을 다시 그렸으므로 새 버튼에서 이어서 보낸다
+        return void body.querySelector('#m-rm-test').onclick();
+      }
+      btn.disabled = true;
+      try { await ta.remoteTestPush(); btn.textContent = '발송됨 ✓'; }
+      catch (e) { alert('테스트 발송 실패: ' + e); }
+      finally { btn.disabled = false; setTimeout(() => { btn.textContent = '테스트 발송'; }, 2000); }
+    };
+    $('#m-rm-pair').onclick = () => { void App.startRemotePairing(body); };
+  },
+
+  renderRemoteDevices(box, devices, body) {
+    box.textContent = '';
+    if (!devices.length) {
+      const empty = document.createElement('div');
+      empty.className = 'form-help';
+      empty.textContent = '페어링된 기기가 없습니다.';
+      box.appendChild(empty);
+      return;
+    }
+    const fmt = (ms) => (ms ? new Date(ms).toLocaleString() : '—');
+    for (const d of devices) {
+      const row = document.createElement('div');
+      row.className = 'remote-device';
+      const main = document.createElement('div');
+      main.className = 'remote-device-main';
+      const name = document.createElement('div');
+      name.className = 'remote-device-name';
+      name.textContent = d.name || d.id;
+      const meta = document.createElement('div');
+      meta.className = 'form-help';
+      meta.textContent = '등록 ' + fmt(d.createdMs) + ' · 마지막 접속 ' + fmt(d.lastSeenMs);
+      main.append(name, meta);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = '폐기';
+      // 2단계 확인 — 폐기하면 그 기기는 다시 페어링해야 한다
+      btn.onclick = async () => {
+        if (!btn.classList.contains('armed')) {
+          btn.classList.add('armed');
+          btn.textContent = '정말 폐기';
+          setTimeout(() => { if (btn.isConnected) { btn.classList.remove('armed'); btn.textContent = '폐기'; } }, 3000);
+          return;
+        }
+        try { App.renderRemoteSettings(body, await ta.remoteRevokeDevice(d.id)); }
+        catch (e) { alert('기기 폐기 실패: ' + e); }
+      };
+      row.append(main, btn);
+      box.appendChild(row);
+    }
+  },
+
+  async startRemotePairing(body) {
+    let p;
+    try { p = await ta.remoteStartPairing(); }
+    catch (e) { alert('페어링 시작 실패: ' + e); return; }
+    if (!body.isConnected) return;
+    const $ = (sel) => body.querySelector(sel);
+    $('#m-rm-pairbox').classList.remove('hidden');
+    // SVG 는 img 의 data URL 로만 띄운다 — img 로 렌더한 SVG 는 스크립트·외부 리소스를 실행하지 않는다
+    $('#m-rm-qr').src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(p.qrSvg || '');
+    $('#m-rm-code').textContent = p.code;
+    $('#m-rm-pair-url').textContent = p.url;
+    const expireEl = $('#m-rm-expire');
+    // 절대 시각(epoch ms)과 남은 시간(ms) 어느 쪽으로 와도 같은 마감 시각으로 맞춘다
+    const expiresAt = p.expiresMs > 1e12 ? p.expiresMs : Date.now() + (p.expiresMs || 0);
+    const knownDevices = body.querySelectorAll('.remote-device').length;
+    let ticks = 0;
+    clearInterval(App._remotePairTimer);
+    const tick = () => {
+      // 팝업이 닫혔거나 섹션이 다시 그려졌으면 멈춘다
+      const bd = document.getElementById('modal-backdrop');
+      if (!expireEl.isConnected || (bd && bd.classList.contains('hidden'))) { clearInterval(App._remotePairTimer); return; }
+      const left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+      // 폰에서 페어링을 마치면 기기 목록이 늘어난다 — 3초마다 확인해 QR 을 거둔다
+      if (left && ++ticks % 3 === 0) {
+        ta.remoteGetConfig().then((v) => {
+          if (!expireEl.isConnected || (v.devices || []).length <= knownDevices) return;
+          clearInterval(App._remotePairTimer);
+          App.renderRemoteSettings(body, v);
+        }).catch(() => {});
+      }
+      if (!left) {
+        clearInterval(App._remotePairTimer);
+        expireEl.textContent = '코드가 만료되었습니다. 다시 시작하세요.';
+        $('#m-rm-pairbox').classList.add('expired');
+        // 만료 시점에 페어링이 끝났을 수 있으니 기기 목록을 새로 받는다
+        ta.remoteGetConfig().then((v) => App.renderRemoteDevices($('#m-rm-devices'), v.devices || [], body)).catch(() => {});
+        return;
+      }
+      expireEl.textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') + ' 후 만료 · 1회용';
+    };
+    $('#m-rm-pairbox').classList.remove('expired');
+    tick();
+    App._remotePairTimer = setInterval(tick, 1000);
   }
 });
 
