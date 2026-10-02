@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#14161c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TA 원격">
+  <title>TerminalAssistance 원격</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.png">
+  <link rel="apple-touch-icon" href="/icon.png">
+  <link rel="stylesheet" href="/xterm.css">
+  <link rel="stylesheet" href="/mobile.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 페어링 -->
+    <section id="screen-pair" class="screen hidden">
+      <div class="pair-box">
+        <img class="pair-logo" src="/icon.png" alt="">
+        <h1>TerminalAssistance 원격</h1>
+        <p class="pair-help">데스크톱 앱 설정 → 모바일 원격 → 페어링 시작에서 QR 을 찍거나 코드를 입력하세요.</p>
+        <form id="pair-form" autocomplete="off">
+          <label for="pair-code">페어링 코드</label>
+          <input id="pair-code" inputmode="text" autocapitalize="characters" spellcheck="false" required>
+          <label for="pair-name">이 기기 이름</label>
+          <input id="pair-name" maxlength="40" spellcheck="false" required>
+          <button type="submit" id="pair-submit" class="primary">연결</button>
+        </form>
+        <p id="pair-error" class="pair-error" role="alert"></p>
+      </div>
+    </section>
+
+    <!-- 세션 대시보드 -->
+    <section id="screen-dash" class="screen hidden">
+      <header class="bar">
+        <span class="bar-title">세션</span>
+        <span id="dash-count" class="bar-sub"></span>
+        <span class="conn" id="conn-dash" title="연결 상태"></span>
+        <button id="btn-new" class="bar-btn" type="button">+ 새 세션</button>
+      </header>
+      <main id="dash-list" class="dash-list"></main>
+    </section>
+
+    <!-- 세션 뷰 -->
+    <section id="screen-term" class="screen hidden">
+      <header class="bar">
+        <button id="btn-back" class="bar-btn icon" type="button" aria-label="목록으로">‹</button>
+        <span id="term-status" class="status-tag"></span>
+        <span id="term-title" class="bar-title ellipsis"></span>
+        <span class="conn" id="conn-term" title="연결 상태"></span>
+        <button id="btn-presets" class="bar-btn" type="button">프리셋</button>
+      </header>
+      <div id="term-wrap" class="term-wrap"><div id="term"></div></div>
+      <div class="keybar" id="keybar"></div>
+      <form id="composer" class="composer" autocomplete="off">
+        <textarea id="composer-input" rows="1" placeholder="프롬프트 입력" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="send"></textarea>
+        <button type="submit" id="composer-send" class="primary">전송</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- 하단 시트 (새 세션 프로젝트 선택 · 프리셋) -->
+  <div id="sheet-backdrop" class="sheet-backdrop hidden">
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-head"><span id="sheet-title"></span><button id="sheet-close" class="bar-btn icon" type="button" aria-label="닫기">✕</button></div>
+      <div id="sheet-body" class="sheet-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script src="/xterm.js"></script>
+  <script src="/dashboard-core.js"></script>
+  <script src="/remote-core.js"></script>
+  <script src="/mobile.js"></script>
+</body>
+</html>
