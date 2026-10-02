@@ -7,14 +7,15 @@ use crate::util::plock;
 use axum::body::Bytes;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
+use axum::middleware::{self, Next};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::Deserialize;
 use serde_json::json;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -24,13 +25,18 @@ pub const TAIL_BYTES: usize = 256 * 1024; // 폰에 보내는 스크롤백 tail
 pub const WRITE_MAX: usize = 64 * 1024;
 const WS_MAX_MESSAGE: usize = 512 * 1024; // write 64KB 가 JSON 이스케이프로 부풀어도 수용
 const PING_EVERY: Duration = Duration::from_secs(30);
+const PONG_TIMEOUT: Duration = Duration::from_secs(75); // 이만큼 응답 없는 연결은 죽은 것으로 본다
+const SEND_TIMEOUT: Duration = Duration::from_secs(10); // 수신을 멈춘 클라이언트가 루프를 붙잡지 않게
 const CLOSE_REVOKED: u16 = 4001;
 const WRITE_QUEUE: usize = 256;
+pub const MAX_SESSIONS: usize = 64; // 원격 생성 허용 상한 (전체 세션 수 기준)
+const IFACE_CACHE: Duration = Duration::from_secs(5);
 
 pub trait Backend: Send + Sync + 'static {
     fn devices(&self) -> Vec<RemoteDevice>;
     fn add_device(&self, dev: RemoteDevice) -> Result<(), String>;
     fn touch_device(&self, id: &str);
+    fn remove_device(&self, id: &str);
     /// `{projects, presets, sessions}` — get_state 와 같은 직렬화 형태
     fn state(&self) -> serde_json::Value;
     fn sessions(&self) -> Vec<SessionInfo>;
@@ -38,7 +44,7 @@ pub trait Backend: Send + Sync + 'static {
     /// 블로킹될 수 있다 (자식이 입력을 안 읽으면 PTY write 가 멈춤) — 전용 스레드에서만 호출
     fn write(&self, id: &str, data: &str);
     fn ack(&self, id: &str);
-    /// 블로킹 (PTY spawn + 설정 저장)
+    /// 블로킹 (PTY spawn + 설정 저장). MAX_SESSIONS 초과 시 Err
     fn create(&self, project_id: Option<String>) -> Result<SessionInfo, String>;
     fn events(&self) -> broadcast::Receiver<PtyEvent>;
 }
@@ -48,22 +54,23 @@ pub struct Ctx {
     pub pairing: Arc<Mutex<Pairing>>,
     pub bind: IpAddr,
     pub port: u16,
-    pub allowed_hosts: Mutex<Vec<String>>,
+    /// (마지막 갱신 시각, 허용 Host 목록)
+    pub allowed_hosts: Mutex<(Instant, Vec<String>)>,
     pub revoked: broadcast::Sender<String>,
     pub shutdown: watch::Receiver<bool>,
 }
 
 impl Ctx {
     fn host_ok(&self, host: &str) -> bool {
-        if auth::host_allowed(host, &plock(&self.allowed_hosts)) {
+        let mut g = plock(&self.allowed_hosts);
+        if auth::host_allowed(host, &g.1) {
             return true;
         }
-        // 0.0.0.0 바인드는 서버 기동 후 생긴 인터페이스(Tailscale 연결 등)도 받아야 한다 → 목록 갱신 후 재확인
-        if self.bind.is_unspecified() {
-            let fresh = auth::allowed_hosts(&self.bind, self.port, &super::iface_ips());
-            let ok = auth::host_allowed(host, &fresh);
-            *plock(&self.allowed_hosts) = fresh;
-            return ok;
+        // 0.0.0.0 바인드는 서버 기동 후 생긴 인터페이스(Tailscale 연결 등)도 받아야 한다 → 목록 갱신 후 재확인.
+        // 인터페이스 열거는 비싸므로 5초 캐시 — 잘못된 Host 남발로 매 요청 재열거하지 않게
+        if self.bind.is_unspecified() && g.0.elapsed() >= IFACE_CACHE {
+            *g = (Instant::now(), auth::allowed_hosts(&self.bind, self.port, &super::iface_ips()));
+            return auth::host_allowed(host, &g.1);
         }
         false
     }
@@ -77,7 +84,36 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
         .route("/ws", get(ws))
         .fallback(static_file)
         .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(middleware::from_fn_with_state(Arc::clone(&ctx), security_headers))
         .with_state(ctx)
+}
+
+/// 모든 응답에 CSP·프레임 차단·nosniff. connect-src 에 ws://<Host> 를 명시하는 이유:
+/// 일부 Safari 는 'self' 를 ws: 스킴에 대응시키지 않는다. 허용된 Host 만 넣어 헤더 주입을 막는다
+async fn security_headers(State(ctx): State<Arc<Ctx>>, req: Request, next: Next) -> Response {
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .filter(|h| ctx.host_ok(h))
+        .map(str::to_string);
+    let mut res = next.run(req).await;
+    let connect = match host {
+        Some(h) => format!("'self' ws://{}", h),
+        None => "'self'".into(),
+    };
+    let csp = format!(
+        "default-src 'self'; connect-src {}; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
+         frame-ancestors 'none'; object-src 'none'; base-uri 'none'",
+        connect
+    );
+    let h = res.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&csp) {
+        h.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    res
 }
 
 fn err(status: StatusCode, msg: &str) -> Response {
@@ -116,9 +152,16 @@ fn authed(ctx: &Ctx, headers: &HeaderMap) -> Result<RemoteDevice, Response> {
     guard(ctx, headers)?;
     let token = cookie_token(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthorized"))?;
     let devices = ctx.backend.devices();
-    auth::find_device(&token, &devices)
+    let dev = auth::find_device(&token, &devices)
         .cloned()
-        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthorized"))
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthorized"))?;
+    if auth::idle_expired(&dev, now_ms()) {
+        // 오래 안 쓴 기기는 분실·유출 가능성이 크다 — 자동 제거하고 다시 페어링하게 한다
+        ctx.backend.remove_device(&dev.id);
+        let _ = ctx.revoked.send(dev.id);
+        return Err(err(StatusCode::UNAUTHORIZED, "expired"));
+    }
+    Ok(dev)
 }
 
 fn now_ms() -> u64 {
@@ -135,14 +178,19 @@ struct PairBody {
     device_name: String,
 }
 
-async fn pair(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes) -> Response {
+async fn pair(
+    State(ctx): State<Arc<Ctx>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if let Err(r) = guard(&ctx, &headers) {
         return r;
     }
     let Ok(req) = serde_json::from_slice::<PairBody>(&body) else {
         return err(StatusCode::BAD_REQUEST, "bad request");
     };
-    match plock(&ctx.pairing).consume(&req.code, Instant::now()) {
+    match plock(&ctx.pairing).consume(peer.ip(), &req.code, Instant::now()) {
         PairCheck::Ok => {}
         PairCheck::Invalid => return err(StatusCode::UNAUTHORIZED, "invalid code"),
         PairCheck::TooMany => return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts"),
@@ -186,7 +234,10 @@ async fn me(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
 async fn api_state(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
     match authed(&ctx, &headers) {
         Err(r) => r,
-        Ok(_) => axum::Json(ctx.backend.state()).into_response(),
+        Ok(d) => {
+            ctx.backend.touch_device(&d.id);
+            axum::Json(ctx.backend.state()).into_response()
+        }
     }
 }
 
@@ -201,7 +252,6 @@ async fn static_file(method: Method, uri: Uri) -> Response {
                 (header::CONTENT_TYPE, ctype),
                 // 앱 업데이트 시 옛 셸이 남지 않게 — 오프라인 캐시는 sw.js 가 담당
                 (header::CACHE_CONTROL, "no-cache"),
-                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
                 (header::REFERRER_POLICY, "no-referrer"),
             ],
             body,
@@ -240,6 +290,8 @@ enum ClientMsg {
     Create {
         #[serde(rename = "projectId", default)]
         project_id: Option<String>,
+        #[serde(rename = "reqId", default)]
+        req_id: Option<serde_json::Value>,
     },
     Ping,
 }
@@ -259,7 +311,10 @@ fn event_json(ev: &PtyEvent) -> serde_json::Value {
 }
 
 fn snap_json(id: &str, s: &RemoteSub) -> serde_json::Value {
-    json!({ "t": "snap", "id": id, "data": s.data, "off": s.off, "cols": s.cols, "rows": s.rows })
+    json!({
+        "t": "snap", "id": id, "data": s.data, "off": s.off, "cols": s.cols, "rows": s.rows,
+        "bracketedPaste": s.bracketed_paste
+    })
 }
 
 enum Step {
@@ -269,7 +324,7 @@ enum Step {
     Revoked(Result<String, broadcast::error::RecvError>),
     Shutdown,
     Ping,
-    Created(Result<SessionInfo, String>),
+    Created(Option<serde_json::Value>, Result<SessionInfo, String>),
 }
 
 async fn recv_chunk(
@@ -281,14 +336,21 @@ async fn recv_chunk(
     }
 }
 
+/// 송신은 시간 제한 — 수신을 멈춘(화면 꺼진) 폰 하나가 연결 루프를 무한정 붙잡지 않게
+async fn send_msg(socket: &mut WebSocket, m: Message) -> bool {
+    matches!(tokio::time::timeout(SEND_TIMEOUT, socket.send(m)).await, Ok(Ok(())))
+}
+
 async fn send_json(socket: &mut WebSocket, v: serde_json::Value) -> bool {
-    socket.send(Message::Text(v.to_string().into())).await.is_ok()
+    send_msg(socket, Message::Text(v.to_string().into())).await
 }
 
 async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame { code, reason: reason.into() })))
-        .await;
+    let _ = send_msg(socket, Message::Close(Some(CloseFrame { code, reason: reason.into() }))).await;
+}
+
+fn device_exists(ctx: &Ctx, id: &str) -> bool {
+    ctx.backend.devices().iter().any(|d| d.id == id)
 }
 
 async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
@@ -307,10 +369,18 @@ async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
             wb.write(&id, &data);
         }
     });
-    // 세션 생성 결과는 블로킹 작업에서 돌아와 이 루프로 합류한다
-    let (ctx_tx, mut ctx_rx) = mpsc::channel::<Result<SessionInfo, String>>(4);
+    // 세션 생성 결과는 블로킹 작업에서 돌아와 이 루프로 합류한다. 연결당 진행 중 생성은 1개
+    let (ctx_tx, mut ctx_rx) =
+        mpsc::channel::<(Option<serde_json::Value>, Result<SessionInfo, String>)>(1);
+    let mut creating = false;
+    let mut last_alive = Instant::now();
 
     if *shutdown.borrow() {
+        return;
+    }
+    // 업그레이드 인증 ~ revoked 구독 사이에 폐기됐을 수 있다 — 구독 후 저장소로 재확인
+    if !device_exists(&ctx, &device_id) {
+        close(&mut socket, CLOSE_REVOKED, "revoked").await;
         return;
     }
     if !send_json(&mut socket, json!({ "t": "sessions", "list": ctx.backend.sessions() })).await {
@@ -325,8 +395,11 @@ async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
             r = revoked.recv() => Step::Revoked(r),
             _ = shutdown.changed() => Step::Shutdown,
             _ = ping.tick() => Step::Ping,
-            Some(c) = ctx_rx.recv() => Step::Created(c),
+            Some((r, c)) = ctx_rx.recv() => Step::Created(r, c),
         };
+        if matches!(step, Step::Client(Some(Ok(_)))) {
+            last_alive = Instant::now(); // pong 포함 어떤 수신이든 살아 있다는 증거
+        }
         let ok = match step {
             Step::Client(None) | Step::Client(Some(Err(_))) => break,
             Step::Client(Some(Ok(Message::Close(_)))) => break,
@@ -362,13 +435,23 @@ async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
                         ctx.backend.ack(&id);
                         true
                     }
-                    Ok(ClientMsg::Create { project_id }) => {
-                        let b = Arc::clone(&ctx.backend);
-                        let tx = ctx_tx.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let _ = tx.blocking_send(b.create(project_id));
-                        });
-                        true
+                    Ok(ClientMsg::Create { project_id, req_id }) => {
+                        if creating {
+                            send_json(&mut socket, json!({ "t": "error", "msg": "create in progress", "reqId": req_id }))
+                                .await
+                        } else if ctx.backend.sessions().len() >= MAX_SESSIONS {
+                            // 빠른 거절용 사전 검사 — 최종 판정은 생성 경로의 직렬화된 검사
+                            let msg = format!("세션이 너무 많습니다 (최대 {}개)", MAX_SESSIONS);
+                            send_json(&mut socket, json!({ "t": "error", "msg": msg, "reqId": req_id })).await
+                        } else {
+                            creating = true;
+                            let b = Arc::clone(&ctx.backend);
+                            let tx = ctx_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let _ = tx.blocking_send((req_id, b.create(project_id)));
+                            });
+                            true
+                        }
                     }
                 }
             }
@@ -408,7 +491,7 @@ async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
             Step::Revoked(Ok(_)) => true,
             Step::Revoked(Err(_)) => {
                 // 통지를 놓쳤으면 저장소 기준으로 다시 확인
-                if !ctx.backend.devices().iter().any(|d| d.id == device_id) {
+                if !device_exists(&ctx, &device_id) {
                     close(&mut socket, CLOSE_REVOKED, "revoked").await;
                     break;
                 }
@@ -418,9 +501,27 @@ async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
                 close(&mut socket, 1001, "server stopping").await;
                 break;
             }
-            Step::Ping => socket.send(Message::Ping(Bytes::new())).await.is_ok(),
-            Step::Created(Ok(_)) => true, // 목록 반영은 created 이벤트로 모든 클라이언트에 간다
-            Step::Created(Err(e)) => send_json(&mut socket, json!({ "t": "error", "msg": e })).await,
+            Step::Ping => {
+                if last_alive.elapsed() >= PONG_TIMEOUT {
+                    break; // 응답 없는 반쯤 열린 연결 정리 (폰 네트워크 전환 등)
+                }
+                // 폐기 통지 유실 대비 — 주기적으로 저장소 기준 재확인
+                if !device_exists(&ctx, &device_id) {
+                    close(&mut socket, CLOSE_REVOKED, "revoked").await;
+                    break;
+                }
+                ctx.backend.touch_device(&device_id); // 오래 열린 연결도 유휴 만료되지 않게
+                send_msg(&mut socket, Message::Ping(Bytes::new())).await
+            }
+            Step::Created(req_id, Ok(info)) => {
+                creating = false;
+                // 목록 반영은 created 이벤트로 모든 연결에 가고, 요청 연결엔 결과를 따로 준다
+                send_json(&mut socket, json!({ "t": "createResult", "reqId": req_id, "session": info })).await
+            }
+            Step::Created(req_id, Err(e)) => {
+                creating = false;
+                send_json(&mut socket, json!({ "t": "error", "msg": e, "reqId": req_id })).await
+            }
         };
         if !ok {
             break;
@@ -440,6 +541,8 @@ mod tests {
         pub writes: Mutex<Vec<(String, String)>>,
         pub tap: broadcast::Sender<Arc<RemoteChunk>>,
         pub events: broadcast::Sender<PtyEvent>,
+        pub n_sessions: Mutex<usize>,
+        pub create_delay: Mutex<Duration>,
     }
 
     impl MockBackend {
@@ -449,6 +552,8 @@ mod tests {
                 writes: Mutex::new(Vec::new()),
                 tap: broadcast::channel(16).0,
                 events: broadcast::channel(16).0,
+                n_sessions: Mutex::new(1),
+                create_delay: Mutex::new(Duration::ZERO),
             })
         }
     }
@@ -473,11 +578,14 @@ mod tests {
             Ok(())
         }
         fn touch_device(&self, _id: &str) {}
+        fn remove_device(&self, id: &str) {
+            plock(&self.devices).retain(|d| d.id != id);
+        }
         fn state(&self) -> serde_json::Value {
             json!({ "projects": [], "presets": [], "sessions": [info("s1")] })
         }
         fn sessions(&self) -> Vec<SessionInfo> {
-            vec![info("s1")]
+            vec![info("s1"); *plock(&self.n_sessions)]
         }
         fn subscribe(&self, id: &str, _tail: usize) -> Option<RemoteSub> {
             (id == "s1").then(|| RemoteSub {
@@ -486,6 +594,7 @@ mod tests {
                 off: 5,
                 cols: 80,
                 rows: 24,
+                bracketed_paste: true,
             })
         }
         fn write(&self, id: &str, data: &str) {
@@ -493,6 +602,7 @@ mod tests {
         }
         fn ack(&self, _id: &str) {}
         fn create(&self, _project_id: Option<String>) -> Result<SessionInfo, String> {
+            std::thread::sleep(*plock(&self.create_delay));
             let i = info("s2");
             let _ = self.events.send(PtyEvent::Created(i.clone()));
             Ok(i)
@@ -512,7 +622,7 @@ mod tests {
             pairing: Arc::new(Mutex::new(Pairing::default())),
             bind,
             port,
-            allowed_hosts: Mutex::new(auth::allowed_hosts(&bind, port, &[])),
+            allowed_hosts: Mutex::new((Instant::now(), auth::allowed_hosts(&bind, port, &[]))),
             revoked: broadcast::channel(8).0,
             shutdown: srx,
         });
@@ -523,9 +633,15 @@ mod tests {
         Request::builder().method(method).uri(path).header(header::HOST, host)
     }
 
-    async fn status_of(ctx: &Arc<Ctx>, r: Request<Body>) -> (StatusCode, HeaderMap) {
-        let res = router(Arc::clone(ctx)).oneshot(r).await.unwrap();
+    async fn status_from(ctx: &Arc<Ctx>, r: Request<Body>, peer: [u8; 4]) -> (StatusCode, HeaderMap) {
+        let app = router(Arc::clone(ctx))
+            .layer(axum::extract::connect_info::MockConnectInfo(SocketAddr::from((peer, 50000))));
+        let res = app.oneshot(r).await.unwrap();
         (res.status(), res.headers().clone())
+    }
+
+    async fn status_of(ctx: &Arc<Ctx>, r: Request<Body>) -> (StatusCode, HeaderMap) {
+        status_from(ctx, r, [127, 0, 0, 1]).await
     }
 
     async fn paired_cookie(ctx: &Arc<Ctx>) -> String {
@@ -604,6 +720,8 @@ mod tests {
         }
         assert_eq!(status_of(&ctx, post("WRONG")).await.0, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(status_of(&ctx, post(&code)).await.0, StatusCode::TOO_MANY_REQUESTS);
+        // 잠금은 그 IP 에만 — 다른 기기는 같은 코드로 페어링된다
+        assert_eq!(status_from(&ctx, post(&code), [100, 64, 0, 9]).await.0, StatusCode::OK);
         let bad = req("POST", "/api/pair", HOST).body(Body::from("{")).unwrap();
         assert_eq!(status_of(&ctx, bad).await.0, StatusCode::BAD_REQUEST);
         let big = req("POST", "/api/pair", HOST).body(Body::from(vec![b' '; 64 * 1024])).unwrap();
@@ -620,6 +738,39 @@ mod tests {
         assert_eq!(status_of(&ctx, r).await.0, StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn idle_device_expires_and_is_removed() {
+        let backend = MockBackend::new();
+        let (ctx, _s) = ctx_with(Arc::clone(&backend), 7788);
+        let cookie = paired_cookie(&ctx).await;
+        {
+            let mut d = plock(&backend.devices);
+            d[0].created_ms = 0;
+            d[0].last_seen_ms = now_ms() - auth::IDLE_EXPIRY_MS - 1000;
+        }
+        let r = req("GET", "/api/me", HOST).header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
+        assert_eq!(status_of(&ctx, r).await.0, StatusCode::UNAUTHORIZED);
+        assert!(plock(&backend.devices).is_empty());
+    }
+
+    #[tokio::test]
+    async fn security_headers_on_every_response() {
+        let (ctx, _s) = ctx_with(MockBackend::new(), 7788);
+        for (path, want) in [("/", StatusCode::OK), ("/api/state", StatusCode::UNAUTHORIZED), ("/nope", StatusCode::NOT_FOUND)] {
+            let (st, h) = status_of(&ctx, req("GET", path, HOST).body(Body::empty()).unwrap()).await;
+            assert_eq!(st, want, "{path}");
+            let csp = h.get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap();
+            assert!(csp.contains("default-src 'self'") && csp.contains("frame-ancestors 'none'"), "{csp}");
+            assert!(csp.contains(&format!("connect-src 'self' ws://{}", HOST)), "{csp}");
+            assert_eq!(h.get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
+            assert_eq!(h.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+        }
+        // 허용되지 않은 Host 는 CSP 에 들어가지 않는다 (헤더 오염 방지)
+        let (_, h) = status_of(&ctx, req("GET", "/", "evil.example").body(Body::empty()).unwrap()).await;
+        let csp = h.get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap();
+        assert!(!csp.contains("evil"), "{csp}");
+    }
+
     // ── 실제 소켓으로 띄운 서버: HTTP 상태코드 + WS 프로토콜 ──
 
     async fn spawn_server(backend: Arc<MockBackend>) -> (Arc<Ctx>, watch::Sender<bool>, u16) {
@@ -629,7 +780,7 @@ mod tests {
         let mut srx = stx.subscribe();
         let app = router(Arc::clone(&ctx));
         tokio::spawn(async move {
-            let _ = axum::serve(listener, app)
+            let _ = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
                 .with_graceful_shutdown(async move {
                     let _ = srx.changed().await;
                 })
@@ -714,6 +865,7 @@ mod tests {
         ws.send(TMsg::Text(json!({ "t": "sub", "id": "s1" }).to_string().into())).await.unwrap();
         let snap = next_json(&mut ws).await;
         assert_eq!((snap["t"].as_str(), snap["off"].as_u64(), snap["cols"].as_u64()), (Some("snap"), Some(5), Some(80)));
+        assert_eq!(snap["bracketedPaste"], true);
         backend.tap.send(Arc::new(RemoteChunk { off: 5, data: " world".into() })).unwrap();
         let data = next_json(&mut ws).await;
         assert_eq!((data["t"].as_str(), data["off"].as_u64(), data["data"].as_str()), (Some("data"), Some(5), Some(" world")));
@@ -726,9 +878,23 @@ mod tests {
         assert_eq!(next_json(&mut ws).await["t"], "pong");
         assert_eq!(plock(&backend.writes).as_slice(), &[("s1".to_string(), "ls\r".to_string())]);
 
-        ws.send(TMsg::Text(json!({ "t": "create", "projectId": null }).to_string().into())).await.unwrap();
-        let created = next_json(&mut ws).await;
-        assert_eq!((created["t"].as_str(), created["session"]["id"].as_str()), (Some("created"), Some("s2")));
+        // create: 모든 연결엔 created, 요청 연결엔 reqId 가 붙은 createResult. 진행 중 중복 요청은 거절
+        *plock(&backend.create_delay) = Duration::from_millis(300);
+        ws.send(TMsg::Text(json!({ "t": "create", "projectId": null, "reqId": "r1" }).to_string().into())).await.unwrap();
+        ws.send(TMsg::Text(json!({ "t": "create", "projectId": null, "reqId": 2 }).to_string().into())).await.unwrap();
+        let busy = next_json(&mut ws).await;
+        assert_eq!((busy["t"].as_str(), busy["reqId"].as_i64()), (Some("error"), Some(2)));
+        let mut got: Vec<serde_json::Value> = vec![next_json(&mut ws).await, next_json(&mut ws).await];
+        got.sort_by_key(|v| v["t"].as_str().unwrap_or("").to_string());
+        assert_eq!((got[0]["t"].as_str(), got[0]["reqId"].as_str()), (Some("createResult"), Some("r1")));
+        assert_eq!(got[0]["session"]["id"], "s2");
+        assert_eq!((got[1]["t"].as_str(), got[1]["session"]["id"].as_str()), (Some("created"), Some("s2")));
+        // 세션 상한
+        *plock(&backend.n_sessions) = MAX_SESSIONS;
+        ws.send(TMsg::Text(json!({ "t": "create", "reqId": "r3" }).to_string().into())).await.unwrap();
+        let full = next_json(&mut ws).await;
+        assert_eq!((full["t"].as_str(), full["reqId"].as_str()), (Some("error"), Some("r3")));
+        *plock(&backend.n_sessions) = 1;
 
         backend
             .events

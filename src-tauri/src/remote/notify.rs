@@ -62,9 +62,12 @@ pub fn send_ntfy(url: &str, topic: &str, body: &str, priority: &str, tags: &str)
         .map_err(|e| format!("푸시 전송 실패: {}", e))
 }
 
-/// '프로젝트명 — S2' (프로젝트 없는 세션은 제목만) — 데스크톱 표기와 같다
-fn session_label(app: &AppHandle, id: &str) -> Option<String> {
+/// 기본은 세션 제목만. include_project 면 '프로젝트명 — S2' (데스크톱 표기와 같다)
+fn session_label(app: &AppHandle, id: &str, include_project: bool) -> Option<String> {
     let info = app.state::<PtyManager>().list().into_iter().find(|s| s.id == id)?;
+    if !include_project {
+        return Some(info.title);
+    }
     let store = app.state::<Mutex<Store>>();
     let s = plock(&store);
     let project = info
@@ -100,7 +103,7 @@ pub fn spawn_watcher(app: AppHandle) {
             if cfg.kind != "ntfy" || !valid_topic(&cfg.topic) {
                 continue;
             }
-            let Some(label) = session_label(&app, &id) else { continue };
+            let Some(label) = session_label(&app, &id, cfg.include_project) else { continue };
             let Some((body, priority, tags)) = message(&cfg, &label, status) else { continue };
             if !limiter.allow(&id, Instant::now()) {
                 continue;

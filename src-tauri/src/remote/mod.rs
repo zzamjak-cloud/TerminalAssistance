@@ -10,10 +10,10 @@ use crate::store::{RemoteConfig, RemoteDevice, Store};
 use crate::util::plock;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::{broadcast, watch};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -70,6 +70,8 @@ pub struct PushView {
     pub topic: String,
     pub on_done: bool,
     pub on_waiting: bool,
+    #[serde(default)]
+    pub include_project: bool,
 }
 
 #[derive(Serialize)]
@@ -91,6 +93,8 @@ pub struct RemoteView {
     running: bool,
     error: Option<String>,
     bind_warning: Option<String>,
+    bind_level: &'static str,
+    push_warning: Option<String>,
     urls: Vec<String>,
     devices: Vec<DeviceView>,
     push: PushView,
@@ -115,6 +119,7 @@ pub struct PairingView {
 }
 
 struct Running {
+    gen: u64,
     shutdown: watch::Sender<bool>,
     handle: tauri::async_runtime::JoinHandle<()>,
 }
@@ -123,10 +128,13 @@ struct Running {
 struct HubState {
     server: Option<Running>,
     error: Option<String>,
+    gen: u64, // 서버 세대 — 스스로 종료한 옛 태스크가 새 서버 상태를 지우지 않게
 }
 
 pub struct RemoteHub {
-    state: Mutex<HubState>,
+    state: Arc<Mutex<HubState>>,
+    // stop→start 를 한 덩어리로 — 동시 설정 변경이 서로의 서버를 엇갈려 띄우지 않게
+    apply_lock: tokio::sync::Mutex<()>,
     pairing: Arc<Mutex<auth::Pairing>>,
     revoked: broadcast::Sender<String>,
 }
@@ -134,7 +142,8 @@ pub struct RemoteHub {
 impl RemoteHub {
     pub fn new() -> Self {
         RemoteHub {
-            state: Mutex::new(HubState::default()),
+            state: Arc::new(Mutex::new(HubState::default())),
+            apply_lock: tokio::sync::Mutex::new(()),
             pairing: Arc::new(Mutex::new(auth::Pairing::default())),
             revoked: broadcast::channel(16).0,
         }
@@ -146,21 +155,20 @@ impl RemoteHub {
 
     /// 실행 중인 서버를 멈춘다. WS 연결은 shutdown 신호로 스스로 닫히고,
     /// HTTP 는 진행 중 요청을 마친 뒤 종료 — 시간 초과 시 강제 중단해 포트를 확실히 놓는다
-    fn stop(&self) {
+    async fn stop(&self) {
         let running = plock(&self.state).server.take();
-        let Some(Running { shutdown, mut handle }) = running else { return };
+        let Some(Running { shutdown, mut handle, .. }) = running else { return };
         let _ = shutdown.send(true);
-        tauri::async_runtime::block_on(async {
-            if tokio::time::timeout(STOP_TIMEOUT, &mut handle).await.is_err() {
-                handle.abort();
-                let _ = handle.await;
-            }
-        });
+        if tokio::time::timeout(STOP_TIMEOUT, &mut handle).await.is_err() {
+            handle.abort();
+            let _ = handle.await;
+        }
     }
 
     /// 설정대로 서버를 (재)기동한다. 바인드 실패는 error 에 남겨 설정 UI 에 표시한다
-    fn apply(&self, app: &AppHandle) {
-        self.stop();
+    async fn apply(&self, app: &AppHandle) {
+        let _apply = self.apply_lock.lock().await;
+        self.stop().await;
         let cfg = plock(&app.state::<Mutex<Store>>()).data.remote.clone();
         let error = if cfg.enabled { self.start(app, &cfg).err() } else { None };
         plock(&self.state).error = error;
@@ -179,28 +187,42 @@ impl RemoteHub {
             pairing: Arc::clone(&self.pairing),
             bind,
             port: cfg.port,
-            allowed_hosts: Mutex::new(auth::allowed_hosts(&bind, cfg.port, &ifaces)),
+            allowed_hosts: Mutex::new((Instant::now(), auth::allowed_hosts(&bind, cfg.port, &ifaces))),
             revoked: self.revoked.clone(),
             shutdown: srx.clone(),
         });
         let router = server::router(ctx);
-        let mut sig = srx;
+        let mut sig = srx.clone();
+        let stopping = srx;
+        let state = Arc::clone(&self.state);
+        // 상태 락을 쥔 채 spawn → 태스크가 즉시 끝나도 server 등록이 먼저 일어난다
+        let mut st = plock(&self.state);
+        st.gen += 1;
+        let gen = st.gen;
         let handle = tauri::async_runtime::spawn(async move {
-            let listener = match tokio::net::TcpListener::from_std(std_listener) {
-                Ok(l) => l,
-                Err(e) => {
-                    eprintln!("원격 서버 리스너 변환 실패: {}", e);
-                    return;
+            let result = match tokio::net::TcpListener::from_std(std_listener) {
+                Err(e) => Err(format!("원격 서버 리스너 생성 실패: {}", e)),
+                Ok(listener) => {
+                    let shutdown = async move {
+                        let _ = sig.wait_for(|v| *v).await;
+                    };
+                    axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+                        .with_graceful_shutdown(shutdown)
+                        .await
+                        .map_err(|e| format!("원격 서버가 중단되었습니다: {}", e))
                 }
             };
-            let shutdown = async move {
-                let _ = sig.wait_for(|v| *v).await;
-            };
-            if let Err(e) = axum::serve(listener, router).with_graceful_shutdown(shutdown).await {
-                eprintln!("원격 서버 종료: {}", e);
+            if *stopping.borrow() {
+                return; // 요청된 정지
+            }
+            // 스스로 끝났다 — 설정 UI 가 '실행 중' 으로 남지 않게 상태를 내린다
+            let mut st = plock(&state);
+            if st.server.as_ref().is_some_and(|r| r.gen == gen) {
+                st.server = None;
+                st.error = Some(result.err().unwrap_or_else(|| "원격 서버가 예기치 않게 종료되었습니다".into()));
             }
         });
-        plock(&self.state).server = Some(Running { shutdown: stx, handle });
+        st.server = Some(Running { gen, shutdown: stx, handle });
         Ok(())
     }
 
@@ -210,6 +232,8 @@ impl RemoteHub {
         RemoteView {
             enabled: cfg.enabled,
             bind_warning: cfg.bind.parse::<IpAddr>().ok().and_then(|ip| auth::bind_warning(&ip)),
+            bind_level: cfg.bind.parse::<IpAddr>().map(|ip| auth::bind_level(&ip)).unwrap_or("public"),
+            push_warning: push_warning(&cfg.push.url),
             urls: urls_for(&cfg.bind, cfg.port),
             bind: cfg.bind,
             port: cfg.port,
@@ -231,13 +255,20 @@ impl RemoteHub {
                 topic: cfg.push.topic,
                 on_done: cfg.push.on_done,
                 on_waiting: cfg.push.on_waiting,
+                include_project: cfg.push.include_project,
             },
         }
     }
 }
 
+fn push_warning(url: &str) -> Option<String> {
+    url.trim().to_ascii_lowercase().starts_with("http://").then(|| {
+        "ntfy 서버 주소가 http:// 입니다 — 알림 내용과 토픽이 암호화되지 않은 채 전송됩니다.".to_string()
+    })
+}
+
 fn random_topic() -> String {
-    format!("ta-{}", auth::hex(&auth::random_bytes::<8>()))
+    format!("ta-{}", auth::hex(&auth::random_bytes::<16>()))
 }
 
 /// 앱 setup 에서 1회 — 랜덤 ntfy 토픽 발급, 설정이 켜져 있으면 서버 기동, 푸시 감시 시작
@@ -251,9 +282,11 @@ pub fn init(app: &AppHandle) {
             let _ = s.save();
         }
     }
-    let hub = app.state::<RemoteHub>();
     if plock(&app.state::<Mutex<Store>>()).data.remote.enabled {
-        hub.apply(app);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            app.state::<RemoteHub>().apply(&app).await;
+        });
     }
     notify::spawn_watcher(app.clone());
 }
@@ -289,6 +322,13 @@ impl server::Backend for TauriBackend {
         }
     }
 
+    fn remove_device(&self, id: &str) {
+        let store = self.app.state::<Mutex<Store>>();
+        let mut s = plock(&store);
+        s.data.remote.devices.retain(|d| d.id != id);
+        let _ = s.save();
+    }
+
     fn state(&self) -> serde_json::Value {
         let store = self.app.state::<Mutex<Store>>();
         let s = plock(&store);
@@ -318,10 +358,8 @@ impl server::Backend for TauriBackend {
     fn create(&self, project_id: Option<String>) -> Result<SessionInfo, String> {
         let store = self.app.state::<Mutex<Store>>();
         let ptys = self.app.state::<PtyManager>();
-        let info = crate::create_session_inner(&self.app, &store, &ptys, project_id)?;
-        // 데스크톱은 자기가 만든 세션만 알고 있으므로 탭 추가를 위해 알린다
-        let _ = self.app.emit("ta:session-created", &info);
-        Ok(info)
+        // 상한 검사와 ta:session-created(데스크톱 탭 추가) 발행은 생성 경로 안에서 직렬화돼 일어난다
+        crate::create_session_inner(&self.app, &store, &ptys, project_id, Some(server::MAX_SESSIONS))
     }
 
     fn events(&self) -> broadcast::Receiver<PtyEvent> {
@@ -336,12 +374,10 @@ pub fn remote_get_config(app: AppHandle, hub: State<RemoteHub>) -> RemoteView {
     hub.view(&app)
 }
 
+// 서버 정지 대기(최대 수 초)가 있어 async — 동기 커맨드면 메인 스레드(UI)를 막는다
 #[tauri::command]
-pub fn remote_set_config(
-    app: AppHandle,
-    hub: State<RemoteHub>,
-    cfg: RemoteConfigInput,
-) -> Result<RemoteView, String> {
+pub async fn remote_set_config(app: AppHandle, cfg: RemoteConfigInput) -> Result<RemoteView, String> {
+    let hub = app.state::<RemoteHub>();
     let bind = cfg.bind.trim().to_string();
     bind.parse::<IpAddr>().map_err(|_| format!("바인드 주소는 IP 여야 합니다: {}", bind))?;
     if cfg.port == 0 {
@@ -375,11 +411,12 @@ pub fn remote_set_config(
         r.push.topic = if topic.is_empty() { random_topic() } else { topic };
         r.push.on_done = cfg.push.on_done;
         r.push.on_waiting = cfg.push.on_waiting;
+        r.push.include_project = cfg.push.include_project;
         s.save()?;
         restart
     };
     if restart {
-        hub.apply(&app);
+        hub.apply(&app).await;
     }
     Ok(hub.view(&app))
 }
@@ -438,4 +475,24 @@ pub async fn remote_test_push(app: AppHandle) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_warning_only_for_plain_http() {
+        assert!(push_warning("http://ntfy.local").is_some());
+        assert!(push_warning(" HTTP://x ").is_some());
+        assert!(push_warning("https://ntfy.sh").is_none());
+    }
+
+    #[test]
+    fn random_topic_is_16_bytes_and_valid() {
+        let t = random_topic();
+        assert_eq!(t.len(), 3 + 32);
+        assert!(notify::valid_topic(&t));
+        assert_ne!(t, random_topic());
+    }
 }

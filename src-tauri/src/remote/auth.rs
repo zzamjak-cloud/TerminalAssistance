@@ -54,32 +54,56 @@ pub fn find_device<'a>(token: &str, devices: &'a [RemoteDevice]) -> Option<&'a R
 pub enum PairCheck {
     Ok,
     Invalid, // 코드 없음·만료·불일치
-    TooMany, // 실패 한도 초과 — 새 코드를 발급할 때까지 잠김
+    TooMany, // 이 IP 가 실패 한도를 넘어 잠김 (백오프 중)
 }
 
-/// 1회용 페어링 코드 상태. 시각을 인자로 받아 TTL 을 테스트할 수 있게 한다
+// IP 별 실패 잠금 — 첫 잠금 30초, 이후 2배씩 최대 15분
+const LOCK_BASE: Duration = Duration::from_secs(30);
+const LOCK_MAX: Duration = Duration::from_secs(15 * 60);
+const FAIL_FORGET: Duration = Duration::from_secs(60 * 60); // 이만큼 조용한 IP 기록은 버린다
+const FAIL_MAP_CAP: usize = 4096; // 위조 출발지 남발로 맵이 무한히 크지 않게
+
+struct IpFail {
+    fails: u32,
+    strikes: u32, // 누적 잠금 횟수 — 백오프 지수
+    locked_until: Option<Instant>,
+    last: Instant,
+}
+
+/// 1회용 페어링 코드 상태. 실패는 원격 IP 별로 센다 — 한 공격자가 잠금을 유발해
+/// 정상 기기의 페어링까지 막는 것(전역 잠금의 DoS)을 피한다. 시각을 인자로 받아 테스트 가능
 #[derive(Default)]
 pub struct Pairing {
     active: Option<(String, Instant)>,
-    failures: u32,
-    locked: bool,
+    fails: std::collections::HashMap<IpAddr, IpFail>,
 }
 
 impl Pairing {
-    /// 새 코드 발급 — 이전 코드·실패 횟수·잠금은 모두 초기화된다
+    /// 새 코드 발급 — 이전 코드는 무효. IP 잠금은 유지한다 (재발급으로 백오프를 우회하지 못하게)
     pub fn start(&mut self, now: Instant) -> (String, Instant) {
         let raw = random_bytes::<CODE_LEN>();
         let code: String = raw.iter().map(|b| CODE_ALPHABET[(b & 31) as usize] as char).collect();
         let expires = now + PAIR_TTL;
         self.active = Some((code.clone(), expires));
-        self.failures = 0;
-        self.locked = false;
         (code, expires)
     }
 
-    pub fn consume(&mut self, code: &str, now: Instant) -> PairCheck {
-        if self.locked {
-            return PairCheck::TooMany;
+    fn prune(&mut self, now: Instant) {
+        let idle = |f: &IpFail| {
+            f.locked_until.is_none_or(|t| t <= now) && now.duration_since(f.last) >= FAIL_FORGET
+        };
+        self.fails.retain(|_, f| !idle(f));
+        if self.fails.len() > FAIL_MAP_CAP {
+            self.fails.retain(|_, f| f.locked_until.is_some_and(|t| t > now));
+        }
+    }
+
+    pub fn consume(&mut self, ip: IpAddr, code: &str, now: Instant) -> PairCheck {
+        self.prune(now);
+        if let Some(f) = self.fails.get(&ip) {
+            if f.locked_until.is_some_and(|t| t > now) {
+                return PairCheck::TooMany;
+            }
         }
         let Some((expected, expires)) = self.active.as_ref() else {
             return PairCheck::Invalid;
@@ -91,16 +115,29 @@ impl Pairing {
         let given = code.trim().to_ascii_uppercase();
         if ct_eq(given.as_bytes(), expected.as_bytes()) {
             self.active = None; // 1회용
+            self.fails.remove(&ip);
             return PairCheck::Ok;
         }
-        self.failures += 1;
-        if self.failures >= PAIR_MAX_FAILS {
-            self.active = None;
-            self.locked = true;
+        let f = self.fails.entry(ip).or_insert(IpFail { fails: 0, strikes: 0, locked_until: None, last: now });
+        f.last = now;
+        f.fails += 1;
+        if f.fails >= PAIR_MAX_FAILS {
+            f.fails = 0;
+            f.strikes += 1;
+            let backoff = LOCK_BASE.saturating_mul(1u32 << (f.strikes - 1).min(10)).min(LOCK_MAX);
+            f.locked_until = Some(now + backoff);
             return PairCheck::TooMany;
         }
         PairCheck::Invalid
     }
+}
+
+/// 토큰 유휴 만료 — 마지막 사용 후 이 기간이 지나면 기기를 자동 제거한다
+pub const IDLE_EXPIRY_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+pub fn idle_expired(dev: &RemoteDevice, now_ms: u64) -> bool {
+    // last_seen 이 비어 있던 기록은 생성 시각 기준
+    now_ms.saturating_sub(dev.last_seen_ms.max(dev.created_ms)) > IDLE_EXPIRY_MS
 }
 
 fn host_port(ip: &IpAddr, port: u16) -> String {
@@ -152,6 +189,21 @@ fn is_private(ip: &IpAddr) -> bool {
         IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
         // fc00::/7 (ULA), fe80::/10 (link-local)
         IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
+    }
+}
+
+/// 설정 UI 용 바인드 등급 — 프론트는 lan/public 적용 시 한 번 더 확인한다. 0.0.0.0 은 public
+pub fn bind_level(ip: &IpAddr) -> &'static str {
+    if ip.is_loopback() {
+        "loopback"
+    } else if ip.is_unspecified() {
+        "public"
+    } else if is_cgnat(ip) {
+        "tailscale"
+    } else if is_private(ip) {
+        "lan"
+    } else {
+        "public"
     }
 }
 
@@ -225,42 +277,79 @@ mod tests {
         assert!(!ct_eq(b"abc", b"ab"));
     }
 
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
     #[test]
     fn pairing_code_is_single_use_and_expires() {
         let t0 = Instant::now();
+        let a = ip("100.64.0.2");
         let mut p = Pairing::default();
-        assert_eq!(p.consume("ANY", t0), PairCheck::Invalid); // 발급 전
+        assert_eq!(p.consume(a, "ANY", t0), PairCheck::Invalid); // 발급 전
         let (code, exp) = p.start(t0);
         assert_eq!(code.len(), CODE_LEN);
         assert_eq!(exp, t0 + PAIR_TTL);
         // 소문자·공백도 허용
-        assert_eq!(p.consume(&format!(" {} ", code.to_lowercase()), t0), PairCheck::Ok);
-        assert_eq!(p.consume(&code, t0), PairCheck::Invalid); // 1회용
+        assert_eq!(p.consume(a, &format!(" {} ", code.to_lowercase()), t0), PairCheck::Ok);
+        assert_eq!(p.consume(a, &code, t0), PairCheck::Invalid); // 1회용
 
         let (code, _) = p.start(t0);
-        assert_eq!(p.consume(&code, t0 + PAIR_TTL), PairCheck::Invalid); // TTL 경과
-        assert_eq!(p.consume(&code, t0), PairCheck::Invalid); // 만료 후 폐기됨
+        assert_eq!(p.consume(a, &code, t0 + PAIR_TTL), PairCheck::Invalid); // TTL 경과
+        assert_eq!(p.consume(a, &code, t0), PairCheck::Invalid); // 만료 후 폐기됨
     }
 
     #[test]
-    fn pairing_locks_after_repeated_failures() {
+    fn pairing_locks_per_ip_with_backoff() {
         let t0 = Instant::now();
+        let (bad, good) = (ip("192.168.0.66"), ip("100.64.0.2"));
         let mut p = Pairing::default();
         let (code, _) = p.start(t0);
         for _ in 0..PAIR_MAX_FAILS - 1 {
-            assert_eq!(p.consume("WRONG", t0), PairCheck::Invalid);
+            assert_eq!(p.consume(bad, "WRONG", t0), PairCheck::Invalid);
         }
-        assert_eq!(p.consume("WRONG", t0), PairCheck::TooMany);
-        // 잠긴 뒤에는 맞는 코드도 거부
-        assert_eq!(p.consume(&code, t0), PairCheck::TooMany);
-        // 새 발급으로 해제
-        let (code2, _) = p.start(t0);
-        assert_eq!(p.consume(&code2, t0), PairCheck::Ok);
+        assert_eq!(p.consume(bad, "WRONG", t0), PairCheck::TooMany);
+        // 잠긴 IP 는 맞는 코드도 거부 — 하지만 코드 자체는 살아 있어 다른 IP 는 페어링된다
+        assert_eq!(p.consume(bad, &code, t0), PairCheck::TooMany);
+        assert_eq!(p.consume(good, &code, t0), PairCheck::Ok);
+
+        // 첫 잠금 30초 후 해제, 두 번째 잠금은 60초 (재발급으로 해제되지 않음)
+        let (code, _) = p.start(t0);
+        let t1 = t0 + LOCK_BASE;
+        for _ in 0..PAIR_MAX_FAILS - 1 {
+            assert_eq!(p.consume(bad, "WRONG", t1), PairCheck::Invalid);
+        }
+        assert_eq!(p.consume(bad, "WRONG", t1), PairCheck::TooMany);
+        p.start(t1);
+        assert_eq!(p.consume(bad, &code, t1 + LOCK_BASE), PairCheck::TooMany);
+        let (code, _) = p.start(t1 + LOCK_BASE * 2);
+        assert_eq!(p.consume(bad, &code, t1 + LOCK_BASE * 2), PairCheck::Ok);
+    }
+
+    #[test]
+    fn idle_expiry_after_30_days() {
+        let day = 24 * 60 * 60 * 1000;
+        let dev = |created, seen| RemoteDevice {
+            id: "d".into(),
+            name: "d".into(),
+            token_hash: String::new(),
+            created_ms: created,
+            last_seen_ms: seen,
+        };
+        assert!(!idle_expired(&dev(0, 10 * day), 40 * day));
+        assert!(idle_expired(&dev(0, 10 * day), 41 * day));
+        assert!(!idle_expired(&dev(5 * day, 0), 30 * day)); // last_seen 없음 → 생성 시각 기준
     }
 
     #[test]
     fn bind_classification() {
         let w = |s: &str| bind_warning(&s.parse().unwrap());
+        let lv = |s: &str| bind_level(&s.parse().unwrap());
+        assert_eq!(lv("127.0.0.1"), "loopback");
+        assert_eq!(lv("0.0.0.0"), "public");
+        assert_eq!(lv("100.100.1.1"), "tailscale");
+        assert_eq!(lv("192.168.1.1"), "lan");
+        assert_eq!(lv("8.8.8.8"), "public");
         assert!(w("127.0.0.1").is_none());
         assert!(w("::1").is_none());
         assert!(w("0.0.0.0").unwrap().starts_with('⚠'));

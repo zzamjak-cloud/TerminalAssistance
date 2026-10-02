@@ -123,6 +123,40 @@ pub struct RemoteSub {
     pub off: u64,
     pub cols: u16,
     pub rows: u16,
+    pub bracketed_paste: bool, // 스냅샷 시점의 DECSET 2004 상태 — 폰이 여러 줄 입력을 감쌀지 판단
+}
+
+const BRACKETED_ON: &str = "\x1b[?2004h";
+const BRACKETED_OFF: &str = "\x1b[?2004l";
+
+/// 출력 스트림에서 bracketed paste 모드(`ESC[?2004h/l`)의 마지막 상태를 추적한다.
+/// 시퀀스가 emit 청크 경계에 걸쳐도 잡도록 직전 청크 끝(시퀀스 길이-1)을 이월한다
+#[derive(Default)]
+struct PasteModeTracker {
+    tail: String,
+    on: bool,
+}
+
+impl PasteModeTracker {
+    fn feed(&mut self, piece: &str) {
+        let mut s = std::mem::take(&mut self.tail);
+        s.push_str(piece);
+        let on = s.rfind(BRACKETED_ON);
+        let off = s.rfind(BRACKETED_OFF);
+        match (on, off) {
+            (Some(a), Some(b)) => self.on = a > b,
+            (Some(_), None) => self.on = true,
+            (None, Some(_)) => self.on = false,
+            (None, None) => {}
+        }
+        // 이월분은 시퀀스 전체 길이보다 짧아 완성된 시퀀스를 다시 세지 않는다
+        let keep = BRACKETED_ON.len() - 1;
+        let mut start = s.len().saturating_sub(keep);
+        while !s.is_char_boundary(start) {
+            start += 1;
+        }
+        self.tail = s[start..].to_string();
+    }
 }
 
 /// 원격 서버·푸시가 구독하는 세션 이벤트 (데스크톱은 기존 Tauri 이벤트를 그대로 쓴다)
@@ -151,6 +185,7 @@ struct ChanInner {
     closed: bool,        // 셸 종료 또는 사용자 닫기
     cols: u16,           // 현재 PTY 크기 — 원격 뷰가 같은 격자로 그리도록 스냅샷에 싣는다
     rows: u16,
+    paste_mode: PasteModeTracker,
 }
 
 struct SessionChan {
@@ -171,6 +206,7 @@ impl SessionChan {
                 closed: false,
                 cols: 100,
                 rows: 30,
+                paste_mode: PasteModeTracker::default(),
             }),
             cv: Condvar::new(),
             tap: broadcast::channel(TAP_CAP).0,
@@ -185,6 +221,7 @@ impl SessionChan {
         g.total += take;
         g.outstanding += take;
         g.scrollback.extend_from_slice(piece.as_bytes());
+        g.paste_mode.feed(piece);
         // 슬랙을 두고 일괄 트리밍 — 포화 상태에서 emit 마다 2MB memmove 가
         // (락을 쥔 채) 일어나는 것을 방지. 복사 횟수가 1/SLACK 로 줄어든다.
         if g.scrollback.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
@@ -210,6 +247,7 @@ impl SessionChan {
             off: g.total,
             cols: g.cols,
             rows: g.rows,
+            bracketed_paste: g.paste_mode.on,
         }
     }
 }
@@ -700,6 +738,8 @@ impl PtyManager {
         );
         plock(&self.children).insert(id.clone(), child);
         plock(&self.chans).insert(id.clone(), Arc::clone(&chan));
+        // 스레드 기동 전에 알린다 — 즉시 종료하는 셸의 Exited 가 Created 보다 먼저 가지 않게
+        let _ = self.events.send(PtyEvent::Created(info.clone()));
 
         // ── 리더 스레드: PTY 출력 → pending 버퍼 + 활동 시각 갱신 ──
         let metas = Arc::clone(&self.metas);
@@ -851,7 +891,6 @@ impl PtyManager {
             let _ = events.send(PtyEvent::Exited { id: sid.clone() });
         });
 
-        let _ = self.events.send(PtyEvent::Created(info.clone()));
         Ok(info)
     }
 
@@ -1092,6 +1131,25 @@ mod tests {
         let fresh = chan.remote_sub(1 << 20);
         assert_eq!(fresh.off, (TAP_CAP + 10) as u64);
         assert_eq!(fresh.data.len(), TAP_CAP + 10);
+    }
+
+    #[test]
+    fn paste_mode_tracks_last_state_across_chunk_split() {
+        let chan = SessionChan::new();
+        assert!(!chan.remote_sub(0).bracketed_paste);
+        // 시퀀스가 두 emit 청크에 걸쳐 있어도 잡는다
+        chan.append_emitted("prompt \x1b[?20");
+        chan.append_emitted("04h$ ");
+        assert!(chan.remote_sub(0).bracketed_paste);
+        // 한 청크 안에 켜짐·꺼짐이 모두 있으면 마지막 것이 이긴다
+        chan.append_emitted("\x1b[?2004l run \x1b[?2004h");
+        assert!(chan.remote_sub(0).bracketed_paste);
+        chan.append_emitted("가\x1b[?2004");
+        chan.append_emitted("l나");
+        assert!(!chan.remote_sub(0).bracketed_paste);
+        // 무관한 출력은 상태를 바꾸지 않는다
+        chan.append_emitted("\x1b[?1049h plain");
+        assert!(!chan.remote_sub(0).bracketed_paste);
     }
 
     #[test]

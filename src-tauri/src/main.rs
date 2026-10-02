@@ -407,7 +407,13 @@ fn update_settings(
 // ── 세션 배치 영속화 (재시작 복원용) ──
 // 살아 있는 세션 목록만 스냅샷해 설정에 남긴다. 화면 내용은 저장하지 않는다.
 // 호출 지점은 세션 생성·종료·이름변경 세 곳뿐이라 상시 부하가 없다.
+// 목록 스냅샷~저장을 직렬화 — 동시 호출(데스크톱·원격)에서 늦게 찍은 낡은 목록이 최신을 덮지 않게
+static LAYOUT_LOCK: Mutex<()> = Mutex::new(());
+// 세션 생성 전체를 직렬화 — 동시 생성이 같은 S 번호를 받거나 세션 상한을 넘지 않게
+static CREATE_LOCK: Mutex<()> = Mutex::new(());
+
 fn save_session_layout(store: &Mutex<Store>, ptys: &PtyManager) {
+    let _layout = plock(&LAYOUT_LOCK);
     let saved: Vec<SavedSession> = ptys
         .list()
         .into_iter()
@@ -443,6 +449,8 @@ fn restore_sessions(
     store: StoreState,
     ptys: State<PtyManager>,
 ) -> serde_json::Value {
+    // 원격 생성과 겹치면 '세션 없음' 판정이 어긋나므로 생성 경로와 함께 직렬화한다
+    let _create = plock(&CREATE_LOCK);
     // 이미 세션이 있으면(웹뷰 리로드) 아무것도 하지 않는다 — 중복 생성 방지
     if !ptys.list().is_empty() {
         return json!({ "restored": [], "skipped": [], "alreadyRunning": true });
@@ -497,7 +505,7 @@ fn create_session(
     ptys: State<PtyManager>,
     project_id: Option<String>,
 ) -> Result<pty::SessionInfo, String> {
-    create_session_inner(&app, &store, &ptys, project_id)
+    create_session_inner(&app, &store, &ptys, project_id, None)
 }
 
 /// 데스크톱 커맨드와 원격(모바일) 생성이 공유하는 세션 생성 본문
@@ -506,7 +514,15 @@ fn create_session_inner(
     store: &Mutex<Store>,
     ptys: &PtyManager,
     project_id: Option<String>,
+    // Some(상한) = 원격 생성: 세션 수 상한을 검사하고, 데스크톱에 ta:session-created 로 알린다
+    remote_max: Option<usize>,
 ) -> Result<pty::SessionInfo, String> {
+    let _create = plock(&CREATE_LOCK);
+    if let Some(max) = remote_max {
+        if ptys.list().len() >= max {
+            return Err(format!("세션이 너무 많습니다 (최대 {}개)", max));
+        }
+    }
     let (cwd, shell) = {
         let s = plock(&store);
         let proj = project_id
@@ -529,6 +545,10 @@ fn create_session_inner(
         .unwrap_or(0)
         + 1;
     let info = ptys.create(app.clone(), project_id, cwd, &shell, Some(format!("S{}", n)), None)?;
+    if remote_max.is_some() {
+        // 레이아웃 저장(디스크 I/O)보다 먼저 — 데스크톱 탭이 늦게 붙지 않게
+        let _ = app.emit("ta:session-created", &info);
+    }
     save_session_layout(store, ptys);
     Ok(info)
 }

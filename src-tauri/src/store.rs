@@ -182,6 +182,9 @@ pub struct PushConfig {
     pub on_done: bool,
     #[serde(rename = "onWaiting", default = "default_true")]
     pub on_waiting: bool,
+    /// 알림 본문에 프로젝트명을 넣을지 — 기본은 세션 제목만 (외부 서버에 남는 정보 최소화)
+    #[serde(rename = "includeProject", default)]
+    pub include_project: bool,
 }
 
 fn default_push_kind() -> String {
@@ -199,6 +202,7 @@ impl Default for PushConfig {
             topic: String::new(),
             on_done: true,
             on_waiting: true,
+            include_project: false,
         }
     }
 }
@@ -377,6 +381,7 @@ mod tests {
         assert_eq!(partial.remote.port, 7788);
         assert_eq!(partial.remote.push.kind, "telegram");
         assert!(partial.remote.push.on_done);
+        assert!(!partial.remote.push.include_project);
         assert_eq!(partial.remote.devices[0].last_seen_ms, 0);
 
         let json = serde_json::to_string(&partial).unwrap();
