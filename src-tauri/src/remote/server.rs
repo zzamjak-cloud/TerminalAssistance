@@ -1,0 +1,753 @@
+// 원격 HTTP/WebSocket 서버 (axum). 앱 상태 접근은 Backend 트레잇으로 추상화해
+// Tauri 없이도 라우트·인증·WS 프로토콜을 테스트할 수 있게 한다
+use super::auth::{self, PairCheck, Pairing};
+use crate::pty::{PtyEvent, RemoteChunk, RemoteSub, SessionInfo};
+use crate::store::RemoteDevice;
+use crate::util::plock;
+use axum::body::Bytes;
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::Router;
+use serde::Deserialize;
+use serde_json::json;
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, mpsc, watch};
+
+pub const COOKIE_NAME: &str = "ta_rt";
+pub const TAIL_BYTES: usize = 256 * 1024; // 폰에 보내는 스크롤백 tail
+pub const WRITE_MAX: usize = 64 * 1024;
+const WS_MAX_MESSAGE: usize = 512 * 1024; // write 64KB 가 JSON 이스케이프로 부풀어도 수용
+const PING_EVERY: Duration = Duration::from_secs(30);
+const CLOSE_REVOKED: u16 = 4001;
+const WRITE_QUEUE: usize = 256;
+
+pub trait Backend: Send + Sync + 'static {
+    fn devices(&self) -> Vec<RemoteDevice>;
+    fn add_device(&self, dev: RemoteDevice) -> Result<(), String>;
+    fn touch_device(&self, id: &str);
+    /// `{projects, presets, sessions}` — get_state 와 같은 직렬화 형태
+    fn state(&self) -> serde_json::Value;
+    fn sessions(&self) -> Vec<SessionInfo>;
+    fn subscribe(&self, id: &str, tail_bytes: usize) -> Option<RemoteSub>;
+    /// 블로킹될 수 있다 (자식이 입력을 안 읽으면 PTY write 가 멈춤) — 전용 스레드에서만 호출
+    fn write(&self, id: &str, data: &str);
+    fn ack(&self, id: &str);
+    /// 블로킹 (PTY spawn + 설정 저장)
+    fn create(&self, project_id: Option<String>) -> Result<SessionInfo, String>;
+    fn events(&self) -> broadcast::Receiver<PtyEvent>;
+}
+
+pub struct Ctx {
+    pub backend: Arc<dyn Backend>,
+    pub pairing: Arc<Mutex<Pairing>>,
+    pub bind: IpAddr,
+    pub port: u16,
+    pub allowed_hosts: Mutex<Vec<String>>,
+    pub revoked: broadcast::Sender<String>,
+    pub shutdown: watch::Receiver<bool>,
+}
+
+impl Ctx {
+    fn host_ok(&self, host: &str) -> bool {
+        if auth::host_allowed(host, &plock(&self.allowed_hosts)) {
+            return true;
+        }
+        // 0.0.0.0 바인드는 서버 기동 후 생긴 인터페이스(Tailscale 연결 등)도 받아야 한다 → 목록 갱신 후 재확인
+        if self.bind.is_unspecified() {
+            let fresh = auth::allowed_hosts(&self.bind, self.port, &super::iface_ips());
+            let ok = auth::host_allowed(host, &fresh);
+            *plock(&self.allowed_hosts) = fresh;
+            return ok;
+        }
+        false
+    }
+}
+
+pub fn router(ctx: Arc<Ctx>) -> Router {
+    Router::new()
+        .route("/api/pair", post(pair))
+        .route("/api/me", get(me))
+        .route("/api/state", get(api_state))
+        .route("/ws", get(ws))
+        .fallback(static_file)
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .with_state(ctx)
+}
+
+fn err(status: StatusCode, msg: &str) -> Response {
+    (status, axum::Json(json!({ "error": msg }))).into_response()
+}
+
+/// Host 허용 목록 + 동일 출처 검사. 토큰 검사보다 먼저 — 리바인딩·CSWSH 요청은 쿠키 유무와 무관하게 403
+fn guard(ctx: &Ctx, headers: &HeaderMap) -> Result<(), Response> {
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !ctx.host_ok(host) {
+        return Err(err(StatusCode::FORBIDDEN, "host"));
+    }
+    let origin = match headers.get(header::ORIGIN) {
+        None => None,
+        Some(v) => match v.to_str() {
+            Ok(s) => Some(s),
+            Err(_) => return Err(err(StatusCode::FORBIDDEN, "origin")),
+        },
+    };
+    if !auth::origin_ok(origin, host) {
+        return Err(err(StatusCode::FORBIDDEN, "origin"));
+    }
+    Ok(())
+}
+
+fn cookie_token(headers: &HeaderMap) -> Option<String> {
+    headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).find_map(|line| {
+        line.split(';').find_map(|kv| {
+            let (k, v) = kv.trim().split_once('=')?;
+            (k == COOKIE_NAME && !v.is_empty()).then(|| v.to_string())
+        })
+    })
+}
+
+fn authed(ctx: &Ctx, headers: &HeaderMap) -> Result<RemoteDevice, Response> {
+    guard(ctx, headers)?;
+    let token = cookie_token(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthorized"))?;
+    let devices = ctx.backend.devices();
+    auth::find_device(&token, &devices)
+        .cloned()
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthorized"))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[derive(Deserialize)]
+struct PairBody {
+    code: String,
+    #[serde(rename = "deviceName", default)]
+    device_name: String,
+}
+
+async fn pair(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Ok(req) = serde_json::from_slice::<PairBody>(&body) else {
+        return err(StatusCode::BAD_REQUEST, "bad request");
+    };
+    match plock(&ctx.pairing).consume(&req.code, Instant::now()) {
+        PairCheck::Ok => {}
+        PairCheck::Invalid => return err(StatusCode::UNAUTHORIZED, "invalid code"),
+        PairCheck::TooMany => return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts"),
+    }
+    let name: String = req.device_name.trim().chars().filter(|c| !c.is_control()).take(64).collect();
+    let token = auth::new_token();
+    let now = now_ms();
+    let dev = RemoteDevice {
+        id: crate::store::new_id(),
+        name: if name.is_empty() { "모바일".into() } else { name },
+        token_hash: auth::hash_token(&token),
+        created_ms: now,
+        last_seen_ms: now,
+    };
+    let id = dev.id.clone();
+    if let Err(e) = ctx.backend.add_device(dev) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, &e);
+    }
+    let cookie = format!(
+        "{}={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000",
+        COOKIE_NAME, token
+    );
+    let mut res = axum::Json(json!({ "deviceId": id })).into_response();
+    if let Ok(v) = HeaderValue::from_str(&cookie) {
+        res.headers_mut().insert(header::SET_COOKIE, v);
+    }
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
+}
+
+async fn me(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    match authed(&ctx, &headers) {
+        Err(r) => r,
+        Ok(d) => {
+            ctx.backend.touch_device(&d.id);
+            axum::Json(json!({ "deviceId": d.id, "deviceName": d.name })).into_response()
+        }
+    }
+}
+
+async fn api_state(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    match authed(&ctx, &headers) {
+        Err(r) => r,
+        Ok(_) => axum::Json(ctx.backend.state()).into_response(),
+    }
+}
+
+async fn static_file(method: Method, uri: Uri) -> Response {
+    if method != Method::GET && method != Method::HEAD {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    match super::assets::lookup(uri.path()) {
+        None => StatusCode::NOT_FOUND.into_response(),
+        Some((body, ctype)) => (
+            [
+                (header::CONTENT_TYPE, ctype),
+                // 앱 업데이트 시 옛 셸이 남지 않게 — 오프라인 캐시는 sw.js 가 담당
+                (header::CACHE_CONTROL, "no-cache"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::REFERRER_POLICY, "no-referrer"),
+            ],
+            body,
+        )
+            .into_response(),
+    }
+}
+
+async fn ws(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> Response {
+    // 인증을 업그레이드 검사보다 먼저 — 무토큰 요청은 핸드셰이크 형식과 무관하게 401
+    let dev = match authed(&ctx, &headers) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let upgrade = match upgrade {
+        Ok(u) => u,
+        Err(rej) => return rej.into_response(),
+    };
+    ctx.backend.touch_device(&dev.id);
+    upgrade
+        .max_message_size(WS_MAX_MESSAGE)
+        .on_upgrade(move |socket| run_ws(socket, ctx, dev.id))
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "t", rename_all = "lowercase")]
+enum ClientMsg {
+    Sub { id: String },
+    Unsub,
+    Write { id: String, data: String },
+    Ack { id: String },
+    Create {
+        #[serde(rename = "projectId", default)]
+        project_id: Option<String>,
+    },
+    Ping,
+}
+
+/// 세션 이벤트 → 클라이언트 메시지
+fn event_json(ev: &PtyEvent) -> serde_json::Value {
+    match ev {
+        PtyEvent::Status { id, status, busy_ms } => {
+            json!({ "t": "status", "id": id, "status": status, "busyMs": busy_ms })
+        }
+        PtyEvent::Created(info) => json!({ "t": "created", "session": info }),
+        PtyEvent::Exited { id } => json!({ "t": "exited", "id": id }),
+        PtyEvent::Resize { id, cols, rows } => {
+            json!({ "t": "resize", "id": id, "cols": cols, "rows": rows })
+        }
+    }
+}
+
+fn snap_json(id: &str, s: &RemoteSub) -> serde_json::Value {
+    json!({ "t": "snap", "id": id, "data": s.data, "off": s.off, "cols": s.cols, "rows": s.rows })
+}
+
+enum Step {
+    Client(Option<Result<Message, axum::Error>>),
+    Chunk(Result<Arc<RemoteChunk>, broadcast::error::RecvError>),
+    Event(Result<PtyEvent, broadcast::error::RecvError>),
+    Revoked(Result<String, broadcast::error::RecvError>),
+    Shutdown,
+    Ping,
+    Created(Result<SessionInfo, String>),
+}
+
+async fn recv_chunk(
+    sub: &mut Option<(String, broadcast::Receiver<Arc<RemoteChunk>>)>,
+) -> Result<Arc<RemoteChunk>, broadcast::error::RecvError> {
+    match sub {
+        Some((_, rx)) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn send_json(socket: &mut WebSocket, v: serde_json::Value) -> bool {
+    socket.send(Message::Text(v.to_string().into())).await.is_ok()
+}
+
+async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame { code, reason: reason.into() })))
+        .await;
+}
+
+async fn run_ws(mut socket: WebSocket, ctx: Arc<Ctx>, device_id: String) {
+    let mut events = ctx.backend.events();
+    let mut revoked = ctx.revoked.subscribe();
+    let mut shutdown = ctx.shutdown.clone();
+    let mut sub: Option<(String, broadcast::Receiver<Arc<RemoteChunk>>)> = None;
+    let mut ping = tokio::time::interval(PING_EVERY);
+    ping.reset(); // 첫 tick 즉시 발화 방지
+
+    // 입력은 연결별 전용 스레드에서 순서대로 쓴다 — 블로킹 PTY write 가 런타임 워커를 막지 않게
+    let (wtx, mut wrx) = mpsc::channel::<(String, String)>(WRITE_QUEUE);
+    let wb = Arc::clone(&ctx.backend);
+    tokio::task::spawn_blocking(move || {
+        while let Some((id, data)) = wrx.blocking_recv() {
+            wb.write(&id, &data);
+        }
+    });
+    // 세션 생성 결과는 블로킹 작업에서 돌아와 이 루프로 합류한다
+    let (ctx_tx, mut ctx_rx) = mpsc::channel::<Result<SessionInfo, String>>(4);
+
+    if *shutdown.borrow() {
+        return;
+    }
+    if !send_json(&mut socket, json!({ "t": "sessions", "list": ctx.backend.sessions() })).await {
+        return;
+    }
+
+    loop {
+        let step = tokio::select! {
+            m = socket.recv() => Step::Client(m),
+            c = recv_chunk(&mut sub) => Step::Chunk(c),
+            e = events.recv() => Step::Event(e),
+            r = revoked.recv() => Step::Revoked(r),
+            _ = shutdown.changed() => Step::Shutdown,
+            _ = ping.tick() => Step::Ping,
+            Some(c) = ctx_rx.recv() => Step::Created(c),
+        };
+        let ok = match step {
+            Step::Client(None) | Step::Client(Some(Err(_))) => break,
+            Step::Client(Some(Ok(Message::Close(_)))) => break,
+            Step::Client(Some(Ok(Message::Text(t)))) => {
+                match serde_json::from_str::<ClientMsg>(t.as_str()) {
+                    Err(_) => send_json(&mut socket, json!({ "t": "error", "msg": "bad message" })).await,
+                    Ok(ClientMsg::Ping) => send_json(&mut socket, json!({ "t": "pong" })).await,
+                    Ok(ClientMsg::Unsub) => {
+                        sub = None;
+                        true
+                    }
+                    Ok(ClientMsg::Sub { id }) => match ctx.backend.subscribe(&id, TAIL_BYTES) {
+                        None => {
+                            sub = None;
+                            send_json(&mut socket, json!({ "t": "error", "msg": "no such session" })).await
+                        }
+                        Some(s) => {
+                            let v = snap_json(&id, &s);
+                            sub = Some((id, s.rx));
+                            send_json(&mut socket, v).await
+                        }
+                    },
+                    Ok(ClientMsg::Write { id, data }) => {
+                        if data.len() > WRITE_MAX {
+                            send_json(&mut socket, json!({ "t": "error", "msg": "write too large" })).await
+                        } else if wtx.try_send((id, data)).is_err() {
+                            send_json(&mut socket, json!({ "t": "error", "msg": "input queue full" })).await
+                        } else {
+                            true
+                        }
+                    }
+                    Ok(ClientMsg::Ack { id }) => {
+                        ctx.backend.ack(&id);
+                        true
+                    }
+                    Ok(ClientMsg::Create { project_id }) => {
+                        let b = Arc::clone(&ctx.backend);
+                        let tx = ctx_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let _ = tx.blocking_send(b.create(project_id));
+                        });
+                        true
+                    }
+                }
+            }
+            Step::Client(Some(Ok(_))) => true, // ping/pong/binary — ping 응답은 라이브러리가 처리
+            Step::Chunk(Ok(c)) => {
+                let id = sub.as_ref().map(|(id, _)| id.clone()).unwrap_or_default();
+                send_json(&mut socket, json!({ "t": "data", "id": id, "off": c.off, "data": c.data })).await
+            }
+            Step::Chunk(Err(broadcast::error::RecvError::Lagged(_))) => {
+                // 느린 폰: 이 연결만 스냅샷으로 재동기화 (데스크톱·다른 구독자는 영향 없음)
+                let id = sub.as_ref().map(|(id, _)| id.clone()).unwrap_or_default();
+                match ctx.backend.subscribe(&id, TAIL_BYTES) {
+                    Some(s) => {
+                        let v = snap_json(&id, &s);
+                        sub = Some((id, s.rx));
+                        send_json(&mut socket, v).await
+                    }
+                    None => {
+                        sub = None;
+                        true
+                    }
+                }
+            }
+            Step::Chunk(Err(broadcast::error::RecvError::Closed)) => {
+                sub = None; // 세션 종료 — exited 이벤트가 따로 간다
+                true
+            }
+            Step::Event(Ok(ev)) => send_json(&mut socket, event_json(&ev)).await,
+            Step::Event(Err(broadcast::error::RecvError::Lagged(_))) => {
+                send_json(&mut socket, json!({ "t": "sessions", "list": ctx.backend.sessions() })).await
+            }
+            Step::Event(Err(broadcast::error::RecvError::Closed)) => break,
+            Step::Revoked(Ok(id)) if id == device_id => {
+                close(&mut socket, CLOSE_REVOKED, "revoked").await;
+                break;
+            }
+            Step::Revoked(Ok(_)) => true,
+            Step::Revoked(Err(_)) => {
+                // 통지를 놓쳤으면 저장소 기준으로 다시 확인
+                if !ctx.backend.devices().iter().any(|d| d.id == device_id) {
+                    close(&mut socket, CLOSE_REVOKED, "revoked").await;
+                    break;
+                }
+                true
+            }
+            Step::Shutdown => {
+                close(&mut socket, 1001, "server stopping").await;
+                break;
+            }
+            Step::Ping => socket.send(Message::Ping(Bytes::new())).await.is_ok(),
+            Step::Created(Ok(_)) => true, // 목록 반영은 created 이벤트로 모든 클라이언트에 간다
+            Step::Created(Err(e)) => send_json(&mut socket, json!({ "t": "error", "msg": e })).await,
+        };
+        if !ok {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    pub struct MockBackend {
+        pub devices: Mutex<Vec<RemoteDevice>>,
+        pub writes: Mutex<Vec<(String, String)>>,
+        pub tap: broadcast::Sender<Arc<RemoteChunk>>,
+        pub events: broadcast::Sender<PtyEvent>,
+    }
+
+    impl MockBackend {
+        fn new() -> Arc<Self> {
+            Arc::new(MockBackend {
+                devices: Mutex::new(Vec::new()),
+                writes: Mutex::new(Vec::new()),
+                tap: broadcast::channel(16).0,
+                events: broadcast::channel(16).0,
+            })
+        }
+    }
+
+    fn info(id: &str) -> SessionInfo {
+        SessionInfo {
+            id: id.into(),
+            project_id: None,
+            title: "S1".into(),
+            status: crate::pty::Status::Idle,
+            cwd: "/tmp".into(),
+            created_at_ms: 1,
+        }
+    }
+
+    impl Backend for MockBackend {
+        fn devices(&self) -> Vec<RemoteDevice> {
+            plock(&self.devices).clone()
+        }
+        fn add_device(&self, dev: RemoteDevice) -> Result<(), String> {
+            plock(&self.devices).push(dev);
+            Ok(())
+        }
+        fn touch_device(&self, _id: &str) {}
+        fn state(&self) -> serde_json::Value {
+            json!({ "projects": [], "presets": [], "sessions": [info("s1")] })
+        }
+        fn sessions(&self) -> Vec<SessionInfo> {
+            vec![info("s1")]
+        }
+        fn subscribe(&self, id: &str, _tail: usize) -> Option<RemoteSub> {
+            (id == "s1").then(|| RemoteSub {
+                rx: self.tap.subscribe(),
+                data: "hello".into(),
+                off: 5,
+                cols: 80,
+                rows: 24,
+            })
+        }
+        fn write(&self, id: &str, data: &str) {
+            plock(&self.writes).push((id.into(), data.into()));
+        }
+        fn ack(&self, _id: &str) {}
+        fn create(&self, _project_id: Option<String>) -> Result<SessionInfo, String> {
+            let i = info("s2");
+            let _ = self.events.send(PtyEvent::Created(i.clone()));
+            Ok(i)
+        }
+        fn events(&self) -> broadcast::Receiver<PtyEvent> {
+            self.events.subscribe()
+        }
+    }
+
+    const HOST: &str = "127.0.0.1:7788";
+
+    fn ctx_with(backend: Arc<MockBackend>, port: u16) -> (Arc<Ctx>, watch::Sender<bool>) {
+        let (stx, srx) = watch::channel(false);
+        let bind: IpAddr = "127.0.0.1".parse().unwrap();
+        let ctx = Arc::new(Ctx {
+            backend,
+            pairing: Arc::new(Mutex::new(Pairing::default())),
+            bind,
+            port,
+            allowed_hosts: Mutex::new(auth::allowed_hosts(&bind, port, &[])),
+            revoked: broadcast::channel(8).0,
+            shutdown: srx,
+        });
+        (ctx, stx)
+    }
+
+    fn req(method: &str, path: &str, host: &str) -> axum::http::request::Builder {
+        Request::builder().method(method).uri(path).header(header::HOST, host)
+    }
+
+    async fn status_of(ctx: &Arc<Ctx>, r: Request<Body>) -> (StatusCode, HeaderMap) {
+        let res = router(Arc::clone(ctx)).oneshot(r).await.unwrap();
+        (res.status(), res.headers().clone())
+    }
+
+    async fn paired_cookie(ctx: &Arc<Ctx>) -> String {
+        let (code, _) = plock(&ctx.pairing).start(Instant::now());
+        let body = json!({ "code": code, "deviceName": "폰" }).to_string();
+        let (st, h) = status_of(ctx, req("POST", "/api/pair", HOST).body(Body::from(body)).unwrap()).await;
+        assert_eq!(st, StatusCode::OK);
+        let c = h.get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+        assert!(c.contains("HttpOnly") && c.contains("SameSite=Strict") && c.contains("Max-Age=31536000"));
+        c.split(';').next().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn static_routes_need_no_auth() {
+        let (ctx, _s) = ctx_with(MockBackend::new(), 7788);
+        for p in ["/", "/mobile.js", "/xterm.js", "/sw.js", "/icon.png", "/dashboard-core.js"] {
+            let (st, h) = status_of(&ctx, req("GET", p, HOST).body(Body::empty()).unwrap()).await;
+            assert_eq!(st, StatusCode::OK, "{p}");
+            assert!(h.get(header::CONTENT_TYPE).is_some());
+        }
+        let (st, _) = status_of(&ctx, req("GET", "/nope", HOST).body(Body::empty()).unwrap()).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn api_requires_token_and_same_origin() {
+        let (ctx, _s) = ctx_with(MockBackend::new(), 7788);
+        // 무토큰 → 401 (ws 도 업그레이드 헤더와 무관하게 401)
+        for p in ["/api/state", "/api/me", "/ws"] {
+            let (st, _) = status_of(&ctx, req("GET", p, HOST).body(Body::empty()).unwrap()).await;
+            assert_eq!(st, StatusCode::UNAUTHORIZED, "{p}");
+        }
+        let cookie = paired_cookie(&ctx).await;
+        let ok = req("GET", "/api/state", HOST).header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
+        assert_eq!(status_of(&ctx, ok).await.0, StatusCode::OK);
+        let me = req("GET", "/api/me", HOST)
+            .header(header::COOKIE, format!("other=1; {}", cookie))
+            .header(header::ORIGIN, format!("http://{}", HOST))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(&ctx, me).await.0, StatusCode::OK);
+
+        // 다른 Origin → 403 (토큰이 맞아도)
+        let bad_origin = req("GET", "/api/state", HOST)
+            .header(header::COOKIE, &cookie)
+            .header(header::ORIGIN, "http://evil.example")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(&ctx, bad_origin).await.0, StatusCode::FORBIDDEN);
+        // 허용 목록 밖 Host → 403 (DNS 리바인딩)
+        let bad_host = req("GET", "/api/state", "evil.example:7788")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(&ctx, bad_host).await.0, StatusCode::FORBIDDEN);
+        // 잘못된 토큰 → 401
+        let wrong = req("GET", "/api/state", HOST)
+            .header(header::COOKIE, "ta_rt=deadbeef")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(&ctx, wrong).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn pair_rejects_bad_code_and_rate_limits() {
+        let (ctx, _s) = ctx_with(MockBackend::new(), 7788);
+        let post = |code: &str| {
+            req("POST", "/api/pair", HOST)
+                .body(Body::from(json!({ "code": code, "deviceName": "x" }).to_string()))
+                .unwrap()
+        };
+        assert_eq!(status_of(&ctx, post("NOPE")).await.0, StatusCode::UNAUTHORIZED); // 발급 전
+        let (code, _) = plock(&ctx.pairing).start(Instant::now());
+        for _ in 0..auth::PAIR_MAX_FAILS - 1 {
+            assert_eq!(status_of(&ctx, post("WRONG")).await.0, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(status_of(&ctx, post("WRONG")).await.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(status_of(&ctx, post(&code)).await.0, StatusCode::TOO_MANY_REQUESTS);
+        let bad = req("POST", "/api/pair", HOST).body(Body::from("{")).unwrap();
+        assert_eq!(status_of(&ctx, bad).await.0, StatusCode::BAD_REQUEST);
+        let big = req("POST", "/api/pair", HOST).body(Body::from(vec![b' '; 64 * 1024])).unwrap();
+        assert_eq!(status_of(&ctx, big).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn revoked_device_loses_access() {
+        let backend = MockBackend::new();
+        let (ctx, _s) = ctx_with(Arc::clone(&backend), 7788);
+        let cookie = paired_cookie(&ctx).await;
+        plock(&backend.devices).clear();
+        let r = req("GET", "/api/state", HOST).header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
+        assert_eq!(status_of(&ctx, r).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    // ── 실제 소켓으로 띄운 서버: HTTP 상태코드 + WS 프로토콜 ──
+
+    async fn spawn_server(backend: Arc<MockBackend>) -> (Arc<Ctx>, watch::Sender<bool>, u16) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (ctx, stx) = ctx_with(backend, port);
+        let mut srx = stx.subscribe();
+        let app = router(Arc::clone(&ctx));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = srx.changed().await;
+                })
+                .await;
+        });
+        (ctx, stx, port)
+    }
+
+    async fn raw_http(port: u16, request: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        s.write_all(request.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out).await;
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_server_status_codes() {
+        let (_ctx, _stx, port) = spawn_server(MockBackend::new()).await;
+        let host = format!("127.0.0.1:{}", port);
+        let r = raw_http(port, format!("GET /api/state HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")).await;
+        assert!(r.starts_with("HTTP/1.1 401"), "{r}");
+        let r = raw_http(
+            port,
+            format!("GET /api/state HTTP/1.1\r\nHost: {host}\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n"),
+        )
+        .await;
+        assert!(r.starts_with("HTTP/1.1 403"), "{r}");
+        let r = raw_http(port, format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")).await;
+        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_websocket_protocol_and_revoke() {
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+        let backend = MockBackend::new();
+        let (ctx, _stx, port) = spawn_server(Arc::clone(&backend)).await;
+        let host = format!("127.0.0.1:{}", port);
+        let (code, _) = plock(&ctx.pairing).start(Instant::now());
+        let body = json!({ "code": code, "deviceName": "폰" }).to_string();
+        let r = raw_http(
+            port,
+            format!(
+                "POST /api/pair HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            ),
+        )
+        .await;
+        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+        let cookie = r
+            .lines()
+            .find_map(|l| l.strip_prefix("set-cookie: ").or_else(|| l.strip_prefix("Set-Cookie: ")))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+
+        let mut rq = format!("ws://{host}/ws").into_client_request().unwrap();
+        rq.headers_mut().insert("Cookie", cookie.parse().unwrap());
+        rq.headers_mut().insert("Origin", format!("http://{host}").parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(rq).await.unwrap();
+
+        async fn next_json(
+            ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        ) -> serde_json::Value {
+            use futures_util::StreamExt;
+            loop {
+                match tokio::time::timeout(Duration::from_secs(5), ws.next()).await.unwrap().unwrap().unwrap() {
+                    TMsg::Text(t) => return serde_json::from_str(t.as_str()).unwrap(),
+                    _ => continue,
+                }
+            }
+        }
+        use futures_util::SinkExt;
+        let first = next_json(&mut ws).await;
+        assert_eq!(first["t"], "sessions");
+        assert_eq!(first["list"][0]["id"], "s1");
+
+        ws.send(TMsg::Text(json!({ "t": "sub", "id": "s1" }).to_string().into())).await.unwrap();
+        let snap = next_json(&mut ws).await;
+        assert_eq!((snap["t"].as_str(), snap["off"].as_u64(), snap["cols"].as_u64()), (Some("snap"), Some(5), Some(80)));
+        backend.tap.send(Arc::new(RemoteChunk { off: 5, data: " world".into() })).unwrap();
+        let data = next_json(&mut ws).await;
+        assert_eq!((data["t"].as_str(), data["off"].as_u64(), data["data"].as_str()), (Some("data"), Some(5), Some(" world")));
+
+        ws.send(TMsg::Text(json!({ "t": "write", "id": "s1", "data": "ls\r" }).to_string().into())).await.unwrap();
+        let big = "x".repeat(WRITE_MAX + 1);
+        ws.send(TMsg::Text(json!({ "t": "write", "id": "s1", "data": big }).to_string().into())).await.unwrap();
+        assert_eq!(next_json(&mut ws).await["t"], "error");
+        ws.send(TMsg::Text(json!({ "t": "ping" }).to_string().into())).await.unwrap();
+        assert_eq!(next_json(&mut ws).await["t"], "pong");
+        assert_eq!(plock(&backend.writes).as_slice(), &[("s1".to_string(), "ls\r".to_string())]);
+
+        ws.send(TMsg::Text(json!({ "t": "create", "projectId": null }).to_string().into())).await.unwrap();
+        let created = next_json(&mut ws).await;
+        assert_eq!((created["t"].as_str(), created["session"]["id"].as_str()), (Some("created"), Some("s2")));
+
+        backend
+            .events
+            .send(PtyEvent::Status { id: "s1".into(), status: crate::pty::Status::Done, busy_ms: 42 })
+            .unwrap();
+        let st = next_json(&mut ws).await;
+        assert_eq!((st["status"].as_str(), st["busyMs"].as_u64()), (Some("done"), Some(42)));
+
+        // 폐기 → close 4001
+        let dev_id = plock(&backend.devices)[0].id.clone();
+        ctx.revoked.send(dev_id).unwrap();
+        use futures_util::StreamExt;
+        let closed = loop {
+            match tokio::time::timeout(Duration::from_secs(5), ws.next()).await.unwrap() {
+                Some(Ok(TMsg::Close(f))) => break f.map(|f| u16::from(f.code)),
+                Some(Ok(_)) => continue,
+                _ => break None,
+            }
+        };
+        assert_eq!(closed, Some(CLOSE_REVOKED));
+    }
+}

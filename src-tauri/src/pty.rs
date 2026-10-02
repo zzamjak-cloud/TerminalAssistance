@@ -26,6 +26,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
+use tokio::sync::broadcast;
 
 const BUSY_HOLD_MS: u128 = 800; // 마지막 출력 후 이 시간 동안은 busy 유지
 const DONE_MIN_MS: u128 = 3000; // 이보다 오래 busy 였다가 멈추면 '완료'로 간주
@@ -44,6 +45,9 @@ const FLOW_HIGH: u64 = 512 * 1024; // 미확인(un-acked) 바이트 상한 — �
 const FLOW_STALL_MS: u64 = 3000; // ack 유실(웹뷰 리로드 등) 시 이 시간 후 강제 재개
 const PENDING_CAP: usize = 8 * 1024 * 1024; // pending 상한 — 넘으면 PTY read 중단(OS 백프레셔)
 const EMIT_CHUNK: usize = 512 * 1024; // 이벤트 1건당 최대 크기 — 스톨 해제 직후 대형 IPC 폭탄 방지
+// 원격 tap 버퍼(청크 수). 넘치면 그 구독자만 Lagged → 스냅샷 재동기화 — 데스크톱 경로는 막지 않는다
+const TAP_CAP: usize = 256;
+const EVENT_CAP: usize = 256; // 원격용 세션 이벤트 버퍼
 
 /// 현재 시각 (unix millis) — 세션 생성 순서 보존용
 fn now_ms() -> u64 {
@@ -80,7 +84,7 @@ pub struct SessionMeta {
     pub hook_done_used_ts: u64, // 이미 완료로 소비한 Stop 신호 — 같은 신호로 두 번 알리지 않는다
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct SessionInfo {
     pub id: String,
     #[serde(rename = "projectId")]
@@ -105,6 +109,31 @@ impl SessionMeta {
     }
 }
 
+/// 원격(모바일) 구독자에게 팬아웃되는 출력 청크. off 는 데스크톱 ta:data 의 off 와 같은 의미
+#[derive(Debug)]
+pub struct RemoteChunk {
+    pub off: u64,
+    pub data: String,
+}
+
+/// 원격 구독 시작 결과 — rx 는 스냅샷 직후부터의 청크만 받는다 (같은 락 안에서 생성)
+pub struct RemoteSub {
+    pub rx: broadcast::Receiver<Arc<RemoteChunk>>,
+    pub data: String,
+    pub off: u64,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// 원격 서버·푸시가 구독하는 세션 이벤트 (데스크톱은 기존 Tauri 이벤트를 그대로 쓴다)
+#[derive(Clone, Debug)]
+pub enum PtyEvent {
+    Status { id: String, status: Status, busy_ms: u64 },
+    Created(SessionInfo),
+    Exited { id: String },
+    Resize { id: String, cols: u16, rows: u16 },
+}
+
 /// 입출력 핸들 (메타와 분리해 락 경합 최소화).
 /// 세션별 락으로 감싸므로 한 세션의 블로킹 write 가 다른 세션의 I/O 를 막지 않는다.
 /// child 는 별도 맵에 보관 — write 가 블록된 세션도 close 시 kill 로 즉시 해제 가능.
@@ -120,11 +149,15 @@ struct ChanInner {
     total: u64,          // off 발급용 논리 오프셋 (재시작 복원 시드 포함) — 복구 시 중복 제거 기준점
     outstanding: u64,    // emit 했지만 프론트가 아직 ack 하지 않은 바이트
     closed: bool,        // 셸 종료 또는 사용자 닫기
+    cols: u16,           // 현재 PTY 크기 — 원격 뷰가 같은 격자로 그리도록 스냅샷에 싣는다
+    rows: u16,
 }
 
 struct SessionChan {
     inner: Mutex<ChanInner>,
     cv: Condvar, // pending 도착 / pending 비움 / ack / 종료 모두 이 cv 로 통지
+    // 원격 팬아웃. send 는 논블로킹이고 outstanding 을 건드리지 않아 데스크톱 flow control 과 무관하다
+    tap: broadcast::Sender<Arc<RemoteChunk>>,
 }
 
 impl SessionChan {
@@ -136,8 +169,47 @@ impl SessionChan {
                 total: 0,
                 outstanding: 0,
                 closed: false,
+                cols: 100,
+                rows: 30,
             }),
             cv: Condvar::new(),
+            tap: broadcast::channel(TAP_CAP).0,
+        }
+    }
+
+    /// 스크롤백 적재 + off 발급 + 원격 tap 송신 (emit 순서 보장을 위해 같은 락 안에서)
+    fn append_emitted(&self, piece: &str) -> u64 {
+        let take = piece.len() as u64;
+        let mut g = plock(&self.inner);
+        let off = g.total;
+        g.total += take;
+        g.outstanding += take;
+        g.scrollback.extend_from_slice(piece.as_bytes());
+        // 슬랙을 두고 일괄 트리밍 — 포화 상태에서 emit 마다 2MB memmove 가
+        // (락을 쥔 채) 일어나는 것을 방지. 복사 횟수가 1/SLACK 로 줄어든다.
+        if g.scrollback.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
+            let excess = g.scrollback.len() - SCROLLBACK_CAP;
+            g.scrollback.drain(..excess);
+        }
+        // 원격 구독자가 있을 때만 복사본을 만든다. 같은 락 안에서 보내야
+        // 원격 스냅샷과 청크 경계가 어긋나지 않는다
+        if self.tap.receiver_count() > 0 {
+            let _ = self.tap.send(Arc::new(RemoteChunk { off, data: piece.to_string() }));
+        }
+        off
+    }
+
+    /// 원격 스냅샷 + 수신기. scrollback() 과 달리 outstanding 을 건드리지 않는다
+    fn remote_sub(&self, tail_bytes: usize) -> RemoteSub {
+        let g = plock(&self.inner);
+        // 락 안에서 subscribe — append_emitted 가 같은 락 안에서 send 하므로 스냅샷 이후 청크만 받는다
+        let rx = self.tap.subscribe();
+        RemoteSub {
+            rx,
+            data: tail_text(&g.scrollback, tail_bytes),
+            off: g.total,
+            cols: g.cols,
+            rows: g.rows,
         }
     }
 }
@@ -147,6 +219,7 @@ pub struct PtyManager {
     ios: Mutex<HashMap<String, Arc<Mutex<SessionIo>>>>,
     children: Mutex<HashMap<String, Box<dyn Child + Send + Sync>>>,
     chans: Mutex<HashMap<String, Arc<SessionChan>>>,
+    events: broadcast::Sender<PtyEvent>,
 }
 
 fn default_shell(override_shell: &str) -> String {
@@ -314,11 +387,28 @@ fn decide_status(
     }
 }
 
-fn emit_status(app: &AppHandle, id: &str, status: Status, busy_ms: u128) {
+fn emit_status(
+    app: &AppHandle,
+    events: &broadcast::Sender<PtyEvent>,
+    id: &str,
+    status: Status,
+    busy_ms: u128,
+) {
     let _ = app.emit(
         "ta:status",
         serde_json::json!({ "sessionId": id, "status": status, "busyMs": busy_ms }),
     );
+    let _ = events.send(PtyEvent::Status { id: id.to_string(), status, busy_ms: busy_ms as u64 });
+}
+
+/// 스크롤백 끝에서 최대 max 바이트를 UTF-8 문자 경계에서 잘라 낸다
+fn tail_text(buf: &[u8], max: usize) -> String {
+    let mut start = buf.len().saturating_sub(max);
+    // 연속 바이트(10xxxxxx)에서 시작하면 깨진 문자가 생기므로 다음 문자 시작까지 민다
+    while start < buf.len() && (buf[start] & 0xC0) == 0x80 {
+        start += 1;
+    }
+    String::from_utf8_lossy(&buf[start..]).into_owned()
 }
 
 /// carry(이월 버퍼)에서 완성된 UTF-8 프리픽스를 잘라낸다.
@@ -437,7 +527,13 @@ impl PtyManager {
             ios: Mutex::new(HashMap::new()),
             children: Mutex::new(HashMap::new()),
             chans: Mutex::new(HashMap::new()),
+            events: broadcast::channel(EVENT_CAP).0,
         }
+    }
+
+    /// 원격 서버·푸시용 세션 이벤트 구독
+    pub fn subscribe_events(&self) -> broadcast::Receiver<PtyEvent> {
+        self.events.subscribe()
     }
 
     /// 상태 머신 폴링 스레드 (앱 시작 시 1회 기동).
@@ -445,6 +541,7 @@ impl PtyManager {
     /// 우선순위: Waiting > Running(출력) > Done/Idle — waiting 중에도 스피너 출력이 나오므로.
     pub fn start_status_thread(&self, app: AppHandle) {
         let metas = Arc::clone(&self.metas);
+        let events = self.events.clone();
         std::thread::spawn(move || {
             let mut hook_mtime: Option<std::time::SystemTime> = None;
             let mut hook_states: std::collections::HashMap<String, crate::hooks::HookState> =
@@ -517,7 +614,7 @@ impl PtyManager {
                     }
                 }
                 for (id, status, busy_ms) in changed {
-                    emit_status(&app, &id, status, busy_ms);
+                    emit_status(&app, &events, &id, status, busy_ms);
                 }
             }
         });
@@ -665,6 +762,7 @@ impl PtyManager {
         // ── 이미터 스레드: 코얼레싱 + flow control + 스크롤백 적재 → emit ──
         let chan_e = Arc::clone(&chan);
         let sid = id.clone();
+        let events = self.events.clone();
         std::thread::spawn(move || {
             let mut carry: Vec<u8> = Vec::new(); // UTF-8 문자가 청크 경계에서 잘릴 때의 이월 버퍼
             loop {
@@ -733,21 +831,7 @@ impl PtyManager {
                         };
                         let (piece, rest) = remaining.split_at(take);
                         remaining = rest;
-                        // 스크롤백 적재 + off 발급 (emit 순서 보장을 위해 같은 락 안에서)
-                        let off = {
-                            let mut g = plock(&chan_e.inner);
-                            let off = g.total;
-                            g.total += take as u64;
-                            g.outstanding += take as u64;
-                            g.scrollback.extend_from_slice(piece.as_bytes());
-                            // 슬랙을 두고 일괄 트리밍 — 포화 상태에서 emit 마다 2MB memmove 가
-                            // (락을 쥔 채) 일어나는 것을 방지. 복사 횟수가 1/SLACK 로 줄어든다.
-                            if g.scrollback.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
-                                let excess = g.scrollback.len() - SCROLLBACK_CAP;
-                                g.scrollback.drain(..excess);
-                            }
-                            off
-                        };
+                        let off = chan_e.append_emitted(piece);
                         let _ = app.emit(
                             "ta:data",
                             serde_json::json!({
@@ -762,10 +846,12 @@ impl PtyManager {
                 }
             }
             // 종료 통지 — 남은 출력을 모두 flush 한 뒤에 보낸다
-            emit_status(&app, &sid, Status::Exited, 0);
+            emit_status(&app, &events, &sid, Status::Exited, 0);
             let _ = app.emit("ta:exit", serde_json::json!({ "sessionId": sid }));
+            let _ = events.send(PtyEvent::Exited { id: sid.clone() });
         });
 
+        let _ = self.events.send(PtyEvent::Created(info.clone()));
         Ok(info)
     }
 
@@ -795,6 +881,16 @@ impl PtyManager {
         if let Some(io) = io {
             let _ = plock(&io).master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         }
+        let chan = plock(&self.chans).get(id).cloned();
+        if let Some(chan) = chan {
+            let mut g = plock(&chan.inner);
+            if g.cols == cols && g.rows == rows {
+                return; // fit 재계산마다 같은 크기가 반복 호출된다 — 원격에 중복 통지하지 않는다
+            }
+            g.cols = cols;
+            g.rows = rows;
+        }
+        let _ = self.events.send(PtyEvent::Resize { id: id.to_string(), cols, rows });
     }
 
     pub fn close(&self, id: &str) {
@@ -832,6 +928,13 @@ impl PtyManager {
         }
     }
 
+    /// 원격 구독 시작: 스크롤백 tail 스냅샷 + 이후 청크 수신기.
+    /// scrollback() 과 달리 outstanding 을 건드리지 않는다 — 데스크톱 flow control 비간섭.
+    pub fn remote_subscribe(&self, id: &str, tail_bytes: usize) -> Option<RemoteSub> {
+        let chan = plock(&self.chans).get(id).cloned()?;
+        Some(chan.remote_sub(tail_bytes))
+    }
+
     /// 프론트가 xterm 에 기록 완료한 바이트 수를 확인(ack) → flow control 재개
     pub fn ack_data(&self, id: &str, bytes: u64) {
         let chan = plock(&self.chans).get(id).cloned();
@@ -856,7 +959,7 @@ impl PtyManager {
         if let Some(m) = map.get_mut(id) {
             if m.status == Status::Done {
                 m.status = Status::Idle;
-                emit_status(app, id, Status::Idle, 0);
+                emit_status(app, &self.events, id, Status::Idle, 0);
             }
         }
     }
@@ -946,6 +1049,57 @@ mod tests {
             decide_status(Status::Done, false, 60_000, 60_000, true, true),
             Status::Done
         );
+    }
+
+    // ── 원격 tap ──
+
+    #[test]
+    fn remote_tap_continues_from_snapshot_without_duplicates() {
+        let chan = SessionChan::new();
+        assert_eq!(chan.append_emitted("hello "), 0); // 구독자 없음 — tap 송신 생략
+        let mut sub = chan.remote_sub(1024);
+        assert_eq!(sub.data, "hello ");
+        assert_eq!(sub.off, 6);
+        assert_eq!((sub.cols, sub.rows), (100, 30));
+        chan.append_emitted("world");
+        chan.append_emitted("!");
+        let a = sub.rx.try_recv().unwrap();
+        let b = sub.rx.try_recv().unwrap();
+        // 스냅샷 끝(off) 에서 정확히 이어진다 — 클라이언트 규칙 `off >= snap.off` 로 모두 유지
+        assert_eq!((a.off, a.data.as_str()), (6, "world"));
+        assert_eq!((b.off, b.data.as_str()), (11, "!"));
+        assert!(a.off >= sub.off && b.off == a.off + a.data.len() as u64);
+        assert!(sub.rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn remote_subscribe_does_not_touch_desktop_flow_control() {
+        let chan = SessionChan::new();
+        chan.append_emitted("abc");
+        let _sub = chan.remote_sub(10);
+        assert_eq!(plock(&chan.inner).outstanding, 3);
+    }
+
+    #[test]
+    fn remote_tap_lag_reports_to_that_subscriber_only() {
+        let chan = SessionChan::new();
+        let mut slow = chan.remote_sub(0);
+        for _ in 0..TAP_CAP + 10 {
+            chan.append_emitted("x");
+        }
+        assert!(matches!(slow.rx.try_recv(), Err(broadcast::error::TryRecvError::Lagged(_))));
+        // 재구독 스냅샷은 그동안의 출력을 담고 off 가 누적값과 일치한다
+        let fresh = chan.remote_sub(1 << 20);
+        assert_eq!(fresh.off, (TAP_CAP + 10) as u64);
+        assert_eq!(fresh.data.len(), TAP_CAP + 10);
+    }
+
+    #[test]
+    fn tail_text_cuts_on_char_boundary() {
+        let s = "가나다"; // 각 3바이트
+        assert_eq!(tail_text(s.as_bytes(), 4), "다");
+        assert_eq!(tail_text(s.as_bytes(), 6), "나다");
+        assert_eq!(tail_text(b"abc", 10), "abc");
     }
 
     #[test]

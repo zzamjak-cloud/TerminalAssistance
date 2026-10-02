@@ -28,7 +28,21 @@ toml_edit = "0.22"
 ttf-parser = "0.25"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # ?쒖뒪??硫붾え由??꾪솴 ?쒖떆??(硫붾え由?議고쉶留??ъ슜)
-sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+sysinfo = { version = "0.33", default-features = false, features = ["system", "network"] }
+# 모바일 원격 제어 서버 — tauri 가 이미 쓰는 tokio 런타임 위에서 동작
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "json"] }
+tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt"] }
+# 원격 기기 토큰은 SHA-256 해시만 저장한다
+sha2 = "0.10"
+getrandom = "0.2"
+# 페어링 QR (SVG 문자열 — 이미지 의존성 없음)
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 # WebView2 ?뚮뜑???щ옒???먮룞 蹂듦뎄??(wry 媛 ?곕뒗 踰꾩쟾怨??쇱튂?댁빞 COM ??낆씠 ?명솚??
 [target."cfg(windows)".dependencies]

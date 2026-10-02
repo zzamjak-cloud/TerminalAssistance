@@ -8,6 +8,7 @@ mod explorer;
 mod hooks;
 mod plans;
 mod pty;
+mod remote;
 mod store;
 mod util;
 mod worktree;
@@ -406,7 +407,7 @@ fn update_settings(
 // ── 세션 배치 영속화 (재시작 복원용) ──
 // 살아 있는 세션 목록만 스냅샷해 설정에 남긴다. 화면 내용은 저장하지 않는다.
 // 호출 지점은 세션 생성·종료·이름변경 세 곳뿐이라 상시 부하가 없다.
-fn save_session_layout(store: &StoreState, ptys: &State<PtyManager>) {
+fn save_session_layout(store: &Mutex<Store>, ptys: &PtyManager) {
     let saved: Vec<SavedSession> = ptys
         .list()
         .into_iter()
@@ -496,6 +497,16 @@ fn create_session(
     ptys: State<PtyManager>,
     project_id: Option<String>,
 ) -> Result<pty::SessionInfo, String> {
+    create_session_inner(&app, &store, &ptys, project_id)
+}
+
+/// 데스크톱 커맨드와 원격(모바일) 생성이 공유하는 세션 생성 본문
+fn create_session_inner(
+    app: &AppHandle,
+    store: &Mutex<Store>,
+    ptys: &PtyManager,
+    project_id: Option<String>,
+) -> Result<pty::SessionInfo, String> {
     let (cwd, shell) = {
         let s = plock(&store);
         let proj = project_id
@@ -517,8 +528,8 @@ fn create_session(
         .max()
         .unwrap_or(0)
         + 1;
-    let info = ptys.create(app, project_id, cwd, &shell, Some(format!("S{}", n)), None)?;
-    save_session_layout(&store, &ptys);
+    let info = ptys.create(app.clone(), project_id, cwd, &shell, Some(format!("S{}", n)), None)?;
+    save_session_layout(store, ptys);
     Ok(info)
 }
 
@@ -984,6 +995,7 @@ fn main() {
         .manage(PtyManager::new())
         .manage(PendingUpdate::default())
         .manage(MemState::new(sysinfo::System::new()))
+        .manage(remote::RemoteHub::new())
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             app.manage(Mutex::new(Store::load(config_dir)));
@@ -993,6 +1005,7 @@ fn main() {
             for win in app.webview_windows().values() {
                 let _ = win.set_title(&title);
             }
+            remote::init(app.handle()); // 설정이 켜져 있으면 원격 서버 기동 + 푸시 감시
             hooks::clean_state_dir(); // 이전 실행이 남긴 훅 상태 파일 정리
             hooks::refresh_hook_script(); // 설치된 훅 스크립트를 최신 임베드 버전으로 갱신
 
@@ -1079,7 +1092,12 @@ fn main() {
             hooks::hooks_status,
             hooks::claude_session_of,
             hooks::set_claude_hooks,
-            hooks::set_codex_hooks
+            hooks::set_codex_hooks,
+            remote::remote_get_config,
+            remote::remote_set_config,
+            remote::remote_start_pairing,
+            remote::remote_revoke_device,
+            remote::remote_test_push
         ])
         .build(tauri::generate_context!())
         .expect("Terminal Assistance 실행 실패")
