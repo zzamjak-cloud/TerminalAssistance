@@ -1,17 +1,18 @@
 // 전 세션 대시보드 — 프로젝트 묶기와 정렬 우선순위 검증.
-// dashboard.js 를 vm 샌드박스에 로드해 실제 구현을 돌린다.
+// dashboard-core.js + dashboard.js 를 vm 샌드박스에 로드해 실제 구현을 돌린다.
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const SRC = path.join(__dirname, '..', '..', 'src', 'renderer', 'dashboard.js');
+const DIR = path.join(__dirname, '..', '..', 'src', 'renderer');
 const sandbox = {
   App: {}, TerminalView: { views: new Map() }, document: {}, Date, Map, Set, console,
   localStorage: { getItem: () => null, setItem() {} }
 };
 vm.createContext(sandbox);
 vm.runInContext(
-  fs.readFileSync(SRC, 'utf8')
+  fs.readFileSync(path.join(DIR, 'dashboard-core.js'), 'utf8') + '\n'
+  + fs.readFileSync(path.join(DIR, 'dashboard.js'), 'utf8')
   + ';globalThis.__d = { sortSessionsForDashboard, sortGroupsForDashboard, dashboardStatusRank,'
   + ' formatRunElapsed, formatSinceChange, dashboardSignature };',
   sandbox
