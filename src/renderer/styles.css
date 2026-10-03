@@ -1535,6 +1535,22 @@ body.sorting * { cursor: grabbing !important; }
 .phone-connect .remote-url { margin-bottom: 10px; color: var(--fg-dim); text-align: center; }
 .phone-fail-title { font-weight: 600; margin-bottom: 6px; }
 .phone-qr.small { width: 150px; height: 150px; }
+/* 📱 단계별 마법사 */
+.pw-steps { display: flex; flex-direction: column; gap: 8px; }
+.pw-step { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.pw-step.done { opacity: .7; }
+.pw-step.current { border-color: var(--accent); }
+.pw-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.pw-badge {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%;
+  font-size: 11px; background: var(--bg); border: 1px solid var(--border); flex: none;
+}
+.pw-step.done .pw-badge { background: var(--running); border-color: var(--running); color: #fff; }
+.pw-body { margin-top: 8px; }
+.pw-note { margin-top: 4px; }
+.pw-qrs { display: flex; gap: 16px; justify-content: center; margin-top: 8px; }
+.pw-qr { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.pw-summary-line { margin-bottom: 10px; color: var(--running); font-weight: 600; }
 .phone-https {
   margin: 4px 0 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
 }

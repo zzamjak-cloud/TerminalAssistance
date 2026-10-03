@@ -815,6 +815,12 @@ Object.assign(App, {
       dot.title = st === 'online' ? 'Tailscale 온라인' : st === 'offline' ? 'Tailscale 오프라인' : 'Tailscale 상태 알 수 없음';
       name.prepend(dot);
       main.append(name, meta);
+      if (d.needsRepair) {
+        const re = document.createElement('div');
+        re.className = 'form-help warn';
+        re.textContent = '재페어링 필요 — HTTPS 로 바뀌기 전에 연결한 기기입니다. 새 QR 로 다시 페어링하세요.';
+        main.appendChild(re);
+      }
       if (st === 'offline') {
         const help = document.createElement('div');
         help.className = 'form-help warn';
@@ -912,15 +918,236 @@ Object.assign(App, {
     }
   },
 
-  showPhoneConnectModal() {
+  // opts.wizard: 모두 끝난 사용자도 요약 대신 단계 화면을 본다 ('설정 다시 보기')
+  showPhoneConnectModal(opts) {
     App.modal(`
       <h3>📱 폰 연결</h3>
-      <div id="pc-root" class="phone-connect"><div class="form-help">연결 준비 중…</div></div>
+      <div id="pc-root" class="phone-connect"><div class="form-help">상태 확인 중…</div></div>
       <div class="modal-actions"><button id="pc-close">닫기</button></div>`,
     (m, close) => {
       m.querySelector('#pc-close').onclick = close;
-      void App.runPhoneConnect(m.querySelector('#pc-root'));
+      void App.startPhoneWizard(m.querySelector('#pc-root'), !!(opts && opts.wizard));
+    }, { wide: true });
+  },
+
+  // ── 단계별 마법사: 3초마다 상태를 다시 읽어 끝난 단계를 접고 다음으로 넘어간다 ──
+  _wizard: null,
+
+  stopPhoneWizard(wz) {
+    const cur = wz || App._wizard;
+    if (!cur) return;
+    clearInterval(cur.timer);
+    cur.timer = null;
+    if (App._wizard === cur) App._wizard = null;
+  },
+
+  async startPhoneWizard(root, forceWizard) {
+    App.stopPhoneWizard();
+    const wz = { root, timer: null, key: null, forceWizard, st: null };
+    App._wizard = wz;
+    const poll = async () => {
+      const bd = document.getElementById('modal-backdrop');
+      if (!phoneWizardShouldPoll(App._wizard === wz, root.isConnected, !!(bd && bd.classList.contains('hidden')))) {
+        App.stopPhoneWizard(wz);
+        return;
+      }
+      let st = null;
+      try { st = await ta.remoteSetupStatus(); } catch (_) {}
+      if (App._wizard !== wz || !root.isConnected) return;
+      App.renderPhoneWizard(wz, st);
+    };
+    wz.poll = poll;
+    await poll();
+    if (App._wizard === wz && !wz.timer && !wz.summary) wz.timer = setInterval(poll, PHONE_WIZARD_POLL_MS);
+  },
+
+  renderPhoneWizard(wz, st) {
+    const root = wz.root;
+    if (!st) {
+      if (wz.key !== 'error') {
+        wz.key = 'error';
+        root.innerHTML = '<div class="form-help warn">Tailscale 상태를 확인하지 못했습니다. 잠시 후 다시 시도합니다.</div>';
+      }
+      return;
+    }
+    wz.st = st;
+    const plan = phoneWizardPlan(st, phoneWizardFlags());
+    if (plan.allDone && !wz.forceWizard) {
+      // 요약은 한 번 그리고 폴링을 멈춘다 — 기기 목록은 ta:remote-status 로 갱신된다
+      App.stopPhoneWizard(wz);
+      wz.summary = true;
+      App._wizard = wz;
+      void App.renderPhoneSummary(wz, st);
+      return;
+    }
+    // 현재 단계 본문이 같으면 머리글(✓·안내)만 고친다 — 진행 중인 페어링 코드를 재발급하지 않게
+    const bodyKey = phoneWizardBodyKey(plan, st);
+    if (wz.key === bodyKey && wz.list && wz.list.isConnected) {
+      App.updateWizardHeads(wz.list, plan);
+      return;
+    }
+    wz.key = bodyKey;
+    root.textContent = '';
+    const list = document.createElement('div');
+    list.className = 'pw-steps';
+    plan.steps.forEach((step, i) => {
+      const el = document.createElement('div');
+      el.dataset.step = step.id;
+      const head = document.createElement('div');
+      head.className = 'pw-head';
+      const badge = document.createElement('span');
+      badge.className = 'pw-badge';
+      badge.dataset.n = String(i + 1);
+      const title = document.createElement('span');
+      title.textContent = step.title;
+      head.append(badge, title);
+      const note = document.createElement('div');
+      note.className = 'form-help warn pw-note';
+      el.append(head, note);
+      if (step.id === plan.current) {
+        const body = document.createElement('div');
+        body.className = 'pw-body';
+        el.appendChild(body);
+        App.renderWizardStep(wz, step.id, body, st);
+      }
+      list.appendChild(el);
     });
+    root.appendChild(list);
+    wz.list = list;
+    App.updateWizardHeads(list, plan);
+  },
+
+  updateWizardHeads(list, plan) {
+    for (const step of plan.steps) {
+      const el = list.querySelector(`[data-step="${step.id}"]`);
+      if (!el) continue;
+      el.className = 'pw-step' + (step.done ? ' done' : '') + (step.id === plan.current ? ' current' : '');
+      const badge = el.querySelector('.pw-badge');
+      badge.textContent = step.done ? '✓' : badge.dataset.n;
+      const note = el.querySelector('.pw-note');
+      note.textContent = step.note || '';
+      note.classList.toggle('hidden', !step.note);
+    }
+  },
+
+  renderWizardStep(wz, id, body, st) {
+    const btn = (label, fn, primary) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      if (primary) b.className = 'primary';
+      b.onclick = fn;
+      return b;
+    };
+    const help = (text, cls) => {
+      const d = document.createElement('div');
+      d.className = cls || 'form-help';
+      d.textContent = text;
+      body.appendChild(d);
+      return d;
+    };
+    const actions = document.createElement('div');
+    actions.className = 'remote-actions';
+    const recheck = () => { wz.key = null; void wz.poll(); };
+    if (id === 'mac') {
+      if (st.macTailscale === 'missing') {
+        help('이 PC 에 Tailscale 이 없습니다. 설치하고 로그인하면 자동으로 다음 단계로 넘어갑니다.');
+        actions.append(btn('Tailscale 다운로드', () => { ta.openUrl(tailscaleDownloadUrl(st.hostOs)).catch(() => {}); }, true));
+      } else {
+        help(st.macTailscale === 'needs-login'
+          ? 'Tailscale 에 로그인이 필요합니다. 앱을 열어 로그인하세요 (폰과 같은 계정).'
+          : 'Tailscale 이 꺼져 있습니다. 앱을 열어 Connect 를 누르세요.');
+        actions.append(btn('Tailscale 열기', async () => {
+          try { await ta.remoteOpenTailscale(); } catch (e) { alert(String(e)); }
+        }, true));
+      }
+      actions.append(btn('다시 확인', recheck));
+      body.appendChild(actions);
+      return;
+    }
+    if (id === 'phone') {
+      help('폰에 Tailscale 앱을 설치하고 이 PC 와 같은 계정으로 로그인하세요. 폰이 tailnet 에 보이면 자동으로 넘어갑니다.');
+      const qrs = document.createElement('div');
+      qrs.className = 'pw-qrs';
+      for (const [label, url] of [['Android (Play 스토어)', STORE_URL_ANDROID], ['iPhone (App Store)', STORE_URL_IOS]]) {
+        const cell = document.createElement('div');
+        cell.className = 'pw-qr';
+        const img = document.createElement('img');
+        img.className = 'phone-qr small';
+        img.alt = label + ' QR';
+        const cap = document.createElement('div');
+        cap.className = 'form-help';
+        cap.textContent = label;
+        cell.append(img, cap);
+        qrs.appendChild(cell);
+        ta.remoteQr(url).then((svg) => {
+          img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }).catch(() => { cap.textContent = label + ' — ' + url; });
+      }
+      body.appendChild(qrs);
+      return;
+    }
+    if (id === 'https') {
+      help('Tailscale 관리 페이지 → DNS → HTTPS Certificates 에서 Enable 을 누르세요. 크롬 앱 설치·연결 안내·암호화가 좋아집니다.');
+      actions.append(
+        btn('Tailscale DNS 설정 열기', () => { ta.openUrl(TAILSCALE_DNS_ADMIN_URL).catch(() => {}); }, true),
+        btn('켰어요, 다시 확인', recheck),
+        btn('건너뛰기 (HTTP 로 진행)', () => { phoneWizardSetFlag(PHONE_HTTPS_SKIP_KEY); recheck(); })
+      );
+      body.appendChild(actions);
+      return;
+    }
+    if (id === 'pair') {
+      const box = document.createElement('div');
+      box.dataset.compact = '1';
+      body.appendChild(box);
+      void App.runPhoneConnect(box);
+      return;
+    }
+    // finish
+    help('폰에서 열린 페이지를 홈 화면에 추가하세요 — Android 크롬: 메뉴(⋮) → 앱 설치 / iPhone 사파리: 공유 → 홈 화면에 추가.');
+    const push = document.createElement('div');
+    body.appendChild(push);
+    const ph = { root: body, baseline: null, timer: null, devKey: null };
+    App._phone = ph;
+    ta.remoteGetConfig().then((v) => {
+      if (App._phone === ph && push.isConnected) App.renderPhonePush(ph, push, v, null);
+    }).catch(() => {});
+    actions.append(btn('완료', () => { phoneWizardSetFlag(PHONE_FINISH_KEY); wz.forceWizard = false; recheck(); }, true));
+    body.appendChild(actions);
+  },
+
+  async renderPhoneSummary(wz, st) {
+    const root = wz.root;
+    let view = App._remoteView;
+    try { view = await ta.remoteGetConfig(); } catch (_) {}
+    if (App._wizard !== wz || !root.isConnected) return;
+    view = view || {};
+    root.innerHTML = `
+      <div class="pw-summary-line" id="pw-sum-line"></div>
+      <label>페어링된 기기</label>
+      <div class="remote-devices" id="pc-devices"></div>
+      <div class="remote-actions">
+        <button type="button" id="pw-open" class="primary">📱 폰에서 열기</button>
+        <button type="button" id="pw-add">새 기기 추가</button>
+        <button type="button" id="pw-again">설정 다시 보기</button>
+      </div>
+      <div id="pw-add-box"></div>
+      <label>폰 알림</label>
+      <div id="pc-push"></div>`;
+    const $ = (sel) => root.querySelector(sel);
+    $('#pw-sum-line').textContent = phoneSummaryLine(st, view);
+    const ph = { root, baseline: null, timer: null, devKey: null };
+    App._phone = ph;
+    App.renderPhoneDevices(ph, $('#pc-devices'), view);
+    App.renderPhonePush(ph, $('#pc-push'), view, null);
+    $('#pw-open').onclick = () => { void App.openOnPhone(App.state && App.state.activeId); };
+    $('#pw-add').onclick = () => {
+      const box = $('#pw-add-box');
+      box.dataset.compact = '1';
+      void App.runPhoneConnect(box);
+    };
+    $('#pw-again').onclick = () => { void App.startPhoneWizard(root, true); };
   },
 
   // 요청마다 새 ph — 늦게 온 이전 응답이 새 화면을 덮어쓰지 않게 한다
@@ -972,6 +1199,8 @@ Object.assign(App, {
   renderPhonePairing(ph, r) {
     const root = ph.root;
     const p = r.pairing;
+    // 마법사·요약 안에서 쓰일 때 — 다른 단계가 맡는 섹션은 빼고 QR 만
+    const compact = root.dataset.compact === '1';
     root.innerHTML = `
       <div class="form-help warn hidden" id="pc-changed"></div>
       <div class="phone-pair">
@@ -986,12 +1215,12 @@ Object.assign(App, {
         <li>열린 페이지를 <b>홈 화면에 추가</b> — 다음부터 아이콘으로 바로 접속</li>
       </ol>
       <div class="remote-url" id="pc-url"></div>
-      <div id="pc-https"></div>
+      ${compact ? '' : `<div id="pc-https"></div>
       <label>페어링된 기기</label>
-      <div class="remote-devices" id="pc-devices"></div>
+      <div class="remote-devices" id="pc-devices"></div>`}
       <div class="remote-actions"><button type="button" id="pc-new">새 코드</button></div>
-      <label>폰 알림 · 폰에서 열기</label>
-      <div id="pc-push"></div>`;
+      ${compact ? '' : `<label>폰 알림 · 폰에서 열기</label>
+      <div id="pc-push"></div>`}`;
     const $ = (sel) => root.querySelector(sel);
     if (r.changedFrom) {
       $('#pc-changed').textContent = `바인드 주소를 ${r.changedFrom} → auto(Tailscale) 로 바꿨습니다.`;
@@ -1004,10 +1233,12 @@ Object.assign(App, {
     $('#pc-ts').onclick = (e) => { e.preventDefault(); ta.openUrl(TAILSCALE_DOWNLOAD_URL).catch(() => {}); };
     $('#pc-new').onclick = () => { void App.runPhoneConnect(root); };
     const view = r.view || App._remoteView || {};
-    App.renderPhoneHttps(ph, $('#pc-https'), view);
-    App.renderPhonePush(ph, $('#pc-push'), view, null);
     ph.baseline = remotePhoneBaseline(view);
-    App.renderPhoneDevices(ph, $('#pc-devices'), view);
+    if (!compact) {
+      App.renderPhoneHttps(ph, $('#pc-https'), view);
+      App.renderPhonePush(ph, $('#pc-push'), view, null);
+      App.renderPhoneDevices(ph, $('#pc-devices'), view);
+    }
     const expiresAt = p.expiresMs > 1e12 ? p.expiresMs : Date.now() + (p.expiresMs || 0);
     let timer = null;
     const tick = () => {
@@ -1078,7 +1309,8 @@ Object.assign(App, {
     const help = document.createElement('div');
     help.className = 'form-help';
     if (!on) {
-      help.textContent = '작업 완료·허가 대기 알림을 폰으로 받고, 알림을 누르면 그 세션이 바로 열립니다 (ntfy 앱).';
+      help.textContent = '작업 완료·허가 대기 알림을 폰으로 받고, 알림을 누르면 그 세션이 바로 열립니다 (ntfy 앱). '
+        + '알림 링크에는 이 PC 의 접속 주소(Tailscale 이름·IP)가 포함됩니다.';
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'primary';
@@ -1112,7 +1344,7 @@ Object.assign(App, {
       wrap.append(img, t, u);
       box.appendChild(wrap);
     } else {
-      help.textContent = '폰 알림 켜짐 (ntfy). 알림을 누르면 해당 세션이 폰에서 열립니다.';
+      help.textContent = '폰 알림 켜짐 (ntfy). 알림을 누르면 해당 세션이 폰에서 열립니다. 알림 링크에는 이 PC 의 접속 주소가 포함됩니다.';
       box.appendChild(help);
       const qr = document.createElement('button');
       qr.type = 'button';
@@ -1196,6 +1428,74 @@ Object.assign(App, {
 
 const TAILSCALE_DOWNLOAD_URL = 'https://tailscale.com/download';
 const TAILSCALE_DNS_ADMIN_URL = 'https://login.tailscale.com/admin/dns';
+const STORE_URL_ANDROID = 'https://play.google.com/store/apps/details?id=com.tailscale.ipn';
+const STORE_URL_IOS = 'https://apps.apple.com/app/tailscale/id1470499037';
+const PHONE_WIZARD_POLL_MS = 3000;
+const PHONE_HTTPS_SKIP_KEY = 'ta-phone-https-skip';
+const PHONE_FINISH_KEY = 'ta-phone-wizard-finished';
+
+function tailscaleDownloadUrl(hostOs) {
+  return 'https://tailscale.com/download/' + (hostOs === 'windows' ? 'windows' : hostOs === 'linux' ? 'linux' : 'mac');
+}
+
+function phoneWizardFlags() {
+  const get = (k) => { try { return localStorage.getItem(k) === '1'; } catch (_) { return false; } };
+  return { httpsSkipped: get(PHONE_HTTPS_SKIP_KEY), finished: get(PHONE_FINISH_KEY) };
+}
+
+function phoneWizardSetFlag(key) {
+  try { localStorage.setItem(key, '1'); } catch (_) {}
+}
+
+// 모달이 닫혔거나 새 마법사로 바뀌었으면 폴링을 멈춘다
+function phoneWizardShouldPoll(isCurrent, rootConnected, backdropHidden) {
+  return !!(isCurrent && rootConnected && !backdropHidden);
+}
+
+// 단계 판정 — 현재 상태만으로 결정한다. current = 첫 미완료 단계
+function phoneWizardPlan(st, flags) {
+  const f = flags || {};
+  const phones = st.phones || [];
+  const offline = phones.length > 0 && !phones.some((p) => p.online);
+  const steps = [
+    { id: 'mac', title: 'PC 에 Tailscale 켜기', done: st.macTailscale === 'running' },
+    {
+      id: 'phone', title: '폰에 Tailscale 설치·로그인', done: phones.length > 0,
+      note: offline ? '폰의 Tailscale 이 오프라인입니다. ' + remoteOfflineHelp(phoneOsPlatform(phones[0].os)) : null
+    },
+    { id: 'https', title: 'HTTPS 켜기 (권장)', done: !!st.httpsAvailable || !!f.httpsSkipped },
+    {
+      id: 'pair', title: '폰 페어링 (QR)', done: (st.pairedDevices || 0) > 0,
+      note: st.staleDevices ? `HTTPS 로 바뀌어 기존 기기 ${st.staleDevices}대는 다시 페어링해야 합니다.` : null
+    },
+    { id: 'finish', title: '마무리 — 홈 화면 앱 · 알림', done: !!st.pushConfigured || !!f.finished }
+  ];
+  const first = steps.find((s) => !s.done);
+  return {
+    steps,
+    current: first ? first.id : null,
+    allDone: steps.every((s) => s.done)
+  };
+}
+
+// 현재 단계 본문을 다시 그릴지 판단하는 열쇠 — 본문 내용이 달라지는 값만 넣는다.
+// 안내 문구·다른 단계 완료 여부는 머리글 갱신으로 처리한다 (페어링 QR·알림 QR 유지)
+function phoneWizardBodyKey(plan, st) {
+  return plan.current + '|' + (plan.current === 'mac' ? st.macTailscale : '');
+}
+
+function phoneOsPlatform(os) {
+  const o = String(os || '').toLowerCase();
+  return o === 'android' ? 'android' : o === 'ios' ? 'ios' : 'other';
+}
+
+function phoneSummaryLine(st, view) {
+  const phones = st.phones || [];
+  const online = phones.filter((p) => p.online).length;
+  const mode = view && view.mode === 'https' ? 'HTTPS' : 'HTTP';
+  const running = view && view.running ? '실행 중' : '꺼짐';
+  return `✓ PC Tailscale · 폰 ${phones.length}대 (온라인 ${online}) · 원격 서버 ${running} (${mode})`;
+}
 
 // HTTPS 권장 안내 분기 — 이미 HTTPS 면 null, 인증서는 있는데 전환 실패면 'error', 아니면 'enable'
 function remoteHttpsAdvice(view) {

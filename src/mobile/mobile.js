@@ -29,6 +29,8 @@ const Remote = {
   uploading: false,
   dashTimer: null,
   pendingSession: null, // 알림 링크(#session=)로 열 세션
+  stateLoaded: false, // 세션 목록을 한 번이라도 받았는가 (#session 열기 조건)
+  entering: false,
   offlineAttempt: 0,
   offlineTimer: null,
 
@@ -47,10 +49,20 @@ const Remote = {
 
   // /api/me 로 상태를 보고 첫 화면을 고른다 — 오프라인 화면의 재시도도 이 경로
   async enter() {
+    // 자동 재시도와 버튼이 겹쳐 /api/me 를 동시에 여러 번 부르지 않게
+    if (Remote.entering) return;
+    Remote.entering = true;
+    try { await Remote.enterOnce(); } finally { Remote.entering = false; }
+  },
+
+  async enterOnce() {
     const code = pairCodeFromHash(location.hash);
     let me = null;
     let netFail = false;
-    try { me = await Remote.api('GET', '/api/me', null, ME_TIMEOUT_MS); } catch (e) { netFail = !e.status; }
+    try { me = await Remote.api('GET', '/api/me', null, ME_TIMEOUT_MS); } catch (e) {
+      if (e.moved) return; // 이동 안내 화면을 이미 띄웠다
+      netFail = !e.status;
+    }
     if (me) Remote.deviceId = me.deviceId || null;
     const route = bootRoute(me, netFail, code);
     // 셸은 캐시에서 떴지만 서버에 닿지 않는 경우 — 대개 폰의 Tailscale 이 꺼져 있다
@@ -59,6 +71,15 @@ const Remote = {
     clearTimeout(Remote.offlineTimer);
     if (route === 'start') { void Remote.start(); return; }
     Remote.showPair(code);
+  },
+
+  showMoved(url) {
+    Remote.stopped = true; // 옛 주소로 재연결을 계속하지 않는다
+    Remote.closeWs();
+    clearTimeout(Remote.offlineTimer);
+    Remote.show('moved');
+    document.getElementById('moved-url').textContent = url;
+    document.getElementById('moved-go').onclick = () => { location.href = url; };
   },
 
   showOffline() {
@@ -76,9 +97,10 @@ const Remote = {
   },
 
   // 알림(#session=)으로 들어왔으면 그 세션을 바로 연다 — 목록에 없으면(닫힘) 대시보드에 머문다
+  // 세션 목록을 받은 뒤에만 연다 — 아직이면 pending 으로 두고 start() 가 다시 부른다
   openPendingSession() {
     const id = Remote.pendingSession;
-    if (!id) return;
+    if (!id || !Remote.stateLoaded) return;
     Remote.pendingSession = null;
     history.replaceState(null, '', location.pathname + location.search + stripSessionHash(location.hash));
     if (Remote.findSession(id)) Remote.openView(id);
@@ -109,6 +131,13 @@ const Remote = {
     if (!res.ok) {
       const err = new Error('HTTP ' + res.status);
       err.status = res.status;
+      // HTTPS 전환 후 옛 http 주소 — 서버가 410 {moved} 로 새 주소를 알려 준다
+      if (res.status === 410) {
+        let body = null;
+        try { body = await res.json(); } catch (_) {}
+        err.moved = movedTarget(res.status, body);
+        if (err.moved) Remote.showMoved(err.moved);
+      }
       throw err;
     }
     const text = await res.text();
@@ -170,9 +199,11 @@ const Remote = {
   maybeShowInstallSheet() {
     let dismissed = false;
     try { dismissed = localStorage.getItem(INSTALL_DISMISS_KEY) === '1'; } catch (_) {}
-    if (!shouldShowInstallSheet(Remote.standalone(), dismissed)) return;
-    const body = Remote.openSheet('홈 화면에 추가');
     const platform = installPlatform(navigator.userAgent, navigator.maxTouchPoints);
+    const showInstall = shouldShowInstallSheet(Remote.standalone(), dismissed);
+    const showVpn = shouldShowVpnTips(platform, dismissed);
+    if (!showInstall && !showVpn) return;
+    const body = Remote.openSheet(showInstall ? '홈 화면에 추가' : '끊김 없이 쓰려면');
     const p = (text, cls) => {
       const el = document.createElement('p');
       el.className = cls || 'install-text';
@@ -180,34 +211,37 @@ const Remote = {
       body.appendChild(el);
       return el;
     };
-    p('홈 화면에 추가하면 앱처럼 전체 화면으로 열리고, 다음부터 아이콘 한 번으로 접속합니다.');
-    if (platform === 'ios') {
-      const steps = document.createElement('ol');
-      steps.className = 'install-steps';
-      const step = (html) => { const li = document.createElement('li'); li.innerHTML = html; steps.appendChild(li); };
-      // 정적 문구만 innerHTML 로 — 사용자 값은 섞지 않는다
-      step('Safari 의 <b>공유</b> 버튼 <span class="share-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3v12M7 8l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 11v9h14v-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span> 을 누릅니다 (아이폰은 화면 아래, 아이패드는 위).');
-      step('목록을 내려 <b>홈 화면에 추가</b> <span class="add-ico" aria-hidden="true">＋</span> 를 고릅니다.');
-      step('오른쪽 위 <b>추가</b> 를 누르면 끝.');
-      body.appendChild(steps);
-    } else if (platform === 'android' && window.__taInstallPrompt) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'primary install-btn';
-      btn.textContent = '앱 설치';
-      btn.onclick = async () => {
-        const ev = window.__taInstallPrompt;
-        window.__taInstallPrompt = null; // prompt() 는 이벤트당 한 번만 쓸 수 있다
-        Remote.closeSheet();
-        if (!ev) return;
-        try { await ev.prompt(); } catch (_) {}
-      };
-      body.appendChild(btn);
-    } else if (platform === 'android') {
-      p('크롬 오른쪽 위 메뉴(⋮) → \'홈 화면에 추가\' 또는 \'앱 설치\' 를 누르세요.');
-    } else {
-      p('브라우저 메뉴에서 \'홈 화면에 추가\' 를 선택하세요.');
+    if (showInstall) {
+      p('홈 화면에 추가하면 앱처럼 전체 화면으로 열리고, 다음부터 아이콘 한 번으로 접속합니다.');
+      if (platform === 'ios') {
+        const steps = document.createElement('ol');
+        steps.className = 'install-steps';
+        const step = (html) => { const li = document.createElement('li'); li.innerHTML = html; steps.appendChild(li); };
+        // 정적 문구만 innerHTML 로 — 사용자 값은 섞지 않는다
+        step('Safari 의 <b>공유</b> 버튼 <span class="share-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3v12M7 8l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 11v9h14v-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span> 을 누릅니다 (아이폰은 화면 아래, 아이패드는 위).');
+        step('목록을 내려 <b>홈 화면에 추가</b> <span class="add-ico" aria-hidden="true">＋</span> 를 고릅니다.');
+        step('오른쪽 위 <b>추가</b> 를 누르면 끝.');
+        body.appendChild(steps);
+      } else if (platform === 'android' && window.__taInstallPrompt) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'primary install-btn';
+        btn.textContent = '앱 설치';
+        btn.onclick = async () => {
+          const ev = window.__taInstallPrompt;
+          window.__taInstallPrompt = null; // prompt() 는 이벤트당 한 번만 쓸 수 있다
+          Remote.closeSheet();
+          if (!ev) return;
+          try { await ev.prompt(); } catch (_) {}
+        };
+        body.appendChild(btn);
+      } else if (platform === 'android') {
+        p('크롬 오른쪽 위 메뉴(⋮) → \'홈 화면에 추가\' 또는 \'앱 설치\' 를 누르세요.');
+      } else {
+        p('브라우저 메뉴에서 \'홈 화면에 추가\' 를 선택하세요.');
+      }
     }
+    if (showVpn) Remote.renderVpnTips(body, platform);
     const actions = document.createElement('div');
     actions.className = 'install-actions';
     const never = document.createElement('button');
@@ -223,6 +257,33 @@ const Remote = {
     close.onclick = () => Remote.closeSheet();
     actions.append(never, close);
     body.appendChild(actions);
+  },
+
+  // 폰이 VPN 을 놓치면 PC 에 닿지 않는다 — 기기별 설정 경로를 단계로 보여 준다 (정적 문구만)
+  renderVpnTips(body, platform) {
+    const head = document.createElement('p');
+    head.className = 'install-text vpn-head';
+    head.textContent = '끊김 없이 쓰려면 Tailscale 이 항상 켜져 있게 하세요.';
+    body.appendChild(head);
+    for (const group of vpnTipSteps(platform)) {
+      const title = document.createElement('div');
+      title.className = 'vpn-title';
+      title.textContent = group.title;
+      const ol = document.createElement('ol');
+      ol.className = 'vpn-steps';
+      for (const st of group.steps) {
+        const li = document.createElement('li');
+        const ico = document.createElement('span');
+        ico.className = 'vpn-ico';
+        ico.setAttribute('aria-hidden', 'true');
+        ico.textContent = st.icon;
+        const t = document.createElement('span');
+        t.textContent = st.text;
+        li.append(ico, t);
+        ol.appendChild(li);
+      }
+      body.append(title, ol);
+    }
   },
 
   // ── 시작: 상태 조회 → WS 연결 ──
@@ -245,7 +306,9 @@ const Remote = {
       Remote.state.projects = st.projects || [];
       Remote.state.presets = st.presets || [];
       Remote.setSessions(st.sessions || []);
+      Remote.stateLoaded = true;
     } catch (e) {
+      if (e.moved) return;
       if (e.status === 401) { Remote.unauthorized(); return; }
       Remote.toast('상태 조회 실패', true);
     }
@@ -940,7 +1003,7 @@ const Remote = {
   },
 
   show(name) {
-    for (const n of ['pair', 'dash', 'term', 'offline']) {
+    for (const n of ['pair', 'dash', 'term', 'offline', 'moved']) {
       document.getElementById('screen-' + n).classList.toggle('hidden', n !== name);
     }
     if (name === 'term') requestAnimationFrame(() => Remote.fitFont());
@@ -993,13 +1056,12 @@ const Remote = {
     });
     window.addEventListener('hashchange', () => {
       const code = pairCodeFromHash(location.hash);
-      if (code) { Remote.showPair(code); return; }
-      // 앱이 열린 채로 다른 세션 알림을 누른 경우
       const sid = sessionFromHash(location.hash);
-      if (sid && document.getElementById('screen-pair').classList.contains('hidden')) {
-        Remote.pendingSession = sid;
-        Remote.openPendingSession();
-      }
+      // pair+session 이 함께 오면 페어링 후 열도록 기억해 둔다
+      if (sid) Remote.pendingSession = sid;
+      if (code) { Remote.showPair(code); return; }
+      // 앱이 열린 채로 다른 세션 알림을 누른 경우 — 목록이 아직이면 start() 가 연다
+      if (sid && document.getElementById('screen-pair').classList.contains('hidden')) Remote.openPendingSession();
     });
     document.getElementById('offline-retry').onclick = () => {
       clearTimeout(Remote.offlineTimer);

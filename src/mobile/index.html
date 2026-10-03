@@ -54,6 +54,17 @@
       </div>
     </section>
 
+    <!-- HTTPS 전환 후 옛 http 주소로 연 경우 -->
+    <section id="screen-moved" class="screen hidden">
+      <div class="pair-box">
+        <img class="pair-logo" src="/icon.png" alt="">
+        <h1>주소가 HTTPS 로 바뀌었습니다</h1>
+        <p class="pair-help">보안 연결로 바뀌어 새 주소에서 한 번 다시 연결(페어링)해야 합니다. 홈 화면 앱이면 새 주소에서 다시 홈 화면에 추가하세요.</p>
+        <p id="moved-url" class="pair-help moved-url"></p>
+        <button type="button" id="moved-go" class="primary offline-retry">새 주소로 이동</button>
+      </div>
+    </section>
+
     <!-- 세션 대시보드 -->
     <section id="screen-dash" class="screen hidden">
       <header class="bar">

@@ -171,6 +171,11 @@
     remoteTestPush: () => invoke('remote_test_push'),
     // 폰 알림 원클릭 — ntfy 켜기 → { view, subscribeUrl, deepLink, qrSvg }
     remoteEnablePush: () => invoke('remote_enable_push'),
+    // 📱 마법사 상태 → { macTailscale, selfDnsName, httpsAvailable, phones: [{ ip, hostName, os, online, lastSeen }], pairedDevices, pushConfigured, hostOs }
+    remoteSetupStatus: () => invoke('remote_setup_status'),
+    remoteOpenTailscale: () => invoke('remote_open_tailscale'),
+    // http(s) URL → QR SVG 문자열
+    remoteQr: (text) => invoke('remote_qr', { text }),
     // ntfy 로 '폰에서 열기' 푸시 (알림 클릭 = 원격 앱의 해당 세션). 푸시 미설정이면 'no-push' 로 거부
     remoteOpenOnPhone: (sessionId) => invoke('remote_open_on_phone', { sessionId: sessionId || null }),
     // '폰 연결' 원클릭 — Tailscale IP 자동 바인드로 켜고 페어링 코드 발급.

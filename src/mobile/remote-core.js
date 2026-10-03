@@ -342,3 +342,49 @@ const OFFLINE_RETRY_MAX_MS = 30000;
 function offlineRetryDelay(attempt) {
   return Math.min(OFFLINE_RETRY_MAX_MS, OFFLINE_RETRY_BASE_MS * Math.pow(2, Math.max(0, attempt)));
 }
+
+// ── 상시 VPN 안내 ──
+function shouldShowVpnTips(platform, dismissed) {
+  return (platform === 'android' || platform === 'ios') && !dismissed;
+}
+
+// 기기별 설정 경로. 아이콘은 이모지(외부 이미지 없이 단계 구분용)
+function vpnTipSteps(platform) {
+  if (platform === 'android') {
+    return [
+      {
+        title: '상시 VPN (갤럭시 기준)',
+        steps: [
+          { icon: '⚙️', text: '설정 → 연결' },
+          { icon: '🔗', text: '기타 연결 설정 → VPN' },
+          { icon: '🛡️', text: 'Tailscale 옆 ⚙ → 상시 VPN 켜기' }
+        ]
+      },
+      {
+        title: '배터리 제한 해제',
+        steps: [
+          { icon: '📱', text: '설정 → 애플리케이션 → Tailscale' },
+          { icon: '🔋', text: '배터리 → 제한 없음' }
+        ]
+      }
+    ];
+  }
+  if (platform === 'ios') {
+    return [
+      {
+        title: 'VPN On Demand',
+        steps: [
+          { icon: '🛡️', text: 'Tailscale 앱 열기 → 설정' },
+          { icon: '🔁', text: 'VPN On Demand 켜기' }
+        ]
+      }
+    ];
+  }
+  return [];
+}
+
+// 410 {moved} 응답의 새 주소 — https 만 받는다 (임의 스킴으로 이동하지 않게)
+function movedTarget(status, body) {
+  if (status !== 410 || !body || typeof body.moved !== 'string') return null;
+  return /^https:\/\/[^\s/]+(?::\d+)?\/?$/.test(body.moved) ? body.moved : null;
+}
