@@ -62,6 +62,8 @@ const LOCK_BASE: Duration = Duration::from_secs(30);
 const LOCK_MAX: Duration = Duration::from_secs(15 * 60);
 const FAIL_FORGET: Duration = Duration::from_secs(60 * 60); // 이만큼 조용한 IP 기록은 버린다
 const FAIL_MAP_CAP: usize = 4096; // 위조 출발지 남발로 맵이 무한히 크지 않게
+// 코드당 전역 실패 상한 — 출발지를 바꿔 가며(IP 별 잠금 우회) 추측하는 시도를 막는다. 넘으면 코드 폐기
+pub const CODE_MAX_FAILS: u32 = 20;
 
 struct IpFail {
     fails: u32,
@@ -75,6 +77,7 @@ struct IpFail {
 #[derive(Default)]
 pub struct Pairing {
     active: Option<(String, Instant)>,
+    code_fails: u32,
     fails: std::collections::HashMap<IpAddr, IpFail>,
 }
 
@@ -85,6 +88,7 @@ impl Pairing {
         let code: String = raw.iter().map(|b| CODE_ALPHABET[(b & 31) as usize] as char).collect();
         let expires = now + PAIR_TTL;
         self.active = Some((code.clone(), expires));
+        self.code_fails = 0;
         (code, expires)
     }
 
@@ -117,6 +121,10 @@ impl Pairing {
             self.active = None; // 1회용
             self.fails.remove(&ip);
             return PairCheck::Ok;
+        }
+        self.code_fails += 1;
+        if self.code_fails >= CODE_MAX_FAILS {
+            self.active = None;
         }
         let f = self.fails.entry(ip).or_insert(IpFail { fails: 0, strikes: 0, locked_until: None, last: now });
         f.last = now;
@@ -288,6 +296,7 @@ mod tests {
             last_seen_ms: 0,
             tailscale_ip: None,
             platform: None,
+            scheme: "http".into(),
         };
         let devices = vec![dev("a", "tok-a"), dev("b", "tok-b")];
         assert_eq!(find_device("tok-b", &devices).map(|d| d.id.as_str()), Some("b"));
@@ -363,6 +372,7 @@ mod tests {
             last_seen_ms: seen,
             tailscale_ip: None,
             platform: None,
+            scheme: "http".into(),
         };
         assert!(!idle_expired(&dev(0, 10 * day), 40 * day));
         assert!(idle_expired(&dev(0, 10 * day), 41 * day));
@@ -437,5 +447,20 @@ mod tests {
         assert_eq!(platform_from_ua("Mozilla/5.0 (Linux; Android 14; K) Chrome/124"), "android");
         assert_eq!(platform_from_ua("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)"), "ios");
         assert_eq!(platform_from_ua("Mozilla/5.0 (Macintosh)"), "other");
+    }
+
+    #[test]
+    fn code_dies_after_global_fail_cap() {
+        let t0 = Instant::now();
+        let mut p = Pairing::default();
+        let (code, _) = p.start(t0);
+        // 매번 다른 출발지 — IP 별 잠금에는 안 걸린다
+        for i in 0..CODE_MAX_FAILS {
+            let ip: IpAddr = format!("100.64.1.{}", i + 1).parse().unwrap();
+            assert_ne!(p.consume(ip, "WRONG", t0), PairCheck::Ok);
+        }
+        assert_eq!(p.consume(ip("100.64.9.9"), &code, t0), PairCheck::Invalid, "상한 도달 후 맞는 코드도 폐기");
+        let (code2, _) = p.start(t0);
+        assert_eq!(p.consume(ip("100.64.9.9"), &code2, t0), PairCheck::Ok, "재발급하면 다시 가능");
     }
 }

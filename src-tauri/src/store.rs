@@ -171,6 +171,13 @@ pub struct RemoteDevice {
     /// android | ios | other — 오프라인 안내 분기
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+    /// 페어링한 출처 스킴 (http | https). 쿠키는 출처별이라 HTTPS 전환 후 http 기기는 재페어링해야 한다
+    #[serde(default = "default_device_scheme")]
+    pub scheme: String,
+}
+
+fn default_device_scheme() -> String {
+    "http".into()
 }
 
 /// 원격 푸시 설정. kind 는 "off" | "ntfy" — 모르는 값(향후 추가 종류)도 설정 파일 전체를
@@ -392,6 +399,7 @@ mod tests {
         // 진단 필드가 없던 구버전 기기도 읽히고, 없으면 저장 시에도 쓰지 않는다
         assert!(partial.remote.devices[0].tailscale_ip.is_none() && partial.remote.devices[0].platform.is_none());
         assert!(!serde_json::to_string(&partial.remote.devices[0]).unwrap().contains("tailscaleIp"));
+        assert_eq!(partial.remote.devices[0].scheme, "http", "구버전 기기는 http 로 페어링된 것");
 
         let json = serde_json::to_string(&partial).unwrap();
         let back: StoreData = serde_json::from_str(&json).unwrap();

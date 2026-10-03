@@ -1103,7 +1103,10 @@ fn main() {
             remote::remote_release_control,
             remote::remote_quick_connect,
             remote::remote_enable_push,
-            remote::remote_open_on_phone
+            remote::remote_open_on_phone,
+            remote::remote_setup_status,
+            remote::remote_open_tailscale,
+            remote::remote_qr
         ])
         .build(tauri::generate_context!())
         .expect("Terminal Assistance 실행 실패")

@@ -121,6 +121,34 @@ impl Ctx {
     }
 }
 
+/// HTTPS 전환 후 옛 http 주소(Tailscale IP:port)로 오는 폰을 안내하는 경량 서버.
+/// 쿠키·API 없이 페이지는 https 주소로 302, /api·/ws 는 410 + {moved} (설치된 앱 셸이 이동 화면을 띄운다)
+pub fn redirect_router(https_url: String) -> Router {
+    let base = Arc::new(https_url.trim_end_matches('/').to_string());
+    Router::new().fallback(move |uri: Uri| {
+        let base = Arc::clone(&base);
+        async move { moved_response(&base, &uri) }
+    })
+}
+
+fn moved_response(base: &str, uri: &Uri) -> Response {
+    let path = uri.path();
+    if path.starts_with("/api") || path.starts_with("/ws") {
+        let mut res = (StatusCode::GONE, axum::Json(json!({ "moved": base }))).into_response();
+        res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return res;
+    }
+    // 경로만 이어 붙인다 — Host 등 요청 값으로 목적지를 만들지 않아 오픈 리다이렉트가 없다
+    let pq = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let target = format!("{}{}", base, if pq.starts_with('/') { pq } else { "/" });
+    let mut res = StatusCode::FOUND.into_response();
+    if let Ok(v) = HeaderValue::from_str(&target) {
+        res.headers_mut().insert(header::LOCATION, v);
+    }
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
+}
+
 pub fn router(ctx: Arc<Ctx>) -> Router {
     Router::new()
         .route("/api/pair", post(pair))
@@ -238,8 +266,11 @@ async fn pair(
     let Ok(req) = serde_json::from_slice::<PairBody>(&body) else {
         return err(StatusCode::BAD_REQUEST, "bad request");
     };
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let https = ctx.is_https(host);
+    // XFF 는 serve 경유 Host 로 온 요청에서만 믿는다 — 로컬 직접 접속이 헤더로 잠금 키를 바꾸지 못하게
     let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
-    let client = auth::client_ip(peer.ip(), ctx.https_host.is_some(), xff);
+    let client = auth::client_ip(peer.ip(), https, xff);
     match plock(&ctx.pairing).consume(client, &req.code, Instant::now()) {
         PairCheck::Ok => {}
         PairCheck::Invalid => return err(StatusCode::UNAUTHORIZED, "invalid code"),
@@ -255,6 +286,7 @@ async fn pair(
         created_ms: now,
         last_seen_ms: now,
         tailscale_ip: Some(client.to_string()),
+        scheme: if https { "https" } else { "http" }.into(),
         platform: Some(
             auth::platform_from_ua(headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or(""))
                 .to_string(),
@@ -264,8 +296,7 @@ async fn pair(
     if let Err(e) = ctx.backend.add_device(dev) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
-    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let secure = if ctx.is_https(host) { "; Secure" } else { "" };
+    let secure = if https { "; Secure" } else { "" };
     let cookie = format!(
         "{}={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000{}",
         COOKIE_NAME, token, secure
@@ -1066,6 +1097,51 @@ mod tests {
         let d = devs.last().unwrap();
         assert_eq!(d.tailscale_ip.as_deref(), Some("100.72.45.122"));
         assert_eq!(d.platform.as_deref(), Some("android"));
+        assert_eq!(d.scheme, "https");
+    }
+
+    #[tokio::test]
+    async fn redirect_server_moves_to_https() {
+        let app = redirect_router("https://mac.t.ts.net:7443".into());
+        let r = Request::builder().uri("/?source=pwa").header(header::HOST, "evil.example").body(Body::empty()).unwrap();
+        let res = app.clone().oneshot(r).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+        assert_eq!(res.headers().get(header::LOCATION).unwrap(), "https://mac.t.ts.net:7443/?source=pwa", "Host 와 무관");
+        for p in ["/api/me", "/ws", "/api/state"] {
+            let res = app.clone().oneshot(Request::builder().uri(p).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(res.status(), StatusCode::GONE, "{p}");
+            assert!(res.headers().get(header::SET_COOKIE).is_none());
+            let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["moved"], "https://mac.t.ts.net:7443");
+        }
+    }
+
+    #[tokio::test]
+    async fn https_mode_local_direct_ignores_xff() {
+        // HTTPS 모드여도 serve Host 가 아닌 로컬 직접 요청은 XFF 를 믿지 않는다
+        let (stx, srx) = watch::channel(false);
+        let bind: IpAddr = "127.0.0.1".parse().unwrap();
+        let ctx = Arc::new(Ctx {
+            backend: MockBackend::new(),
+            pairing: Arc::new(Mutex::new(Pairing::default())),
+            bind,
+            port: 7788,
+            allowed_hosts: Mutex::new((Instant::now(), auth::allowed_hosts(&bind, 7788, &[]))),
+            revoked: broadcast::channel(8).0,
+            shutdown: srx,
+            next_conn: std::sync::atomic::AtomicU64::new(1),
+            upload_slots: tokio::sync::Semaphore::new(UPLOAD_CONCURRENCY),
+            https_host: Some("mac.t.ts.net:7443".into()),
+        });
+        let _keep = stx;
+        let (code, _) = plock(&ctx.pairing).start(Instant::now());
+        let body = json!({ "code": code, "deviceName": "폰" }).to_string();
+        let r = req("POST", "/api/pair", HOST).header("x-forwarded-for", "100.9.9.9").body(Body::from(body)).unwrap();
+        let (st, _) = status_from(&ctx, r, [127, 0, 0, 1]).await;
+        assert_eq!(st, StatusCode::OK);
+        let d = ctx.backend.devices().last().cloned().unwrap();
+        assert_eq!(d.tailscale_ip.as_deref(), Some("127.0.0.1"));
+        assert_eq!(d.scheme, "http");
     }
 
     #[tokio::test]
