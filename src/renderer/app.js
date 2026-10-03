@@ -100,6 +100,9 @@ const App = {
     // 폰이 입력했다 — 데스크톱이 추적하던 입력 줄 내용은 더 이상 믿을 수 없다
     ta.onRemoteInput((p) => App.onRemoteInput(p));
     ta.onRemoteImage((p) => App.onRemoteImage(p));
+    // 📱 배지(연결된 폰)·폰 연결 모달 갱신
+    ta.onRemoteStatus((v) => App.onRemoteStatus(v));
+    ta.remoteGetConfig().then((v) => App.onRemoteStatus(v)).catch(() => {});
     ta.onExit(({ sessionId }) => {
       TerminalView.write(sessionId, '\r\n\x1b[31m[세션 종료됨 — 닫기(✕)로 정리]\x1b[0m\r\n');
     });
@@ -135,6 +138,7 @@ const App = {
     document.getElementById('btn-add-project').onclick = () => App.showProjectModal();
     document.getElementById('btn-clear-sessions').onclick = () => App.showClearSessionsModal();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
+    document.getElementById('btn-phone').onclick = () => App.showPhoneConnectModal();
     document.getElementById('btn-dashboard').onclick = () => App.toggleDashboard();
     document.getElementById('btn-dashboard-close').onclick = () => App.closeDashboard();
     document.getElementById('btn-help').onclick = () => App.showHelpModal();

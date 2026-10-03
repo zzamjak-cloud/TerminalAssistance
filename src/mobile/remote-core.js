@@ -284,3 +284,34 @@ function controlLostText(prev, next, myDeviceId) {
   if (next && next.holder) return '제어권이 ' + (next.deviceName || '다른 기기') + '(으)로 넘어갔습니다';
   return '제어권이 반환되었습니다';
 }
+
+// ── 홈 화면 앱화 ──
+// 홈 화면에서 연 앱인가 — iOS 는 navigator.standalone, 그 외는 display-mode 미디어쿼리
+function isStandaloneMode(navStandalone, displayModeStandalone) {
+  return navStandalone === true || displayModeStandalone === true;
+}
+
+// 설치 안내 분기. iPadOS 사파리는 데스크톱(Mac) UA 를 쓰므로 터치 포인트로 구분한다
+function installPlatform(ua, maxTouchPoints) {
+  const s = String(ua || '');
+  if (/iPhone|iPad|iPod/.test(s) || (/Macintosh/.test(s) && (maxTouchPoints || 0) > 1)) return 'ios';
+  if (/Android/.test(s)) return 'android';
+  return 'other';
+}
+
+const INSTALL_DISMISS_KEY = 'ta-remote-install-dismissed';
+
+function shouldShowInstallSheet(standalone, dismissed) {
+  return !standalone && !dismissed;
+}
+
+// 페어링 화면의 기기 이름 기본값. UA 축소(Chrome)로 모델명이 'K' 로만 오면 일반 이름을 쓴다
+function deviceNameFromUA(ua, maxTouchPoints) {
+  const s = String(ua || '');
+  if (/iPad/.test(s) || (/Macintosh/.test(s) && (maxTouchPoints || 0) > 1)) return 'iPad';
+  if (/iPhone/.test(s)) return 'iPhone';
+  const android = /Android[^;)]*;\s*([^;)]+?)(?:\s+Build|\))/.exec(s);
+  if (android && android[1].trim().length > 1) return android[1].trim().slice(0, 40);
+  if (/Android/.test(s)) return 'Android';
+  return '모바일 브라우저';
+}

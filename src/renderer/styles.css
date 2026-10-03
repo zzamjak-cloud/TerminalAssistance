@@ -324,6 +324,12 @@ button:disabled:hover { border-color: var(--border); }
    작아 보인다 — 글리프만 키우고 line-height 로 버튼 높이는 토글 버튼(23px)에 맞춘다 */
 #btn-settings { padding: 0 7px; font-size: 19px; line-height: 21px; color: var(--fg-dim); }
 #btn-settings:hover { color: var(--fg); }
+#btn-phone { position: relative; padding: 0 6px; font-size: 15px; line-height: 21px; }
+/* 연결된 폰이 있으면 초록 점 */
+#btn-phone.connected::after {
+  content: ''; position: absolute; top: 1px; right: 1px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--running); box-shadow: 0 0 0 1.5px var(--bg-panel, var(--bg));
+}
 
 /* ── 분할 모드 드롭다운 (1×1 ~ 3×2 · 2×3) ── */
 #split-controls { position: relative; display: flex; }
@@ -1514,6 +1520,20 @@ body.sorting * { cursor: grabbing !important; }
   letter-spacing: 3px; user-select: text;
 }
 .remote-devices { display: flex; flex-direction: column; gap: 6px; }
+/* 📱 폰 연결 모달 */
+.phone-pair { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 12px; }
+.phone-qr { width: 220px; height: 220px; background: #fff; border-radius: 8px; padding: 8px; }
+.phone-qr.expired { opacity: .2; }
+.phone-code {
+  font-family: Menlo, Consolas, "D2Coding", monospace; font-size: 30px; font-weight: 700;
+  letter-spacing: 6px; user-select: text;
+}
+.phone-done { color: var(--running); font-size: 16px; font-weight: 700; }
+.phone-done.hidden, .phone-connect .hidden { display: none; }
+.phone-steps { margin: 0 0 10px; padding-left: 20px; font-size: 12px; line-height: 1.6; color: var(--fg-dim); }
+.phone-steps b { color: var(--fg); }
+.phone-connect .remote-url { margin-bottom: 10px; color: var(--fg-dim); text-align: center; }
+.phone-fail-title { font-weight: 600; margin-bottom: 6px; }
 .remote-device {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;

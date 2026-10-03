@@ -98,6 +98,24 @@ input:focus, textarea:focus { border-color: var(--accent); }
 #pair-code { font-family: Menlo, Consolas, monospace; letter-spacing: 2px; text-transform: uppercase; }
 #pair-submit { width: 100%; margin-top: 18px; padding: 12px; }
 .pair-error { color: var(--exited); font-size: 13px; min-height: 1.4em; margin: 12px 0 0; }
+.pair-hint { color: var(--caution); font-size: 13px; margin: 6px 0 0; }
+/* 홈 화면 앱 — 코드 입력 하나만 크게 */
+.pair-simple .pair-name-row { display: none; }
+.pair-simple .pair-help { font-size: 15px; color: var(--fg); }
+.pair-simple #pair-code { font-size: 28px; padding: 14px 10px; text-align: center; letter-spacing: 6px; }
+.pair-simple #pair-submit { font-size: 17px; padding: 14px; }
+
+/* ── 홈 화면에 추가 안내 시트 ── */
+.install-text { font-size: 14px; line-height: 1.5; margin: 4px 4px 12px; }
+.install-steps { margin: 0 0 12px; padding-left: 22px; font-size: 14px; line-height: 1.6; }
+.install-steps li { margin-bottom: 8px; }
+.share-ico, .add-ico {
+  display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+  min-width: 26px; height: 26px; padding: 0 4px; border-radius: 6px;
+  background: var(--bg-hover); border: 1px solid var(--border); color: var(--accent);
+}
+.install-btn { width: 100%; padding: 12px; margin-bottom: 12px; }
+.install-actions { display: flex; gap: 8px; justify-content: flex-end; padding-bottom: env(safe-area-inset-bottom); }
 
 /* ── 대시보드 ── */
 .dash-list {

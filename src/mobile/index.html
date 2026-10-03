@@ -9,9 +9,11 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="TA 원격">
   <title>TerminalAssistance 원격</title>
+  <!-- 가장 먼저 — 이후 스크립트의 로드 실패·부팅 오류를 화면에 보여 준다 -->
+  <script src="/boot-guard.js"></script>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.png">
-  <link rel="apple-touch-icon" href="/icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="stylesheet" href="/xterm.css">
   <link rel="stylesheet" href="/mobile.css">
 </head>
@@ -22,15 +24,18 @@
       <div class="pair-box">
         <img class="pair-logo" src="/icon.png" alt="">
         <h1>TerminalAssistance 원격</h1>
-        <p class="pair-help">데스크톱 앱 설정 → 모바일 원격 → 페어링 시작에서 QR 을 찍거나 코드를 입력하세요.</p>
+        <p class="pair-help" id="pair-help">데스크톱 앱 상단의 📱 버튼을 누르고, 표시된 QR 을 찍거나 8자 코드를 입력하세요.</p>
         <form id="pair-form" autocomplete="off">
           <label for="pair-code">페어링 코드</label>
-          <input id="pair-code" inputmode="text" autocapitalize="characters" spellcheck="false" required>
-          <label for="pair-name">이 기기 이름</label>
-          <input id="pair-name" maxlength="40" spellcheck="false" required>
+          <input id="pair-code" inputmode="text" autocapitalize="characters" autocorrect="off" autocomplete="one-time-code" spellcheck="false" maxlength="16" required>
+          <div class="pair-name-row">
+            <label for="pair-name">이 기기 이름</label>
+            <input id="pair-name" maxlength="40" spellcheck="false" required>
+          </div>
           <button type="submit" id="pair-submit" class="primary">연결</button>
         </form>
         <p id="pair-error" class="pair-error" role="alert"></p>
+        <p id="pair-net-hint" class="pair-hint hidden">접속이 안 되면 폰의 Tailscale 앱이 켜져 있는지(VPN 연결됨) 확인하세요.</p>
       </div>
     </section>
 

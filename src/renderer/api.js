@@ -169,6 +169,9 @@
     remoteStartPairing: () => invoke('remote_start_pairing'),
     remoteRevokeDevice: (id) => invoke('remote_revoke_device', { id }),
     remoteTestPush: () => invoke('remote_test_push'),
+    // '폰 연결' 원클릭 — Tailscale IP 자동 바인드로 켜고 페어링 코드 발급.
+    // → { ok: true, view, pairing } | { ok: false, reason: 'no-tailscale'|'start-failed', error?, view? }
+    remoteQuickConnect: () => invoke('remote_quick_connect'),
     // 폰이 쥔 제어권(PTY 크기)을 데스크톱이 되찾는다
     remoteReleaseControl: (id) => invoke('remote_release_control', { id }),
 
@@ -183,6 +186,8 @@
     onRemoteInput: (cb) => listen('ta:remote-input', (e) => cb(e.payload)),
     // 폰이 이미지를 올림 { sessionId, path }
     onRemoteImage: (cb) => listen('ta:remote-image', (e) => cb(e.payload)),
+    // 원격 서버·기기 상태 변화 — payload 는 RemoteView (connectedDevices 포함)
+    onRemoteStatus: (cb) => listen('ta:remote-status', (e) => cb(e.payload)),
     // 데스크톱 알림 클릭 → 백엔드가 창을 앞으로 올린 뒤 대상 세션 id 를 보낸다
     onActivateSession: (cb) => listen('ta:activate-session', (e) => cb(e.payload)),
     // Tauri 는 파일 드롭을 웹뷰 대신 네이티브 이벤트로 준다 (실제 경로 포함)

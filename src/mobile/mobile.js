@@ -38,10 +38,19 @@ const Remote = {
     }
     const code = pairCodeFromHash(location.hash);
     let me = null;
-    try { me = await Remote.api('GET', '/api/me'); } catch (_) {}
+    let netFail = false;
+    try { me = await Remote.api('GET', '/api/me'); } catch (e) { netFail = !e.status; }
+    if (window.__taBootDone) window.__taBootDone();
     if (me) Remote.deviceId = me.deviceId || null;
     if (me && !code) { Remote.start(); return; }
     Remote.showPair(code);
+    // 셸은 캐시에서 떴지만 서버에 닿지 않는 경우 — 대개 폰의 Tailscale 이 꺼져 있다
+    if (netFail) Remote.showPairNetError('서버에 연결할 수 없습니다.');
+  },
+
+  standalone() {
+    const mq = window.matchMedia ? window.matchMedia('(display-mode: standalone)').matches : false;
+    return isStandaloneMode(navigator.standalone, mq);
   },
 
   async api(method, path, body) {
@@ -65,9 +74,21 @@ const Remote = {
     Remote.show('pair');
     const codeEl = document.getElementById('pair-code');
     const nameEl = document.getElementById('pair-name');
+    // 홈 화면 앱에서는 QR 을 찍을 수 없으니 코드 입력만 크게 — 기기 이름은 자동으로 채운다
+    const simple = Remote.standalone() && !code;
+    document.getElementById('screen-pair').classList.toggle('pair-simple', simple);
+    document.getElementById('pair-help').textContent = simple
+      ? '데스크톱 앱 상단의 📱 버튼에 표시된 8자 코드를 입력하세요.'
+      : '데스크톱 앱 상단의 📱 버튼을 누르고, 표시된 QR 을 찍거나 8자 코드를 입력하세요.';
+    document.getElementById('pair-net-hint').classList.add('hidden');
     if (code) codeEl.value = code;
     if (!nameEl.value) nameEl.value = guessDeviceName();
     (code ? nameEl : codeEl).focus();
+  },
+
+  showPairNetError(text) {
+    document.getElementById('pair-error').textContent = text;
+    document.getElementById('pair-net-hint').classList.remove('hidden');
   },
 
   async submitPair(ev) {
@@ -86,13 +107,76 @@ const Remote = {
       history.replaceState(null, '', location.pathname);
       Remote.stopped = false;
       Remote.start();
+      Remote.maybeShowInstallSheet();
     } catch (e) {
-      errEl.textContent = e.status === 401 ? '코드가 틀렸거나 만료되었습니다. 데스크톱에서 새 코드를 받으세요.'
-        : e.status === 429 ? '시도가 너무 많습니다. 잠시 후 다시 시도하세요.'
-          : '연결 실패 — 데스크톱 앱의 원격 서버가 켜져 있는지 확인하세요.';
+      if (e.status === 401 || e.status === 429) {
+        errEl.textContent = e.status === 401 ? '코드가 틀렸거나 만료되었습니다. 데스크톱에서 새 코드를 받으세요.'
+          : '시도가 너무 많습니다. 잠시 후 다시 시도하세요.';
+      } else {
+        Remote.showPairNetError('연결 실패 — 데스크톱 앱이 켜져 있는지 확인하세요.');
+      }
     } finally {
       btn.disabled = false;
     }
+  },
+
+  // ── 홈 화면에 추가 안내 ──
+  maybeShowInstallSheet() {
+    let dismissed = false;
+    try { dismissed = localStorage.getItem(INSTALL_DISMISS_KEY) === '1'; } catch (_) {}
+    if (!shouldShowInstallSheet(Remote.standalone(), dismissed)) return;
+    const body = Remote.openSheet('홈 화면에 추가');
+    const platform = installPlatform(navigator.userAgent, navigator.maxTouchPoints);
+    const p = (text, cls) => {
+      const el = document.createElement('p');
+      el.className = cls || 'install-text';
+      el.textContent = text;
+      body.appendChild(el);
+      return el;
+    };
+    p('홈 화면에 추가하면 앱처럼 전체 화면으로 열리고, 다음부터 아이콘 한 번으로 접속합니다.');
+    if (platform === 'ios') {
+      const steps = document.createElement('ol');
+      steps.className = 'install-steps';
+      const step = (html) => { const li = document.createElement('li'); li.innerHTML = html; steps.appendChild(li); };
+      // 정적 문구만 innerHTML 로 — 사용자 값은 섞지 않는다
+      step('Safari 의 <b>공유</b> 버튼 <span class="share-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3v12M7 8l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 11v9h14v-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span> 을 누릅니다 (아이폰은 화면 아래, 아이패드는 위).');
+      step('목록을 내려 <b>홈 화면에 추가</b> <span class="add-ico" aria-hidden="true">＋</span> 를 고릅니다.');
+      step('오른쪽 위 <b>추가</b> 를 누르면 끝.');
+      body.appendChild(steps);
+    } else if (platform === 'android' && window.__taInstallPrompt) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'primary install-btn';
+      btn.textContent = '앱 설치';
+      btn.onclick = async () => {
+        const ev = window.__taInstallPrompt;
+        window.__taInstallPrompt = null; // prompt() 는 이벤트당 한 번만 쓸 수 있다
+        Remote.closeSheet();
+        if (!ev) return;
+        try { await ev.prompt(); } catch (_) {}
+      };
+      body.appendChild(btn);
+    } else if (platform === 'android') {
+      p('크롬 오른쪽 위 메뉴(⋮) → \'홈 화면에 추가\' 또는 \'앱 설치\' 를 누르세요.');
+    } else {
+      p('브라우저 메뉴에서 \'홈 화면에 추가\' 를 선택하세요.');
+    }
+    const actions = document.createElement('div');
+    actions.className = 'install-actions';
+    const never = document.createElement('button');
+    never.type = 'button';
+    never.textContent = '다시 보지 않기';
+    never.onclick = () => {
+      try { localStorage.setItem(INSTALL_DISMISS_KEY, '1'); } catch (_) {}
+      Remote.closeSheet();
+    };
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '닫기';
+    close.onclick = () => Remote.closeSheet();
+    actions.append(never, close);
+    body.appendChild(actions);
   },
 
   // ── 시작: 상태 조회 → WS 연결 ──
@@ -817,6 +901,15 @@ const Remote = {
 
   bindUi() {
     document.getElementById('pair-form').onsubmit = (e) => Remote.submitPair(e);
+    const codeEl = document.getElementById('pair-code');
+    // autocapitalize 를 무시하는 키보드도 있어 직접 대문자로 맞춘다 (커서 위치 유지)
+    codeEl.addEventListener('input', () => {
+      const up = codeEl.value.toUpperCase();
+      if (up === codeEl.value) return;
+      const pos = codeEl.selectionStart;
+      codeEl.value = up;
+      try { codeEl.setSelectionRange(pos, pos); } catch (_) {}
+    });
     document.getElementById('btn-new').onclick = () => Remote.showNewSessionSheet();
     document.getElementById('btn-back').onclick = () => Remote.closeView(false);
     document.getElementById('btn-presets').onclick = () => Remote.showPresetSheet();
@@ -968,13 +1061,7 @@ function measureCellRatio() {
 }
 
 function guessDeviceName() {
-  const ua = navigator.userAgent || '';
-  if (/iPad/.test(ua)) return 'iPad';
-  if (/iPhone/.test(ua)) return 'iPhone';
-  const android = /Android[^;]*;\s*([^;)]+?)(?:\s+Build|\))/.exec(ua);
-  if (android) return android[1].trim().slice(0, 40);
-  if (/Android/.test(ua)) return 'Android';
-  return '모바일 브라우저';
+  return deviceNameFromUA(navigator.userAgent, navigator.maxTouchPoints);
 }
 
 document.addEventListener('DOMContentLoaded', () => { void Remote.boot(); });

@@ -677,15 +677,16 @@ Object.assign(App, {
     if (!body.isConnected) return;
     clearInterval(App._remotePairTimer);
     const push = view.push || {};
-    const statusText = view.running ? '실행 중' : view.enabled ? '중지됨 (오류)' : '꺼짐';
+    const autoNote = String(view.bind || '').toLowerCase() === 'auto' && view.resolvedBind ? ` (auto → ${view.resolvedBind})` : '';
+    const statusText = (view.running ? '실행 중' : view.enabled ? '중지됨 (오류)' : '꺼짐') + autoNote;
     body.innerHTML = `
       <div class="check"><input type="checkbox" id="m-rm-enabled" ${view.enabled ? 'checked' : ''}><label for="m-rm-enabled" style="margin:0">원격 서버 사용</label>
         <span class="remote-state${view.running ? ' on' : ''}" id="m-rm-state"></span></div>
       <div class="remote-row">
-        <div><label>바인드 주소</label><input type="text" id="m-rm-bind" spellcheck="false" placeholder="127.0.0.1"></div>
+        <div><label>바인드 주소</label><input type="text" id="m-rm-bind" spellcheck="false" placeholder="auto 또는 127.0.0.1"></div>
         <div class="remote-port"><label>포트</label><input type="number" id="m-rm-port" min="1" max="65535"></div>
       </div>
-      <div class="form-help">Tailscale IP(100.x) 바인드를 권장합니다. 0.0.0.0·사설망 주소는 같은 네트워크의 누구나 접속을 시도할 수 있습니다 (HTTP 평문).</div>
+      <div class="form-help"><b>auto</b> 는 이 컴퓨터의 Tailscale IP(100.x)를 찾아 바인드하고, IP 가 바뀌면 자동으로 다시 엽니다 (권장 — 상단 📱 버튼이 이 값으로 설정). 0.0.0.0·사설망 주소는 같은 네트워크의 누구나 접속을 시도할 수 있습니다 (HTTP 평문).</div>
       <div class="form-help warn hidden" id="m-rm-warn"></div>
       <div class="form-help warn hidden" id="m-rm-error"></div>
       <div class="remote-urls hidden" id="m-rm-urls"></div>
@@ -785,7 +786,8 @@ Object.assign(App, {
     $('#m-rm-pair').onclick = () => { void App.startRemotePairing(body); };
   },
 
-  renderRemoteDevices(box, devices, body) {
+  // onRevoked(view): 폐기 후 다시 그리기 — 생략하면 설정 섹션을 다시 그린다
+  renderRemoteDevices(box, devices, body, onRevoked) {
     box.textContent = '';
     if (!devices.length) {
       const empty = document.createElement('div');
@@ -818,7 +820,10 @@ Object.assign(App, {
           setTimeout(() => { if (btn.isConnected) { btn.classList.remove('armed'); btn.textContent = '폐기'; } }, 3000);
           return;
         }
-        try { App.renderRemoteSettings(body, await ta.remoteRevokeDevice(d.id)); }
+        try {
+          const next = await ta.remoteRevokeDevice(d.id);
+          if (onRevoked) onRevoked(next); else App.renderRemoteSettings(body, next);
+        }
         catch (e) { alert('기기 폐기 실패: ' + e); }
       };
       row.append(main, btn);
@@ -869,13 +874,178 @@ Object.assign(App, {
     $('#m-rm-pairbox').classList.remove('expired');
     tick();
     App._remotePairTimer = setInterval(tick, 1000);
+  },
+
+  // ── 📱 폰 연결 (원클릭) ──
+  _remoteView: null,
+  _phone: null, // 열린 폰 연결 모달의 현재 요청 { root, baseline, timer, devKey }
+
+  onRemoteStatus(view) {
+    if (!view) return;
+    App._remoteView = view;
+    const btn = document.getElementById('btn-phone');
+    if (btn) {
+      const n = view.connectedDevices || 0;
+      btn.classList.toggle('connected', n > 0);
+      btn.title = n > 0 ? `폰 연결 — ${n}대 연결됨` : '폰 연결 — QR 로 폰에서 이 앱의 세션을 보고 조작합니다';
+    }
+    const ph = App._phone;
+    if (!ph || !ph.root.isConnected) return;
+    const devBox = ph.root.querySelector('#pc-devices');
+    if (devBox) App.renderPhoneDevices(ph, devBox, view);
+    if (ph.baseline && remotePhoneConnected(ph.baseline, view)) {
+      const done = ph.root.querySelector('#pc-done');
+      if (done) done.classList.remove('hidden');
+    }
+  },
+
+  showPhoneConnectModal() {
+    App.modal(`
+      <h3>📱 폰 연결</h3>
+      <div id="pc-root" class="phone-connect"><div class="form-help">연결 준비 중…</div></div>
+      <div class="modal-actions"><button id="pc-close">닫기</button></div>`,
+    (m, close) => {
+      m.querySelector('#pc-close').onclick = close;
+      void App.runPhoneConnect(m.querySelector('#pc-root'));
+    });
+  },
+
+  // 요청마다 새 ph — 늦게 온 이전 응답이 새 화면을 덮어쓰지 않게 한다
+  async runPhoneConnect(root) {
+    if (App._phone) clearInterval(App._phone.timer);
+    const ph = { root, baseline: null, timer: null, devKey: null };
+    App._phone = ph;
+    const btns = root.querySelectorAll('button');
+    for (const b of btns) b.disabled = true;
+    if (btns.length) {
+      const busy = document.createElement('div');
+      busy.className = 'form-help';
+      busy.textContent = '연결 준비 중…';
+      root.prepend(busy);
+    }
+    let r;
+    try { r = await ta.remoteQuickConnect(); }
+    catch (e) { r = { ok: false, reason: 'start-failed', error: String(e) }; }
+    if (App._phone !== ph || !root.isConnected) return;
+    if (r.view) App.onRemoteStatus(r.view);
+    if (!r.ok) { App.renderPhoneFailure(ph, r); return; }
+    App.renderPhonePairing(ph, r);
+  },
+
+  renderPhoneFailure(ph, r) {
+    const root = ph.root;
+    const noTs = r.reason === 'no-tailscale';
+    root.innerHTML = `
+      <div class="phone-fail">
+        <div class="phone-fail-title"></div>
+        <div class="form-help" id="pc-fail-detail"></div>
+        <div class="remote-actions">
+          ${noTs ? '<button type="button" id="pc-ts-open">Tailscale 설치 페이지 열기</button>' : ''}
+          <button type="button" id="pc-retry" class="primary"></button>
+        </div>
+      </div>`;
+    root.querySelector('.phone-fail-title').textContent = noTs
+      ? '이 컴퓨터에 Tailscale 이 연결돼 있지 않습니다'
+      : '원격 서버를 시작하지 못했습니다';
+    root.querySelector('#pc-fail-detail').textContent = noTs
+      ? '폰과 이 컴퓨터를 안전하게 잇기 위해 Tailscale(무료 VPN)을 씁니다. 이 컴퓨터에 설치하고 로그인한 뒤 다시 시도하세요.'
+      : (r.error || '알 수 없는 오류') + ' — 설정 → 모바일 원격 제어에서 포트를 바꿔 볼 수 있습니다.';
+    root.querySelector('#pc-retry').textContent = noTs ? '설치 후 다시 시도' : '다시 시도';
+    root.querySelector('#pc-retry').onclick = () => { void App.runPhoneConnect(root); };
+    const open = root.querySelector('#pc-ts-open');
+    if (open) open.onclick = () => { ta.openUrl(TAILSCALE_DOWNLOAD_URL).catch((e) => alert('링크 열기 실패: ' + e)); };
+  },
+
+  renderPhonePairing(ph, r) {
+    const root = ph.root;
+    const p = r.pairing;
+    root.innerHTML = `
+      <div class="form-help warn hidden" id="pc-changed"></div>
+      <div class="phone-pair">
+        <img id="pc-qr" class="phone-qr" alt="페어링 QR">
+        <div class="phone-code" id="pc-code"></div>
+        <div class="form-help" id="pc-expire"></div>
+        <div class="phone-done hidden" id="pc-done">연결됨 ✓</div>
+      </div>
+      <ol class="phone-steps">
+        <li>폰에 <a href="#" id="pc-ts">Tailscale</a> 을 설치하고 이 컴퓨터와 <b>같은 계정</b>으로 로그인 (VPN On Demand·상시 VPN 을 켜 두면 편합니다)</li>
+        <li>폰 카메라로 QR 스캔 — 또는 아래 주소를 열고 코드 입력</li>
+        <li>열린 페이지를 <b>홈 화면에 추가</b> — 다음부터 아이콘으로 바로 접속</li>
+      </ol>
+      <div class="remote-url" id="pc-url"></div>
+      <label>페어링된 기기</label>
+      <div class="remote-devices" id="pc-devices"></div>
+      <div class="remote-actions"><button type="button" id="pc-new">새 코드</button></div>`;
+    const $ = (sel) => root.querySelector(sel);
+    if (r.changedFrom) {
+      $('#pc-changed').textContent = `바인드 주소를 ${r.changedFrom} → auto(Tailscale) 로 바꿨습니다.`;
+      $('#pc-changed').classList.remove('hidden');
+    }
+    // SVG 는 img 의 data URL 로만 — img 로 렌더한 SVG 는 스크립트를 실행하지 않는다
+    $('#pc-qr').src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(p.qrSvg || '');
+    $('#pc-code').textContent = p.code;
+    $('#pc-url').textContent = p.url;
+    $('#pc-ts').onclick = (e) => { e.preventDefault(); ta.openUrl(TAILSCALE_DOWNLOAD_URL).catch(() => {}); };
+    $('#pc-new').onclick = () => { void App.runPhoneConnect(root); };
+    const view = r.view || App._remoteView || {};
+    ph.baseline = remotePhoneBaseline(view);
+    App.renderPhoneDevices(ph, $('#pc-devices'), view);
+    const expiresAt = p.expiresMs > 1e12 ? p.expiresMs : Date.now() + (p.expiresMs || 0);
+    let timer = null;
+    const tick = () => {
+      const bd = document.getElementById('modal-backdrop');
+      if (!root.isConnected || (bd && bd.classList.contains('hidden')) || App._phone !== ph) {
+        clearInterval(timer);
+        if (App._phone === ph) App._phone = null;
+        return;
+      }
+      const left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+      if (!left) {
+        clearInterval(timer);
+        $('#pc-expire').textContent = '코드가 만료되었습니다 — 새 코드를 누르세요.';
+        $('#pc-qr').classList.add('expired');
+        return;
+      }
+      $('#pc-expire').textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') + ' 후 만료 · 1회용';
+    };
+    tick();
+    timer = setInterval(tick, 1000);
+    ph.timer = timer;
+  },
+
+  // 상태 통지가 잦아도(연결 수 변화 등) 목록이 바뀐 경우에만 다시 그린다 — 폐기 버튼 2단계 확인이 풀리지 않게
+  renderPhoneDevices(ph, box, view) {
+    const devices = view.devices || [];
+    const key = remoteDevicesKey(devices);
+    if (ph.devKey === key && box.childNodes.length) return;
+    ph.devKey = key;
+    App.renderRemoteDevices(box, devices, null, (next) => App.onRemoteStatus(next));
   }
 });
+
+const TAILSCALE_DOWNLOAD_URL = 'https://tailscale.com/download';
+
+// 모달을 연 시점의 페어링 기기 — 이후 새 기기 id 가 생기면 '연결됨'
+function remotePhoneBaseline(view) {
+  return { ids: (view.devices || []).map((d) => d.id) };
+}
+
+function remotePhoneConnected(baseline, view) {
+  if (!baseline || !view) return false;
+  // 기존 기기의 재접속은 '이번에 연결함' 이 아니므로 새 기기 페어링으로만 판정한다
+  return (view.devices || []).some((d) => !baseline.ids.includes(d.id));
+}
+
+function remoteDevicesKey(devices) {
+  return (devices || []).map((d) => d.id + ':' + (d.lastSeenMs || 0)).join('|');
+}
 
 // 바인드 주소 위험 등급 — 백엔드 remote/auth.rs 분류와 같은 기준 (적용 전 확인용).
 // 형식을 모르는 값은 null — 판정은 백엔드 검증에 맡긴다.
 function remoteBindLevel(bind) {
   const b = String(bind || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  // auto 는 Tailscale IP 로만 해석된다 (백엔드 resolve_bind)
+  if (b === 'auto') return 'tailscale';
   if (b === 'localhost' || b === '::1') return 'loopback';
   if (b === '::' || b === '0.0.0.0') return 'public';
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(b);
