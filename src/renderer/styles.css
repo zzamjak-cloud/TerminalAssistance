@@ -1534,6 +1534,16 @@ body.sorting * { cursor: grabbing !important; }
 .phone-steps b { color: var(--fg); }
 .phone-connect .remote-url { margin-bottom: 10px; color: var(--fg-dim); text-align: center; }
 .phone-fail-title { font-weight: 600; margin-bottom: 6px; }
+.phone-qr.small { width: 150px; height: 150px; }
+.phone-https {
+  margin: 4px 0 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+}
+.phone-https-title { font-weight: 600; margin-bottom: 4px; }
+.phone-https-why { margin: 0 0 6px; padding-left: 18px; font-size: 12px; color: var(--fg-dim); line-height: 1.6; }
+/* Tailscale 온라인 상태 점 */
+.remote-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: var(--fg-dim); }
+.remote-dot.online { background: var(--running); }
+.remote-dot.offline { background: var(--exited, #f85149); }
 .remote-device {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;

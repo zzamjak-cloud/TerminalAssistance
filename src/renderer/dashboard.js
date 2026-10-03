@@ -243,6 +243,18 @@ Object.assign(App, {
     label.textContent = App.sessionLabel(session);
     menu.appendChild(label);
 
+    const phone = document.createElement('button');
+    phone.type = 'button';
+    phone.className = 'term-context-item';
+    phone.textContent = '📱 폰에서 열기';
+    phone.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); };
+    phone.onclick = (e) => {
+      e.stopPropagation();
+      App.closeDashboardTileMenu();
+      void App.openOnPhone(sessionId);
+    };
+    menu.appendChild(phone);
+
     if (!App.isSplit()) {
       const hint = document.createElement('div');
       hint.className = 'term-context-hint';

@@ -99,6 +99,11 @@ input:focus, textarea:focus { border-color: var(--accent); }
 #pair-submit { width: 100%; margin-top: 18px; padding: 12px; }
 .pair-error { color: var(--exited); font-size: 13px; min-height: 1.4em; margin: 12px 0 0; }
 .pair-hint { color: var(--caution); font-size: 13px; margin: 6px 0 0; }
+#screen-offline { justify-content: center; align-items: center; padding: 24px; }
+.offline-tips { padding-left: 20px; margin: 12px 0 18px; font-size: 14px; line-height: 1.6; color: var(--fg); }
+.offline-tips li { margin-bottom: 6px; }
+.offline-retry { width: 100%; padding: 12px; font-size: 16px; }
+.offline-note { margin-top: 10px; text-align: center; }
 /* 홈 화면 앱 — 코드 입력 하나만 크게 */
 .pair-simple .pair-name-row { display: none; }
 .pair-simple .pair-help { font-size: 15px; color: var(--fg); }

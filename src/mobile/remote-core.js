@@ -315,3 +315,30 @@ function deviceNameFromUA(ua, maxTouchPoints) {
   if (/Android/.test(s)) return 'Android';
   return '모바일 브라우저';
 }
+
+// ── 폰에서 열기 · 오프라인 ──
+// 알림 링크의 해시(#session=<id>)에서 세션 id — 페어링 해시(#pair=)와 함께 올 수 있다
+function sessionFromHash(hash) {
+  const m = /(?:^#|&)session=([A-Za-z0-9_-]{1,64})(?:&|$)/.exec(String(hash || ''));
+  return m ? m[1] : null;
+}
+
+// 해시에서 session= 만 지운 나머지 (#pair= 는 남긴다) — 같은 세션을 새로고침마다 다시 열지 않게
+function stripSessionHash(hash) {
+  const rest = String(hash || '').replace(/^#/, '').split('&').filter((p) => p && !/^session=/.test(p));
+  return rest.length ? '#' + rest.join('&') : '';
+}
+
+// 부팅 분기 — 서버에 닿지 않으면(네트워크 오류·시간 초과) 페어링보다 '연결할 수 없음' 안내가 먼저다
+function bootRoute(me, netFail, code) {
+  if (netFail) return 'offline';
+  if (me && !code) return 'start';
+  return 'pair';
+}
+
+const OFFLINE_RETRY_BASE_MS = 3000;
+const OFFLINE_RETRY_MAX_MS = 30000;
+
+function offlineRetryDelay(attempt) {
+  return Math.min(OFFLINE_RETRY_MAX_MS, OFFLINE_RETRY_BASE_MS * Math.pow(2, Math.max(0, attempt)));
+}

@@ -169,6 +169,10 @@
     remoteStartPairing: () => invoke('remote_start_pairing'),
     remoteRevokeDevice: (id) => invoke('remote_revoke_device', { id }),
     remoteTestPush: () => invoke('remote_test_push'),
+    // 폰 알림 원클릭 — ntfy 켜기 → { view, subscribeUrl, deepLink, qrSvg }
+    remoteEnablePush: () => invoke('remote_enable_push'),
+    // ntfy 로 '폰에서 열기' 푸시 (알림 클릭 = 원격 앱의 해당 세션). 푸시 미설정이면 'no-push' 로 거부
+    remoteOpenOnPhone: (sessionId) => invoke('remote_open_on_phone', { sessionId: sessionId || null }),
     // '폰 연결' 원클릭 — Tailscale IP 자동 바인드로 켜고 페어링 코드 발급.
     // → { ok: true, view, pairing } | { ok: false, reason: 'no-tailscale'|'start-failed', error?, view? }
     remoteQuickConnect: () => invoke('remote_quick_connect'),

@@ -3,6 +3,7 @@
 
 const TERM_FONT = 'Menlo, Consolas, "D2Coding", "Cascadia Mono", monospace';
 const PING_TIMEOUT_MS = 4000;
+const ME_TIMEOUT_MS = 6000;
 
 const Remote = {
   state: { projects: [], presets: [], sessions: [] },
@@ -27,6 +28,9 @@ const Remote = {
   controlReleasing: null, // { id, timer } — release 후 응답 대기
   uploading: false,
   dashTimer: null,
+  pendingSession: null, // 알림 링크(#session=)로 열 세션
+  offlineAttempt: 0,
+  offlineTimer: null,
 
   // ── 부팅 ──
   async boot() {
@@ -36,16 +40,49 @@ const Remote = {
       // 보안 컨텍스트(HTTPS·localhost)가 아니면 등록이 거부된다 — 앱은 그대로 동작한다
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+    Remote.pendingSession = sessionFromHash(location.hash);
+    await Remote.enter();
+    if (window.__taBootDone) window.__taBootDone();
+  },
+
+  // /api/me 로 상태를 보고 첫 화면을 고른다 — 오프라인 화면의 재시도도 이 경로
+  async enter() {
     const code = pairCodeFromHash(location.hash);
     let me = null;
     let netFail = false;
-    try { me = await Remote.api('GET', '/api/me'); } catch (e) { netFail = !e.status; }
-    if (window.__taBootDone) window.__taBootDone();
+    try { me = await Remote.api('GET', '/api/me', null, ME_TIMEOUT_MS); } catch (e) { netFail = !e.status; }
     if (me) Remote.deviceId = me.deviceId || null;
-    if (me && !code) { Remote.start(); return; }
-    Remote.showPair(code);
+    const route = bootRoute(me, netFail, code);
     // 셸은 캐시에서 떴지만 서버에 닿지 않는 경우 — 대개 폰의 Tailscale 이 꺼져 있다
-    if (netFail) Remote.showPairNetError('서버에 연결할 수 없습니다.');
+    if (route === 'offline') { Remote.showOffline(); return; }
+    Remote.offlineAttempt = 0;
+    clearTimeout(Remote.offlineTimer);
+    if (route === 'start') { void Remote.start(); return; }
+    Remote.showPair(code);
+  },
+
+  showOffline() {
+    Remote.show('offline');
+    clearTimeout(Remote.offlineTimer);
+    const delay = offlineRetryDelay(Remote.offlineAttempt++);
+    const el = document.getElementById('offline-retry-note');
+    let left = Math.round(delay / 1000);
+    const tick = () => {
+      el.textContent = left > 0 ? left + '초 후 자동으로 다시 시도합니다' : '다시 시도하는 중…';
+      if (left-- <= 0) { void Remote.enter(); return; }
+      Remote.offlineTimer = setTimeout(tick, 1000);
+    };
+    tick();
+  },
+
+  // 알림(#session=)으로 들어왔으면 그 세션을 바로 연다 — 목록에 없으면(닫힘) 대시보드에 머문다
+  openPendingSession() {
+    const id = Remote.pendingSession;
+    if (!id) return;
+    Remote.pendingSession = null;
+    history.replaceState(null, '', location.pathname + location.search + stripSessionHash(location.hash));
+    if (Remote.findSession(id)) Remote.openView(id);
+    else Remote.toast('세션이 이미 닫혔습니다', true);
   },
 
   standalone() {
@@ -53,13 +90,22 @@ const Remote = {
     return isStandaloneMode(navigator.standalone, mq);
   },
 
-  async api(method, path, body) {
-    const res = await fetch(path, {
-      method,
-      credentials: 'same-origin',
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined
-    });
+  // timeoutMs: VPN 이 꺼져 있으면 연결이 오래 매달리므로 부팅 확인은 짧게 끊는다
+  async api(method, path, body, timeoutMs) {
+    const ctl = timeoutMs && typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+    let res;
+    try {
+      res = await fetch(path, {
+        method,
+        credentials: 'same-origin',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: ctl ? ctl.signal : undefined
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (!res.ok) {
       const err = new Error('HTTP ' + res.status);
       err.status = res.status;
@@ -184,6 +230,7 @@ const Remote = {
     Remote.show('dash');
     await Remote.loadState();
     Remote.connect();
+    Remote.openPendingSession();
     if (!Remote.dashTimer) {
       // '방금 / n분 전' 표기만 갱신 — 화면에 보일 때만
       Remote.dashTimer = setInterval(() => {
@@ -893,7 +940,7 @@ const Remote = {
   },
 
   show(name) {
-    for (const n of ['pair', 'dash', 'term']) {
+    for (const n of ['pair', 'dash', 'term', 'offline']) {
       document.getElementById('screen-' + n).classList.toggle('hidden', n !== name);
     }
     if (name === 'term') requestAnimationFrame(() => Remote.fitFont());
@@ -946,8 +993,19 @@ const Remote = {
     });
     window.addEventListener('hashchange', () => {
       const code = pairCodeFromHash(location.hash);
-      if (code) Remote.showPair(code);
+      if (code) { Remote.showPair(code); return; }
+      // 앱이 열린 채로 다른 세션 알림을 누른 경우
+      const sid = sessionFromHash(location.hash);
+      if (sid && document.getElementById('screen-pair').classList.contains('hidden')) {
+        Remote.pendingSession = sid;
+        Remote.openPendingSession();
+      }
     });
+    document.getElementById('offline-retry').onclick = () => {
+      clearTimeout(Remote.offlineTimer);
+      document.getElementById('offline-retry-note').textContent = '다시 시도하는 중…';
+      void Remote.enter();
+    };
   },
 
   // 키보드가 올라오면 visualViewport 가 줄어든다 — 앱 높이를 거기에 맞춰 입력창이 가려지지 않게 한다

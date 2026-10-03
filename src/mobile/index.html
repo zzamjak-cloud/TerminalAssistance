@@ -39,6 +39,21 @@
       </div>
     </section>
 
+    <!-- PC 에 닿지 않음 (홈 화면 앱에서 VPN 이 꺼진 경우가 대부분) -->
+    <section id="screen-offline" class="screen hidden">
+      <div class="pair-box">
+        <img class="pair-logo" src="/icon.png" alt="">
+        <h1>PC 에 연결할 수 없음</h1>
+        <ul class="offline-tips">
+          <li>폰의 <b>Tailscale</b> 앱이 켜져 있는지(VPN 연결됨) 확인하세요.</li>
+          <li>PC 에서 TerminalAssistance 앱이 실행 중인지 확인하세요.</li>
+          <li>자주 끊기면 Tailscale 을 <b>상시 VPN</b>(iOS: VPN On Demand)으로, 배터리 사용을 <b>제한 없음</b>으로 두세요.</li>
+        </ul>
+        <button type="button" id="offline-retry" class="primary offline-retry">다시 시도</button>
+        <p id="offline-retry-note" class="pair-help offline-note"></p>
+      </div>
+    </section>
+
     <!-- 세션 대시보드 -->
     <section id="screen-dash" class="screen hidden">
       <header class="bar">
