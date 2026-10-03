@@ -9,6 +9,7 @@ pub fn lookup(path: &str) -> Option<(&'static [u8], &'static str)> {
             include_bytes!("../../../src/mobile/index.html").as_slice(),
             "text/html; charset=utf-8",
         ),
+        "/boot-guard.js" => (include_bytes!("../../../src/mobile/boot-guard.js").as_slice(), JS),
         "/mobile.css" => (include_bytes!("../../../src/mobile/mobile.css").as_slice(), CSS),
         "/mobile.js" => (include_bytes!("../../../src/mobile/mobile.js").as_slice(), JS),
         "/remote-core.js" => (include_bytes!("../../../src/mobile/remote-core.js").as_slice(), JS),
@@ -26,6 +27,15 @@ pub fn lookup(path: &str) -> Option<(&'static [u8], &'static str)> {
         ),
         "/sw.js" => (include_bytes!("../../../src/mobile/sw.js").as_slice(), JS),
         "/icon.png" => (include_bytes!("../../icons/128x128@2x.png").as_slice(), "image/png"),
+        "/icon-192.png" => (
+            include_bytes!("../../icons/android/mipmap-xxxhdpi/ic_launcher.png").as_slice(),
+            "image/png",
+        ),
+        "/icon-512.png" => (include_bytes!("../../icons/icon.png").as_slice(), "image/png"),
+        // iOS 홈 화면 아이콘 권장 크기 180px
+        "/apple-touch-icon.png" => {
+            (include_bytes!("../../icons/ios/AppIcon-60x60@3x.png").as_slice(), "image/png")
+        }
         _ => return None,
     })
 }

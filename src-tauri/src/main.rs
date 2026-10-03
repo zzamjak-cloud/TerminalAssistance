@@ -1100,7 +1100,8 @@ fn main() {
             remote::remote_start_pairing,
             remote::remote_revoke_device,
             remote::remote_test_push,
-            remote::remote_release_control
+            remote::remote_release_control,
+            remote::remote_quick_connect
         ])
         .build(tauri::generate_context!())
         .expect("Terminal Assistance 실행 실패")

@@ -64,6 +64,20 @@ pub trait Backend: Send + Sync + 'static {
     /// 업로드 저장 완료 — 데스크톱 첨부 스트립에 알린다
     fn image_saved(&self, session: &str, path: &str);
     fn events(&self) -> broadcast::Receiver<PtyEvent>;
+    /// WS 연결 열림/닫힘 — 데스크톱의 '연결된 폰' 표시용
+    fn conn_changed(&self, _device_id: &str, _open: bool) {}
+}
+
+/// 연결 종료 통지를 Drop 에 묶는다 — 태스크가 중단(abort)돼도 연결 수가 남지 않게
+struct ConnGuard {
+    ctx: Arc<Ctx>,
+    device_id: String,
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.ctx.backend.conn_changed(&self.device_id, false);
+    }
 }
 
 pub struct Ctx {
@@ -441,6 +455,8 @@ fn device_exists(ctx: &Ctx, id: &str) -> bool {
 
 async fn run_ws(socket: WebSocket, ctx: Arc<Ctx>, dev: RemoteDevice) {
     let conn_id = ctx.next_conn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ctx.backend.conn_changed(&dev.id, true);
+    let _guard = ConnGuard { ctx: Arc::clone(&ctx), device_id: dev.id.clone() };
     run_ws_conn(socket, Arc::clone(&ctx), dev.id, dev.name, conn_id).await;
     // 어떤 이유로 끝나든(폐기·종료·끊김) 이 연결이 쥔 제어권은 데스크톱으로 돌려준다
     ctx.backend.release_conn(conn_id);
@@ -817,7 +833,10 @@ mod tests {
     #[tokio::test]
     async fn static_routes_need_no_auth() {
         let (ctx, _s) = ctx_with(MockBackend::new(), 7788);
-        for p in ["/", "/mobile.js", "/xterm.js", "/sw.js", "/icon.png", "/dashboard-core.js"] {
+        for p in [
+            "/", "/mobile.js", "/xterm.js", "/sw.js", "/icon.png", "/dashboard-core.js", "/boot-guard.js",
+            "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png",
+        ] {
             let (st, h) = status_of(&ctx, req("GET", p, HOST).body(Body::empty()).unwrap()).await;
             assert_eq!(st, StatusCode::OK, "{p}");
             assert!(h.get(header::CONTENT_TYPE).is_some());

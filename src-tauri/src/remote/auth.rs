@@ -179,7 +179,7 @@ pub fn origin_ok(origin: Option<&str>, host: &str) -> bool {
     }
 }
 
-fn is_cgnat(ip: &IpAddr) -> bool {
+pub fn is_cgnat(ip: &IpAddr) -> bool {
     // 100.64.0.0/10 — Tailscale 이 기기에 주는 대역
     matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
 }
