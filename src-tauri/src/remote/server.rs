@@ -93,10 +93,20 @@ pub struct Ctx {
     pub next_conn: std::sync::atomic::AtomicU64,
     /// 동시 업로드 디코드 수 제한 — 큰 이미지 여러 장이 메모리·CPU 를 동시에 점유하지 못하게
     pub upload_slots: tokio::sync::Semaphore,
+    /// HTTPS 모드(tailscale serve 경유)의 공개 Host (`<name>.ts.net:7443`). HTTP 모드면 None
+    pub https_host: Option<String>,
 }
 
 impl Ctx {
+    /// 이 요청이 serve 경유 HTTPS Host 로 왔는가 — Origin 스킴·CSP wss·쿠키 Secure 판단
+    fn is_https(&self, host: &str) -> bool {
+        self.https_host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(host))
+    }
+
     fn host_ok(&self, host: &str) -> bool {
+        if self.is_https(host) {
+            return true;
+        }
         let mut g = plock(&self.allowed_hosts);
         if auth::host_allowed(host, &g.1) {
             return true;
@@ -136,6 +146,7 @@ async fn security_headers(State(ctx): State<Arc<Ctx>>, req: Request, next: Next)
         .map(str::to_string);
     let mut res = next.run(req).await;
     let connect = match host {
+        Some(h) if ctx.is_https(&h) => format!("'self' wss://{}", h),
         Some(h) => format!("'self' ws://{}", h),
         None => "'self'".into(),
     };
@@ -170,7 +181,7 @@ fn guard(ctx: &Ctx, headers: &HeaderMap) -> Result<(), Response> {
             Err(_) => return Err(err(StatusCode::FORBIDDEN, "origin")),
         },
     };
-    if !auth::origin_ok(origin, host) {
+    if !auth::origin_ok(origin, host, ctx.is_https(host)) {
         return Err(err(StatusCode::FORBIDDEN, "origin"));
     }
     Ok(())
@@ -227,7 +238,9 @@ async fn pair(
     let Ok(req) = serde_json::from_slice::<PairBody>(&body) else {
         return err(StatusCode::BAD_REQUEST, "bad request");
     };
-    match plock(&ctx.pairing).consume(peer.ip(), &req.code, Instant::now()) {
+    let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    let client = auth::client_ip(peer.ip(), ctx.https_host.is_some(), xff);
+    match plock(&ctx.pairing).consume(client, &req.code, Instant::now()) {
         PairCheck::Ok => {}
         PairCheck::Invalid => return err(StatusCode::UNAUTHORIZED, "invalid code"),
         PairCheck::TooMany => return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts"),
@@ -241,14 +254,21 @@ async fn pair(
         token_hash: auth::hash_token(&token),
         created_ms: now,
         last_seen_ms: now,
+        tailscale_ip: Some(client.to_string()),
+        platform: Some(
+            auth::platform_from_ua(headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or(""))
+                .to_string(),
+        ),
     };
     let id = dev.id.clone();
     if let Err(e) = ctx.backend.add_device(dev) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let secure = if ctx.is_https(host) { "; Secure" } else { "" };
     let cookie = format!(
-        "{}={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000",
-        COOKIE_NAME, token
+        "{}={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000{}",
+        COOKIE_NAME, token, secure
     );
     let mut res = axum::Json(json!({ "deviceId": id })).into_response();
     if let Ok(v) = HeaderValue::from_str(&cookie) {
@@ -801,6 +821,7 @@ mod tests {
             shutdown: srx,
             next_conn: std::sync::atomic::AtomicU64::new(1),
             upload_slots: tokio::sync::Semaphore::new(UPLOAD_CONCURRENCY),
+            https_host: None,
         });
         (ctx, stx)
     }
@@ -996,6 +1017,69 @@ mod tests {
         let r = req("GET", "/api/me", HOST).header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
         assert_eq!(status_of(&ctx, r).await.0, StatusCode::UNAUTHORIZED);
         assert!(plock(&backend.devices).is_empty());
+    }
+
+    #[tokio::test]
+    async fn https_mode_via_serve() {
+        const TS: &str = "mac.tail1.ts.net:7443";
+        let (stx, srx) = watch::channel(false);
+        let bind: IpAddr = "127.0.0.1".parse().unwrap();
+        let ctx = Arc::new(Ctx {
+            backend: MockBackend::new(),
+            pairing: Arc::new(Mutex::new(Pairing::default())),
+            bind,
+            port: 7788,
+            allowed_hosts: Mutex::new((Instant::now(), auth::allowed_hosts(&bind, 7788, &[]))),
+            revoked: broadcast::channel(8).0,
+            shutdown: srx,
+            next_conn: std::sync::atomic::AtomicU64::new(1),
+            upload_slots: tokio::sync::Semaphore::new(UPLOAD_CONCURRENCY),
+            https_host: Some(TS.into()),
+        });
+        let _keep = stx;
+        // serve Host 허용 + CSP 는 wss
+        let (st, h) = status_of(&ctx, req("GET", "/", TS).body(Body::empty()).unwrap()).await;
+        assert_eq!(st, StatusCode::OK);
+        let csp = h.get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap();
+        assert!(csp.contains(&format!("connect-src 'self' wss://{}", TS)), "{csp}");
+        // 로컬 직접 접속은 여전히 ws
+        let (_, h) = status_of(&ctx, req("GET", "/", HOST).body(Body::empty()).unwrap()).await;
+        assert!(h.get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().contains("ws://127.0.0.1"));
+        // Origin 은 https 여야 한다
+        let bad = req("GET", "/api/me", TS).header(header::ORIGIN, format!("http://{}", TS)).body(Body::empty()).unwrap();
+        assert_eq!(status_of(&ctx, bad).await.0, StatusCode::FORBIDDEN);
+        let ok = req("GET", "/api/me", TS).header(header::ORIGIN, format!("https://{}", TS)).body(Body::empty()).unwrap();
+        assert_eq!(status_of(&ctx, ok).await.0, StatusCode::UNAUTHORIZED);
+        // 페어링: 쿠키 Secure, 기기 IP 는 X-Forwarded-For, 플랫폼은 UA
+        let (code, _) = plock(&ctx.pairing).start(Instant::now());
+        let body = json!({ "code": code, "deviceName": "폰" }).to_string();
+        let r = req("POST", "/api/pair", TS)
+            .header(header::ORIGIN, format!("https://{}", TS))
+            .header("x-forwarded-for", "100.72.45.122")
+            .header(header::USER_AGENT, "Mozilla/5.0 (Linux; Android 14; K)")
+            .body(Body::from(body))
+            .unwrap();
+        let (st, h) = status_from(&ctx, r, [127, 0, 0, 1]).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(h.get(header::SET_COOKIE).unwrap().to_str().unwrap().contains("; Secure"));
+        let devs = ctx.backend.devices();
+        let d = devs.last().unwrap();
+        assert_eq!(d.tailscale_ip.as_deref(), Some("100.72.45.122"));
+        assert_eq!(d.platform.as_deref(), Some("android"));
+    }
+
+    #[tokio::test]
+    async fn http_pair_cookie_not_secure_and_records_peer() {
+        let (ctx, _s) = ctx_with(MockBackend::new(), 7788);
+        let c = paired_cookie(&ctx).await;
+        assert!(!c.is_empty());
+        let (code, _) = plock(&ctx.pairing).start(Instant::now());
+        let body = json!({ "code": code, "deviceName": "폰" }).to_string();
+        let r = req("POST", "/api/pair", HOST).header("x-forwarded-for", "100.1.1.1").body(Body::from(body)).unwrap();
+        let (st, h) = status_from(&ctx, r, [100, 72, 45, 122]).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(!h.get(header::SET_COOKIE).unwrap().to_str().unwrap().contains("Secure"));
+        assert_eq!(ctx.backend.devices().last().unwrap().tailscale_ip.as_deref(), Some("100.72.45.122"), "HTTP 모드는 헤더 무시");
     }
 
     #[tokio::test]

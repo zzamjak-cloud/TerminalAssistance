@@ -165,6 +165,12 @@ pub struct RemoteDevice {
     pub created_ms: u64,
     #[serde(rename = "lastSeenMs", default)]
     pub last_seen_ms: u64,
+    /// 페어링 시 접속 IP — Tailscale 피어 온라인 상태를 찾는 열쇠
+    #[serde(rename = "tailscaleIp", default, skip_serializing_if = "Option::is_none")]
+    pub tailscale_ip: Option<String>,
+    /// android | ios | other — 오프라인 안내 분기
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 /// 원격 푸시 설정. kind 는 "off" | "ntfy" — 모르는 값(향후 추가 종류)도 설정 파일 전체를
@@ -383,6 +389,9 @@ mod tests {
         assert!(partial.remote.push.on_done);
         assert!(!partial.remote.push.include_project);
         assert_eq!(partial.remote.devices[0].last_seen_ms, 0);
+        // 진단 필드가 없던 구버전 기기도 읽히고, 없으면 저장 시에도 쓰지 않는다
+        assert!(partial.remote.devices[0].tailscale_ip.is_none() && partial.remote.devices[0].platform.is_none());
+        assert!(!serde_json::to_string(&partial.remote.devices[0]).unwrap().contains("tailscaleIp"));
 
         let json = serde_json::to_string(&partial).unwrap();
         let back: StoreData = serde_json::from_str(&json).unwrap();

@@ -48,22 +48,34 @@ pub fn valid_topic(t: &str) -> bool {
     !t.is_empty() && t.len() <= 64 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// 알림을 누르면 열 원격 앱 주소. 세션 id 는 URL 에 그대로 들어가므로 안전한 문자일 때만 붙인다
+pub fn click_url(base: &str, session_id: Option<&str>) -> String {
+    let base = base.trim_end_matches('/');
+    match session_id.filter(|id| valid_topic(id)) {
+        Some(id) => format!("{}/#session={}", base, id),
+        None => format!("{}/", base),
+    }
+}
+
 /// 블로킹 HTTP — 반드시 spawn_blocking 안에서 호출
-pub fn send_ntfy(url: &str, topic: &str, body: &str, priority: &str, tags: &str) -> Result<(), String> {
+pub fn send_ntfy(url: &str, topic: &str, body: &str, priority: &str, tags: &str, click: Option<&str>) -> Result<(), String> {
     let endpoint = format!("{}/{}", url.trim_end_matches('/'), topic);
-    ureq::post(&endpoint)
+    let mut req = ureq::post(&endpoint)
         .timeout(HTTP_TIMEOUT)
         // 헤더는 ASCII 만 안전 — 한글 라벨은 본문에만 싣는다
         .set("Title", "Terminal Assistance")
         .set("Priority", priority)
-        .set("Tags", tags)
-        .send_string(body)
+        .set("Tags", tags);
+    if let Some(c) = click.filter(|c| c.is_ascii()) {
+        req = req.set("Click", c);
+    }
+    req.send_string(body)
         .map(|_| ())
         .map_err(|e| format!("푸시 전송 실패: {}", e))
 }
 
 /// 기본은 세션 제목만. include_project 면 '프로젝트명 — S2' (데스크톱 표기와 같다)
-fn session_label(app: &AppHandle, id: &str, include_project: bool) -> Option<String> {
+pub fn session_label(app: &AppHandle, id: &str, include_project: bool) -> Option<String> {
     let info = app.state::<PtyManager>().list().into_iter().find(|s| s.id == id)?;
     if !include_project {
         return Some(info.title);
@@ -108,8 +120,10 @@ pub fn spawn_watcher(app: AppHandle) {
             if !limiter.allow(&id, Instant::now()) {
                 continue;
             }
+            // 서버가 떠 있으면 알림을 눌러 그 세션으로 바로 들어가게
+            let click = app.state::<super::RemoteHub>().public_base(&app).map(|b| click_url(&b, Some(&id)));
             tauri::async_runtime::spawn_blocking(move || {
-                if let Err(e) = send_ntfy(&cfg.url, &cfg.topic, &body, priority, tags) {
+                if let Err(e) = send_ntfy(&cfg.url, &cfg.topic, &body, priority, tags, click.as_deref()) {
                     eprintln!("{}", e);
                 }
             });
@@ -144,6 +158,13 @@ mod tests {
         assert!(message(&cfg, "x", Status::Idle).is_none());
         cfg.on_done = false;
         assert!(message(&cfg, "x", Status::Done).is_none());
+    }
+
+    #[test]
+    fn click_url_links_session() {
+        assert_eq!(click_url("https://mac.ts.net:7443", Some("s_12-ab")), "https://mac.ts.net:7443/#session=s_12-ab");
+        assert_eq!(click_url("http://100.64.0.1:7788/", None), "http://100.64.0.1:7788/");
+        assert_eq!(click_url("http://h", Some("a/b#x")), "http://h/", "안전하지 않은 id 는 붙이지 않는다");
     }
 
     #[test]

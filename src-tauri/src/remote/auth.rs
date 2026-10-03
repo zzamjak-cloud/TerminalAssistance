@@ -171,11 +171,35 @@ pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
     allowed.iter().any(|h| h.eq_ignore_ascii_case(host))
 }
 
-/// Origin 이 있으면 같은 출처(http://<Host>)여야 한다 — 크로스 사이트 WebSocket 하이재킹 방어
-pub fn origin_ok(origin: Option<&str>, host: &str) -> bool {
+/// Origin 이 있으면 같은 출처(<scheme>://<Host>)여야 한다 — 크로스 사이트 WebSocket 하이재킹 방어.
+/// https 는 tailscale serve 경유 Host 일 때만
+pub fn origin_ok(origin: Option<&str>, host: &str, https: bool) -> bool {
+    let scheme = if https { "https" } else { "http" };
     match origin {
         None => true,
-        Some(o) => o.eq_ignore_ascii_case(&format!("http://{}", host)),
+        Some(o) => o.eq_ignore_ascii_case(&format!("{}://{}", scheme, host)),
+    }
+}
+
+/// 실제 접속 기기 IP. serve 경유(HTTPS 모드에서 피어가 루프백)면 Tailscale 이 붙인 X-Forwarded-For 의
+/// 마지막 값 — 프록시가 자기가 본 피어를 끝에 덧붙이므로 앞쪽 값은 클라이언트가 위조할 수 있다
+pub fn client_ip(peer: IpAddr, https_mode: bool, xff: Option<&str>) -> IpAddr {
+    if !(https_mode && peer.is_loopback()) {
+        return peer;
+    }
+    xff.and_then(|v| v.rsplit(',').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(peer)
+}
+
+/// 연결 진단 안내 분기용 플랫폼
+pub fn platform_from_ua(ua: &str) -> &'static str {
+    if ua.contains("Android") {
+        "android"
+    } else if ua.contains("iPhone") || ua.contains("iPad") || ua.contains("iPod") {
+        "ios"
+    } else {
+        "other"
     }
 }
 
@@ -262,6 +286,8 @@ mod tests {
             token_hash: hash_token(tok),
             created_ms: 0,
             last_seen_ms: 0,
+            tailscale_ip: None,
+            platform: None,
         };
         let devices = vec![dev("a", "tok-a"), dev("b", "tok-b")];
         assert_eq!(find_device("tok-b", &devices).map(|d| d.id.as_str()), Some("b"));
@@ -335,6 +361,8 @@ mod tests {
             token_hash: String::new(),
             created_ms: created,
             last_seen_ms: seen,
+            tailscale_ip: None,
+            platform: None,
         };
         assert!(!idle_expired(&dev(0, 10 * day), 40 * day));
         assert!(idle_expired(&dev(0, 10 * day), 41 * day));
@@ -382,10 +410,32 @@ mod tests {
         assert!(host_allowed("192.168.0.9", &hosts));
         assert!(!host_allowed("0.0.0.0:80", &hosts));
 
-        assert!(origin_ok(None, "127.0.0.1:7788"));
-        assert!(origin_ok(Some("http://127.0.0.1:7788"), "127.0.0.1:7788"));
-        assert!(!origin_ok(Some("http://evil.example"), "127.0.0.1:7788"));
-        assert!(!origin_ok(Some("https://127.0.0.1:7788"), "127.0.0.1:7788"));
-        assert!(!origin_ok(Some("null"), "127.0.0.1:7788"));
+        assert!(origin_ok(None, "127.0.0.1:7788", false));
+        assert!(origin_ok(Some("http://127.0.0.1:7788"), "127.0.0.1:7788", false));
+        assert!(!origin_ok(Some("http://evil.example"), "127.0.0.1:7788", false));
+        assert!(!origin_ok(Some("https://127.0.0.1:7788"), "127.0.0.1:7788", false));
+        assert!(!origin_ok(Some("null"), "127.0.0.1:7788", false));
+        let ts = "mac.tail1.ts.net:7443";
+        assert!(origin_ok(Some("https://mac.tail1.ts.net:7443"), ts, true));
+        assert!(!origin_ok(Some("http://mac.tail1.ts.net:7443"), ts, true), "HTTPS 모드에서 http 출처 거부");
+    }
+
+    #[test]
+    fn client_ip_uses_forwarded_only_behind_serve() {
+        let lo = ip("127.0.0.1");
+        let phone = ip("100.72.45.122");
+        assert_eq!(client_ip(lo, true, Some("100.72.45.122")), phone);
+        assert_eq!(client_ip(lo, true, Some("1.2.3.4, 100.72.45.122")), phone, "위조 가능한 앞쪽 값 무시");
+        assert_eq!(client_ip(lo, false, Some("100.72.45.122")), lo, "HTTP 모드는 헤더를 믿지 않는다");
+        assert_eq!(client_ip(phone, true, Some("9.9.9.9")), phone, "직접 접속은 헤더를 믿지 않는다");
+        assert_eq!(client_ip(lo, true, Some("garbage")), lo);
+        assert_eq!(client_ip(lo, true, None), lo);
+    }
+
+    #[test]
+    fn platform_from_user_agent() {
+        assert_eq!(platform_from_ua("Mozilla/5.0 (Linux; Android 14; K) Chrome/124"), "android");
+        assert_eq!(platform_from_ua("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)"), "ios");
+        assert_eq!(platform_from_ua("Mozilla/5.0 (Macintosh)"), "other");
     }
 }

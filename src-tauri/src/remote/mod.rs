@@ -4,6 +4,7 @@ mod assets;
 pub mod auth;
 mod notify;
 mod server;
+mod tailscale;
 mod upload;
 
 use crate::pty::{PtyEvent, PtyManager, RemoteSub, SessionInfo};
@@ -26,8 +27,6 @@ const INPUT_EVENT_GAP: Duration = Duration::from_millis(200);
 const WATCH_INTERVAL: Duration = Duration::from_secs(15);
 // 고정 바인드 연속 실패 시 재시도 간격 상한
 const RETRY_MAX: Duration = Duration::from_secs(120);
-// tailscale CLI 응답 대기 — 데몬이 멈춰 있어도 감시 주기를 붙잡지 않게
-const TS_CLI_TIMEOUT: Duration = Duration::from_millis(1500);
 /// 바인드 '자동' — 서버 시작 시점의 Tailscale IPv4 로 해석한다
 pub const BIND_AUTO: &str = "auto";
 const NO_TAILSCALE: &str = "Tailscale 미연결 — 이 컴퓨터에서 Tailscale 에 로그인하면 자동으로 다시 시도합니다";
@@ -112,64 +111,64 @@ fn choose_tailscale(cli: Option<IpAddr>, ifaces: &[(String, IpAddr)]) -> Option<
     v.into_iter().next()
 }
 
-// CLI 가 없는 환경에서 매 주기 프로세스 생성을 시도하지 않게
-static TS_CLI_MISSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// `tailscale ip -4` — 없거나 응답이 늦으면 None (블로킹: spawn_blocking 에서 부른다)
-fn tailscale_cli_ip() -> Option<IpAddr> {
-    use std::sync::atomic::Ordering;
-    if TS_CLI_MISSING.load(Ordering::Relaxed) {
-        return None;
-    }
-    // GUI 앱은 PATH 가 짧아 흔한 설치 위치도 직접 본다
-    const CANDIDATES: &[&str] = &[
-        "tailscale",
-        "/usr/local/bin/tailscale",
-        "/opt/homebrew/bin/tailscale",
-        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-    ];
-    for bin in CANDIDATES {
-        let mut cmd = std::process::Command::new(bin);
-        cmd.args(["ip", "-4"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        let Ok(mut child) = cmd.spawn() else { continue };
-        let deadline = Instant::now() + TS_CLI_TIMEOUT;
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(30)),
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-            }
-        }
-        let mut out = String::new();
-        if let Some(mut so) = child.stdout.take() {
-            use std::io::Read;
-            let _ = so.read_to_string(&mut out);
-        }
-        return out.lines().next().and_then(|l| l.trim().parse().ok());
-    }
-    TS_CLI_MISSING.store(true, Ordering::Relaxed);
-    None
+/// Tailscale 탐지 결과 — status 는 HTTPS 가능 여부·피어 온라인, ip 는 HTTP 모드 바인드용
+#[derive(Clone, Default)]
+struct Probe {
+    status: Option<tailscale::TsStatus>,
+    ip: Option<IpAddr>,
 }
 
-/// Tailscale IPv4 탐지 (블로킹). CLI 결과 우선, 없으면 인터페이스 이름으로
-fn tailscale_ip_blocking() -> Option<IpAddr> {
-    choose_tailscale(tailscale_cli_ip(), &iface_named_ips())
+fn probe_blocking() -> Probe {
+    let status = tailscale::status();
+    // status 를 읽었으면 그 Self IP, 못 읽었으면 `tailscale ip -4` 로 보조
+    let cli = match &status {
+        Some(s) => s.self_ipv4(),
+        None => tailscale::cli_ip(),
+    };
+    Probe { ip: choose_tailscale(cli, &iface_named_ips()), status }
 }
 
-pub async fn tailscale_ip() -> Option<IpAddr> {
-    tauri::async_runtime::spawn_blocking(tailscale_ip_blocking).await.ok().flatten()
+async fn probe() -> Probe {
+    tauri::async_runtime::spawn_blocking(probe_blocking).await.unwrap_or_default()
+}
+
+/// 서버가 실제로 노출되는 방식. HTTPS 는 127.0.0.1 에 바인드하고 tailscale serve 가 TLS 를 맡는다
+#[derive(Clone, Debug, PartialEq)]
+enum Endpoint {
+    Http(IpAddr),
+    Https(String),
+}
+
+impl Endpoint {
+    fn bind_ip(&self) -> IpAddr {
+        match self {
+            Endpoint::Http(ip) => *ip,
+            Endpoint::Https(_) => IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        }
+    }
+
+    fn urls(&self, port: u16) -> Vec<String> {
+        match self {
+            Endpoint::Http(ip) => urls_for(ip, port),
+            Endpoint::Https(host) => vec![tailscale::https_url(host)],
+        }
+    }
+}
+
+/// 설정 → 원하는 엔드포인트. auto 는 HTTPS(인증서 활성, 실패 이력 없음) > Tailscale IP
+fn resolve_endpoint(bind: &str, probe: &Probe, https_blocked: bool) -> Result<Endpoint, String> {
+    if is_auto(bind) && !https_blocked {
+        if let Some(h) = probe.status.as_ref().and_then(|s| s.https_host()) {
+            return Ok(Endpoint::Https(h));
+        }
+    }
+    resolve_bind(bind, probe.ip).map(Endpoint::Http)
+}
+
+/// 기기의 Tailscale 온라인 상태 (온라인, 마지막 접속). status 를 못 읽었거나 모르는 기기면 None
+fn device_ts_state(status: Option<&tailscale::TsStatus>, dev_ip: Option<&str>) -> Option<(bool, Option<String>)> {
+    let ip: IpAddr = dev_ip?.parse().ok()?;
+    status?.peer_state(&ip)
 }
 
 /// 설정 바인드 문자열 → 실제 바인드 IP. auto 는 미리 탐지한 Tailscale IP
@@ -183,12 +182,12 @@ fn resolve_bind(bind: &str, ts: Option<IpAddr>) -> Result<IpAddr, String> {
 /// 감시 주기 판단 — 켜져 있는데 안 떠 있으면 재시도, auto 면 Tailscale IP 변경 시 즉시 재바인드.
 /// IP 가 사라진 건 일시 끊김일 수 있어 2회 연속 관측(ts_missing_streak)해야 내린다.
 /// auto 인데 Tailscale 이 아직 없으면 재시도해도 같은 실패라 건너뛴다
-fn needs_restart(enabled: bool, auto: bool, bound: Option<IpAddr>, ts_now: Option<IpAddr>, ts_missing_streak: u32) -> bool {
+fn needs_restart<T: PartialEq>(enabled: bool, auto: bool, bound: Option<T>, ts_now: Option<T>, ts_missing_streak: u32) -> bool {
     if !enabled {
         return false;
     }
     match (bound, ts_now) {
-        (None, _) => !auto || ts_now.is_some(),
+        (None, t) => !auto || t.is_some(),
         (Some(_), _) if !auto => false,
         (Some(_), None) => ts_missing_streak >= 2,
         (Some(b), Some(t)) => b != t,
@@ -257,6 +256,10 @@ pub struct DeviceView {
     name: String,
     created_ms: u64,
     last_seen_ms: u64,
+    platform: Option<String>,
+    /// Tailscale 상 온라인 여부 — 조회 실패·모르는 기기면 null
+    tailscale_online: Option<bool>,
+    tailscale_last_seen: Option<String>,
 }
 
 /// 설정 UI 에 주는 상태 — 토큰 해시는 절대 포함하지 않는다
@@ -277,6 +280,13 @@ pub struct RemoteView {
     devices: Vec<DeviceView>,
     connected_devices: usize,
     push: PushView,
+    /// "https" (tailscale serve 경유) | "http"
+    mode: &'static str,
+    https_url: Option<String>,
+    /// 이 기기에 Tailscale HTTPS 인증서가 활성인가 (CertDomains)
+    https_available: bool,
+    /// HTTPS 전환 실패 사유 — HTTP 로 물러나 동작 중
+    https_error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -299,7 +309,7 @@ pub struct PairingView {
 
 struct Running {
     gen: u64,
-    bind: IpAddr,
+    endpoint: Endpoint,
     shutdown: watch::Sender<bool>,
     handle: tauri::async_runtime::JoinHandle<()>,
 }
@@ -311,6 +321,10 @@ struct HubState {
     gen: u64, // 서버 세대 — 스스로 종료한 옛 태스크가 새 서버 상태를 지우지 않게
     /// 마지막 Tailscale 탐지 결과 — view 는 동기라 프로세스를 띄우지 않고 이 값을 쓴다
     ts_cache: Option<IpAddr>,
+    ts_status: Option<tailscale::TsStatus>,
+    https_error: Option<String>,
+    /// 우리가 걸어 둔 serve 매핑의 로컬 포트 — 해제·종료 정리용
+    serve_active: Option<u16>,
     ts_missing_streak: u32,
     /// 감시 태스크 재시도 백오프 (None = 실패 이력 없음)
     backoff: Option<Duration>,
@@ -341,8 +355,25 @@ impl RemoteHub {
         plock(&self.state).server.is_some()
     }
 
-    fn bound(&self) -> Option<IpAddr> {
-        plock(&self.state).server.as_ref().map(|r| r.bind)
+    fn endpoint(&self) -> Option<Endpoint> {
+        plock(&self.state).server.as_ref().map(|r| r.endpoint.clone())
+    }
+
+    /// 폰에서 열 공개 주소 (HTTPS 면 https URL). 서버가 꺼져 있으면 None
+    pub fn public_base(&self, app: &AppHandle) -> Option<String> {
+        let port = plock(&app.state::<Mutex<Store>>()).data.remote.port;
+        self.endpoint()?.urls(port).into_iter().next()
+    }
+
+    /// 탐지 결과를 캐시에 반영. CertDomains 가 바뀌었으면(관리 페이지에서 HTTPS 를 켬 등) HTTPS 재시도를 허용한다
+    fn store_probe(&self, p: &Probe) {
+        let mut st = plock(&self.state);
+        let certs = |s: &Option<tailscale::TsStatus>| s.as_ref().map(|s| s.cert_domains.clone()).unwrap_or_default();
+        if certs(&st.ts_status) != certs(&p.status) {
+            st.https_error = None;
+        }
+        st.ts_cache = p.ip;
+        st.ts_status = p.status.clone();
     }
 
     /// 실행 중인 서버를 멈춘다. WS 연결은 shutdown 신호로 스스로 닫히고,
@@ -358,61 +389,93 @@ impl RemoteHub {
     }
 
     /// 설정대로 서버를 (재)기동한다. 바인드 실패는 error 에 남겨 설정 UI 에 표시한다.
-    /// 사용자 조작 경로라 감시 백오프를 초기화한다
+    /// 사용자 조작 경로라 감시 백오프·HTTPS 실패 이력을 초기화한다
     async fn apply(&self, app: &AppHandle) {
         let _apply = self.apply_lock.lock().await;
-        let auto = is_auto(&plock(&app.state::<Mutex<Store>>()).data.remote.bind);
-        let ts = if auto { tailscale_ip().await } else { None };
+        let p = probe().await;
+        self.store_probe(&p);
         {
             let mut st = plock(&self.state);
-            st.ts_cache = ts;
             st.backoff = None;
             st.next_retry = None;
+            st.https_error = None;
         }
-        self.apply_locked(app, ts).await;
+        self.apply_locked(app, &p).await;
     }
 
-    /// apply_lock 을 쥔 호출부 전용. 결과(바인드·오류)가 바뀌었을 때만 통지한다
-    async fn apply_locked(&self, app: &AppHandle, ts: Option<IpAddr>) {
-        let before = (self.bound(), plock(&self.state).error.clone());
+    /// apply_lock 을 쥔 호출부 전용. 결과(엔드포인트·오류)가 바뀌었을 때만 통지한다
+    async fn apply_locked(&self, app: &AppHandle, p: &Probe) {
+        let before = (self.endpoint(), plock(&self.state).error.clone());
         self.stop().await;
         let cfg = plock(&app.state::<Mutex<Store>>()).data.remote.clone();
-        let error =
-            if cfg.enabled { resolve_bind(&cfg.bind, ts).and_then(|ip| self.start(app, &cfg, ip)).err() } else { None };
+        let blocked = plock(&self.state).https_error.is_some();
+        let mut error = None;
+        if cfg.enabled {
+            match resolve_endpoint(&cfg.bind, p, blocked) {
+                Err(e) => error = Some(e),
+                Ok(ep) => error = self.start(app, &cfg, ep).err(),
+            }
+        }
+        // serve 매핑: HTTPS 로 떴으면 연결, 아니면 우리가 걸어 둔 매핑만 해제
+        if matches!(self.endpoint(), Some(Endpoint::Https(_))) {
+            let port = cfg.port;
+            let r = tauri::async_runtime::spawn_blocking(move || tailscale::serve_on(port))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            match r {
+                Ok(()) => plock(&self.state).serve_active = Some(port),
+                Err(e) => {
+                    // HTTPS 를 포기하고 Tailscale IP HTTP 로 물러난다 — 폰 접속 자체는 유지
+                    self.stop().await;
+                    let _ = tauri::async_runtime::spawn_blocking(tailscale::serve_off).await;
+                    plock(&self.state).serve_active = None;
+                    plock(&self.state).https_error = Some(e);
+                    error = resolve_bind(&cfg.bind, p.ip).and_then(|ip| self.start(app, &cfg, Endpoint::Http(ip))).err();
+                }
+            }
+        } else if plock(&self.state).serve_active.take().is_some() {
+            let _ = tauri::async_runtime::spawn_blocking(tailscale::serve_off).await;
+        }
         plock(&self.state).error = error;
-        if before != (self.bound(), plock(&self.state).error.clone()) {
+        if before != (self.endpoint(), plock(&self.state).error.clone()) {
             emit_status(app);
         }
     }
 
-    /// 감시 주기 1회 — 판단 재료(설정·바인드·Tailscale)를 apply_lock 안에서 다시 읽어
+    /// 감시 주기 1회 — 판단 재료(설정·엔드포인트·Tailscale)를 apply_lock 안에서 다시 읽어
     /// 사용자 설정 변경과 엇갈려 옛 판단으로 재시작하지 않게 한다
     async fn apply_if_needed(&self, app: &AppHandle) {
         let _apply = self.apply_lock.lock().await;
-        let (enabled, auto) = {
+        let (enabled, auto, bind) = {
             let store = app.state::<Mutex<Store>>();
             let s = plock(&store);
-            (s.data.remote.enabled, is_auto(&s.data.remote.bind))
+            (s.data.remote.enabled, is_auto(&s.data.remote.bind), s.data.remote.bind.clone())
         };
         if !enabled {
             return;
         }
-        let bound = self.bound();
-        let ts = if auto { tailscale_ip().await } else { None };
+        let p = probe().await;
+        let peers_before = plock(&self.state).ts_status.as_ref().map(|s| s.peers.clone());
+        self.store_probe(&p);
+        let current = self.endpoint();
+        let blocked = plock(&self.state).https_error.is_some();
+        let desired = if auto { resolve_endpoint(&bind, &p, blocked).ok() } else { None };
         let now = Instant::now();
         let restart = {
             let mut st = plock(&self.state);
-            if auto {
-                st.ts_cache = ts;
-            }
-            st.ts_missing_streak = if auto && bound.is_some() && ts.is_none() { st.ts_missing_streak + 1 } else { 0 };
-            let due = bound.is_some() || st.next_retry.is_none_or(|t| now >= t);
-            due && needs_restart(enabled, auto, bound, ts, st.ts_missing_streak)
+            st.ts_missing_streak =
+                if auto && current.is_some() && desired.is_none() { st.ts_missing_streak + 1 } else { 0 };
+            let due = current.is_some() || st.next_retry.is_none_or(|t| now >= t);
+            due && needs_restart(enabled, auto, current, desired, st.ts_missing_streak)
         };
         if !restart {
+            // 기기 온라인 표시만 바뀐 경우
+            if peers_before != p.status.as_ref().map(|s| s.peers.clone()) {
+                emit_status(app);
+            }
             return;
         }
-        self.apply_locked(app, ts).await;
+        self.apply_locked(app, &p).await;
         let mut st = plock(&self.state);
         if st.server.is_some() {
             st.backoff = None;
@@ -424,12 +487,17 @@ impl RemoteHub {
         }
     }
 
-    fn start(&self, app: &AppHandle, cfg: &RemoteConfig, bind: IpAddr) -> Result<(), String> {
+    fn start(&self, app: &AppHandle, cfg: &RemoteConfig, endpoint: Endpoint) -> Result<(), String> {
+        let bind = endpoint.bind_ip();
         // 동기 바인드 — 포트 충돌 등 실패를 즉시 호출부로 돌려준다
         let std_listener = std::net::TcpListener::bind((bind, cfg.port))
             .map_err(|e| format!("{} 바인드 실패: {}", url_of(&bind, cfg.port), e))?;
         std_listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let ifaces = if bind.is_unspecified() { iface_ips() } else { Vec::new() };
+        let https_host = match &endpoint {
+            Endpoint::Https(h) => Some(format!("{}:{}", h, tailscale::HTTPS_PORT)),
+            Endpoint::Http(_) => None,
+        };
         let (stx, srx) = watch::channel(false);
         let ctx = Arc::new(server::Ctx {
             backend: Arc::new(TauriBackend {
@@ -446,6 +514,7 @@ impl RemoteHub {
             shutdown: srx.clone(),
             next_conn: std::sync::atomic::AtomicU64::new(1),
             upload_slots: tokio::sync::Semaphore::new(server::UPLOAD_CONCURRENCY),
+            https_host,
         });
         let router = server::router(ctx);
         let mut sig = srx.clone();
@@ -483,26 +552,46 @@ impl RemoteHub {
             }
             emit_status(&app);
         });
-        st.server = Some(Running { gen, bind, shutdown: stx, handle });
+        st.server = Some(Running { gen, endpoint, shutdown: stx, handle });
         Ok(())
     }
 
     fn view(&self, app: &AppHandle) -> RemoteView {
         let cfg = plock(&app.state::<Mutex<Store>>()).data.remote.clone();
         let auto = is_auto(&cfg.bind);
-        // 실행 중이면 실제 바인드, 아니면 지금 해석한 주소 (auto 는 마지막 탐지값)
-        let ts_cache = plock(&self.state).ts_cache;
-        let ip = self.bound().or_else(|| resolve_bind(&cfg.bind, ts_cache).ok());
+        let (cached, https_error) = {
+            let st = plock(&self.state);
+            (Probe { status: st.ts_status.clone(), ip: st.ts_cache }, st.https_error.clone())
+        };
+        // 실행 중이면 실제 엔드포인트, 아니면 지금 해석한 것 (auto 는 마지막 탐지값)
+        let ep = self.endpoint().or_else(|| resolve_endpoint(&cfg.bind, &cached, https_error.is_some()).ok());
+        let ip = match &ep {
+            Some(Endpoint::Http(ip)) => Some(*ip),
+            _ => None,
+        };
+        let https_url = match &ep {
+            Some(Endpoint::Https(h)) => Some(tailscale::https_url(h)),
+            _ => None,
+        };
         let connected_devices = plock(&self.conns).len();
         let st = plock(&self.state);
         RemoteView {
             enabled: cfg.enabled,
+            // HTTPS 는 TLS 로 암호화되고 루프백 바인드라 위험 경고가 없다
             bind_warning: ip.as_ref().and_then(auth::bind_warning),
             // auto 는 Tailscale 로만 해석되므로 미연결이어도 tailscale 등급
             bind_level: if auto { "tailscale" } else { ip.as_ref().map(auth::bind_level).unwrap_or("public") },
             push_warning: push_warning(&cfg.push.url),
-            urls: ip.map(|ip| urls_for(&ip, cfg.port)).unwrap_or_default(),
-            resolved_bind: ip.map(|ip| ip.to_string()),
+            urls: ep.as_ref().map(|e| e.urls(cfg.port)).unwrap_or_default(),
+            resolved_bind: match &ep {
+                Some(Endpoint::Http(ip)) => Some(ip.to_string()),
+                Some(Endpoint::Https(h)) => Some(h.clone()),
+                None => None,
+            },
+            mode: if https_url.is_some() { "https" } else { "http" },
+            https_url,
+            https_available: cached.status.as_ref().and_then(|s| s.https_host()).is_some(),
+            https_error,
             connected_devices,
             bind: cfg.bind,
             port: cfg.port,
@@ -511,11 +600,17 @@ impl RemoteHub {
             devices: cfg
                 .devices
                 .iter()
-                .map(|d| DeviceView {
-                    id: d.id.clone(),
-                    name: d.name.clone(),
-                    created_ms: d.created_ms,
-                    last_seen_ms: d.last_seen_ms,
+                .map(|d| {
+                    let ts = device_ts_state(cached.status.as_ref(), d.tailscale_ip.as_deref());
+                    DeviceView {
+                        id: d.id.clone(),
+                        name: d.name.clone(),
+                        created_ms: d.created_ms,
+                        last_seen_ms: d.last_seen_ms,
+                        platform: d.platform.clone(),
+                        tailscale_online: ts.as_ref().map(|t| t.0),
+                        tailscale_last_seen: ts.and_then(|t| t.1),
+                    }
                 })
                 .collect(),
             push: PushView {
@@ -811,22 +906,25 @@ pub fn remote_start_pairing(app: AppHandle, hub: State<RemoteHub>) -> Result<Pai
 }
 
 fn issue_pairing(app: &AppHandle, hub: &RemoteHub) -> Result<PairingView, String> {
-    let Some(bind) = hub.bound() else {
+    if !hub.running() {
         return Err("원격 서버가 실행 중이 아닙니다".into());
-    };
-    let port = plock(&app.state::<Mutex<Store>>()).data.remote.port;
-    // QR 에는 실제 바인드 IP (auto 면 Tailscale IP) 가 들어간다
-    let base = urls_for(&bind, port).into_iter().next().ok_or("접속 주소를 찾을 수 없습니다")?;
+    }
+    // QR 에는 실제 공개 주소 (HTTPS 모드면 https://<name>.ts.net:7443, 아니면 Tailscale IP)
+    let base = hub.public_base(app).ok_or("접속 주소를 찾을 수 없습니다")?;
     let now = Instant::now();
     let (code, expires) = plock(&hub.pairing).start(now);
     let expires_ms = now_ms() + expires.duration_since(now).as_millis() as u64;
     let url = format!("{}/#pair={}", base, code);
-    let qr_svg = qrcode::QrCode::new(url.as_bytes())
+    let qr_svg = qr_svg(&url)?;
+    Ok(PairingView { code, url, qr_svg, expires_ms })
+}
+
+fn qr_svg(text: &str) -> Result<String, String> {
+    Ok(qrcode::QrCode::new(text.as_bytes())
         .map_err(|e| e.to_string())?
         .render::<qrcode::render::svg::Color>()
         .min_dimensions(200, 200)
-        .build();
-    Ok(PairingView { code, url, qr_svg, expires_ms })
+        .build())
 }
 
 #[tauri::command]
@@ -874,7 +972,7 @@ impl QuickConnect {
 }
 
 /// 원클릭 시 재시작 여부 — 이미 그 Tailscale IP 로 떠 있으면 설정만 바꾸고 연결을 유지한다
-fn quick_restart(bound: Option<IpAddr>, ts: IpAddr) -> bool {
+fn quick_restart<T: PartialEq>(bound: Option<T>, ts: T) -> bool {
     bound != Some(ts)
 }
 
@@ -889,14 +987,16 @@ pub async fn remote_quick_connect(app: AppHandle) -> Result<QuickConnect, String
     let hub = app.state::<RemoteHub>();
     let changed_from = {
         let _apply = hub.apply_lock.lock().await;
-        let ts = tailscale_ip().await;
+        // 'HTTPS 켰어요, 다시 확인' 도 이 경로 — 매번 새로 탐지하고 HTTPS 실패 이력을 지운다
+        let p = probe().await;
+        hub.store_probe(&p);
         {
             let mut st = plock(&hub.state);
-            st.ts_cache = ts;
             st.backoff = None;
             st.next_retry = None;
+            st.https_error = None;
         }
-        let Some(ts) = ts else {
+        let Ok(want) = resolve_endpoint(BIND_AUTO, &p, false) else {
             return Ok(QuickConnect::fail("no-tailscale", None));
         };
         let changed_from = {
@@ -909,8 +1009,8 @@ pub async fn remote_quick_connect(app: AppHandle) -> Result<QuickConnect, String
             s.save()?;
             changed_from
         };
-        if quick_restart(hub.bound(), ts) {
-            hub.apply_locked(&app, Some(ts)).await;
+        if quick_restart(hub.endpoint(), want) {
+            hub.apply_locked(&app, &p).await;
         } else {
             emit_status(&app); // 설정 표시(auto)만 갱신
         }
@@ -936,6 +1036,74 @@ pub fn remote_release_control(ptys: State<PtyManager>, id: String) {
     ptys.release_control(&id);
 }
 
+/// ntfy 구독 링크 — QR 은 어디서나 열리는 https 구독 페이지(안드로이드 ntfy 앱이 이 링크를 가로챈다),
+/// 딥링크는 ntfy 앱 전용 `ntfy://<host>/<topic>` (http 서버면 secure=false)
+fn ntfy_links(url: &str, topic: &str) -> (String, String) {
+    let base = url.trim().trim_end_matches('/');
+    let web = format!("{}/{}", base, topic);
+    let (host, secure) = match base.strip_prefix("https://") {
+        Some(h) => (h, true),
+        None => (base.strip_prefix("http://").unwrap_or(base), false),
+    };
+    let deep = format!("ntfy://{}/{}{}", host, topic, if secure { "" } else { "?secure=false" });
+    (web, deep)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushSetup {
+    view: RemoteView,
+    subscribe_url: String,
+    deep_link: String,
+    qr_svg: String,
+}
+
+/// 폰 알림 원클릭 — ntfy 를 켜고(서버·토픽은 기존 값, 없으면 기본·랜덤) 구독 QR 을 돌려준다.
+/// 서버 재시작 없음
+#[tauri::command]
+pub fn remote_enable_push(app: AppHandle, hub: State<RemoteHub>) -> Result<PushSetup, String> {
+    let (url, topic) = {
+        let store = app.state::<Mutex<Store>>();
+        let mut s = plock(&store);
+        let push = &mut s.data.remote.push;
+        push.kind = "ntfy".into();
+        if !(push.url.starts_with("https://") || push.url.starts_with("http://")) {
+            push.url = "https://ntfy.sh".into();
+        }
+        if !notify::valid_topic(&push.topic) {
+            push.topic = random_topic();
+        }
+        let r = (push.url.clone(), push.topic.clone());
+        s.save()?;
+        r
+    };
+    let (subscribe_url, deep_link) = ntfy_links(&url, &topic);
+    let qr_svg = qr_svg(&subscribe_url)?;
+    emit_status(&app);
+    Ok(PushSetup { view: hub.view(&app), subscribe_url, deep_link, qr_svg })
+}
+
+/// 데스크톱에서 보던 세션을 폰에서 바로 열게 하는 푸시 — 알림을 누르면 원격 앱이 그 세션으로 열린다
+#[tauri::command]
+pub async fn remote_open_on_phone(app: AppHandle, session_id: Option<String>) -> Result<(), String> {
+    let cfg = plock(&app.state::<Mutex<Store>>()).data.remote.push.clone();
+    if cfg.kind != "ntfy" || !notify::valid_topic(&cfg.topic) {
+        return Err("no-push".into());
+    }
+    let base = app.state::<RemoteHub>().public_base(&app).ok_or("원격 서버가 실행 중이 아닙니다")?;
+    let sid = session_id.filter(|s| !s.is_empty());
+    let click = notify::click_url(&base, sid.as_deref());
+    let body = match &sid {
+        Some(id) => format!("{} — 폰에서 열기", notify::session_label(&app, id, cfg.include_project).unwrap_or_else(|| "세션".into())),
+        None => "Terminal Assistance — 폰에서 열기".into(),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        notify::send_ntfy(&cfg.url, &cfg.topic, &body, "high", "iphone", Some(&click))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn remote_test_push(app: AppHandle) -> Result<(), String> {
     let cfg = plock(&app.state::<Mutex<Store>>()).data.remote.push.clone();
@@ -946,7 +1114,7 @@ pub async fn remote_test_push(app: AppHandle) -> Result<(), String> {
         return Err("ntfy 토픽이 올바르지 않습니다".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        notify::send_ntfy(&cfg.url, &cfg.topic, "테스트 알림 — 원격 푸시가 연결되었습니다", "default", "bell")
+        notify::send_ntfy(&cfg.url, &cfg.topic, "테스트 알림 — 원격 푸시가 연결되었습니다", "default", "bell", None)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -998,14 +1166,59 @@ mod tests {
     fn restart_decision() {
         let (a, b) = (Some(ip("100.64.0.1")), Some(ip("100.64.0.2")));
         assert!(!needs_restart(false, true, None, a, 0), "꺼져 있으면 아무것도 안 함");
-        assert!(needs_restart(true, false, None, None, 0), "고정 바인드 실패는 재시도");
+        assert!(needs_restart(true, false, None::<IpAddr>, None, 0), "고정 바인드 실패는 재시도");
         assert!(!needs_restart(true, false, a, b, 0), "고정 바인드는 IP 변화와 무관");
         assert!(needs_restart(true, true, None, a, 0), "Tailscale 이 늦게 붙으면 시작");
-        assert!(!needs_restart(true, true, None, None, 0), "Tailscale 없으면 헛시도 안 함");
+        assert!(!needs_restart(true, true, None::<IpAddr>, None, 0), "Tailscale 없으면 헛시도 안 함");
         assert!(!needs_restart(true, true, a, a, 0));
         assert!(needs_restart(true, true, a, b, 0), "IP 변경은 즉시 재바인드");
         assert!(!needs_restart(true, true, a, None, 1), "한 번 사라진 건 일시 끊김일 수 있다");
         assert!(needs_restart(true, true, a, None, 2), "2회 연속 사라지면 내려서 오류 표시");
+    }
+
+    #[test]
+    fn endpoint_prefers_https_when_cert_available() {
+        let status = |certs: &str| {
+            tailscale::parse_status(&format!(
+                r#"{{"BackendState":"Running","CertDomains":{certs},"Self":{{"DNSName":"mac.t.ts.net.","TailscaleIPs":["100.64.0.5"]}}}}"#
+            ))
+        };
+        let with = Probe { status: status(r#"["mac.t.ts.net"]"#), ip: Some(ip("100.64.0.5")) };
+        let without = Probe { status: status("null"), ip: Some(ip("100.64.0.5")) };
+        assert_eq!(resolve_endpoint("auto", &with, false), Ok(Endpoint::Https("mac.t.ts.net".into())));
+        assert_eq!(resolve_endpoint("auto", &with, true), Ok(Endpoint::Http(ip("100.64.0.5"))), "HTTPS 실패 이력이면 HTTP");
+        assert_eq!(resolve_endpoint("auto", &without, false), Ok(Endpoint::Http(ip("100.64.0.5"))));
+        assert_eq!(resolve_endpoint("127.0.0.1", &with, false), Ok(Endpoint::Http(ip("127.0.0.1"))), "고정 바인드는 그대로");
+        assert!(resolve_endpoint("auto", &Probe::default(), false).is_err());
+        let https = Endpoint::Https("mac.t.ts.net".into());
+        assert_eq!(https.bind_ip(), ip("127.0.0.1"));
+        assert_eq!(https.urls(7788), ["https://mac.t.ts.net:7443"]);
+        // 모드 전환도 재시작 사유
+        assert!(needs_restart(true, true, Some(Endpoint::Http(ip("100.64.0.5"))), Some(https.clone()), 0));
+        assert!(!needs_restart(true, true, Some(https.clone()), Some(https), 0));
+    }
+
+    #[test]
+    fn device_online_state_from_status() {
+        let st = tailscale::parse_status(
+            r#"{"BackendState":"Running","Peer":{"a":{"TailscaleIPs":["100.72.45.122"],"Online":false,"LastSeen":"2026-10-01T00:00:00Z"}}}"#,
+        );
+        assert_eq!(
+            device_ts_state(st.as_ref(), Some("100.72.45.122")),
+            Some((false, Some("2026-10-01T00:00:00Z".into())))
+        );
+        assert_eq!(device_ts_state(st.as_ref(), Some("127.0.0.1")), None);
+        assert_eq!(device_ts_state(st.as_ref(), None), None, "구버전 기기(IP 미기록)");
+        assert_eq!(device_ts_state(None, Some("100.72.45.122")), None, "status 조회 실패");
+    }
+
+    #[test]
+    fn ntfy_subscribe_links() {
+        let (web, deep) = ntfy_links("https://ntfy.sh/", "ta-abc");
+        assert_eq!(web, "https://ntfy.sh/ta-abc");
+        assert_eq!(deep, "ntfy://ntfy.sh/ta-abc");
+        let (_, deep) = ntfy_links("http://ntfy.lan:8080", "t");
+        assert_eq!(deep, "ntfy://ntfy.lan:8080/t?secure=false");
     }
 
     #[test]
@@ -1065,5 +1278,13 @@ mod tests {
         assert_eq!(t.len(), 3 + 32);
         assert!(notify::valid_topic(&t));
         assert_ne!(t, random_topic());
+    }
+}
+
+/// 앱 종료 시 우리가 건 serve 매핑을 best-effort 로 해제 (CLI 시간 제한 안에서)
+pub fn shutdown(app: &AppHandle) {
+    let Some(hub) = app.try_state::<RemoteHub>() else { return };
+    if plock(&hub.state).serve_active.take().is_some() {
+        tailscale::serve_off();
     }
 }

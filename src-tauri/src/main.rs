@@ -1101,11 +1101,17 @@ fn main() {
             remote::remote_revoke_device,
             remote::remote_test_push,
             remote::remote_release_control,
-            remote::remote_quick_connect
+            remote::remote_quick_connect,
+            remote::remote_enable_push,
+            remote::remote_open_on_phone
         ])
         .build(tauri::generate_context!())
         .expect("Terminal Assistance 실행 실패")
         .run(|_app, _event| {
+            // 우리가 건 tailscale serve 매핑을 남기지 않는다 (best-effort)
+            if let tauri::RunEvent::Exit = _event {
+                remote::shutdown(_app);
+            }
             // 크래시 복구 중(창 재생성 사이, 창 0개)의 자동 종료 요청만 무시 —
             // 사용자 종료(X 버튼, app.exit)는 그대로 진행된다.
             #[cfg(windows)]
