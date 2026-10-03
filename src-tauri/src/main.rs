@@ -887,8 +887,8 @@ fn install_crash_recovery(window: &tauri::WebviewWindow) {
                     || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED;
                 let recreate = kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED;
                 if let Some(p) = &log_path {
-                    let secs = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
+                    let secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
                     let action = if reload { "reload" } else if recreate { "recreate" } else { "none" };
