@@ -161,9 +161,42 @@
     notify: (title, body, sessionId) => invoke('notify', { title, body, sessionId: sessionId || null }),
     fileSrc: (p) => convertFileSrc(p),
 
+    // ── 모바일 원격 제어 (설정 UI) — 응답은 RemoteView { enabled, bind, port, running, error, bindWarning, urls, devices, push } ──
+    remoteGetConfig: () => invoke('remote_get_config'),
+    // cfg = { enabled, bind, port, push: { kind: 'off'|'ntfy', url, topic, onDone, onWaiting } }
+    remoteSetConfig: (cfg) => invoke('remote_set_config', { cfg }),
+    // → { code, url, qrSvg, expiresMs } (서버 미실행 시 거부)
+    remoteStartPairing: () => invoke('remote_start_pairing'),
+    remoteRevokeDevice: (id) => invoke('remote_revoke_device', { id }),
+    remoteTestPush: () => invoke('remote_test_push'),
+    // 폰 알림 원클릭 — ntfy 켜기 → { view, subscribeUrl, deepLink, qrSvg }
+    remoteEnablePush: () => invoke('remote_enable_push'),
+    // 📱 마법사 상태 → { macTailscale, selfDnsName, httpsAvailable, phones: [{ ip, hostName, os, online, lastSeen }], pairedDevices, pushConfigured, hostOs }
+    remoteSetupStatus: () => invoke('remote_setup_status'),
+    remoteOpenTailscale: () => invoke('remote_open_tailscale'),
+    // http(s) URL → QR SVG 문자열
+    remoteQr: (text) => invoke('remote_qr', { text }),
+    // ntfy 로 '폰에서 열기' 푸시 (알림 클릭 = 원격 앱의 해당 세션). 푸시 미설정이면 'no-push' 로 거부
+    remoteOpenOnPhone: (sessionId) => invoke('remote_open_on_phone', { sessionId: sessionId || null }),
+    // '폰 연결' 원클릭 — Tailscale IP 자동 바인드로 켜고 페어링 코드 발급.
+    // → { ok: true, view, pairing } | { ok: false, reason: 'no-tailscale'|'start-failed', error?, view? }
+    remoteQuickConnect: () => invoke('remote_quick_connect'),
+    // 폰이 쥔 제어권(PTY 크기)을 데스크톱이 되찾는다
+    remoteReleaseControl: (id) => invoke('remote_release_control', { id }),
+
     onData: (cb) => listen('ta:data', (e) => cb(e.payload)),
     onStatus: (cb) => listen('ta:status', (e) => cb(e.payload)),
     onExit: (cb) => listen('ta:exit', (e) => cb(e.payload)),
+    // 원격(모바일)에서 만든 세션 — payload 는 createSession 반환값과 같은 모양
+    onSessionCreated: (cb) => listen('ta:session-created', (e) => cb(e.payload)),
+    // 원격 제어권 변화 { id, holder: deviceId|null, deviceName, cols, rows }
+    onRemoteControl: (cb) => listen('ta:remote-control', (e) => cb(e.payload)),
+    // 폰이 해당 세션에 입력함 { id } (세션별 200ms 스로틀)
+    onRemoteInput: (cb) => listen('ta:remote-input', (e) => cb(e.payload)),
+    // 폰이 이미지를 올림 { sessionId, path }
+    onRemoteImage: (cb) => listen('ta:remote-image', (e) => cb(e.payload)),
+    // 원격 서버·기기 상태 변화 — payload 는 RemoteView (connectedDevices 포함)
+    onRemoteStatus: (cb) => listen('ta:remote-status', (e) => cb(e.payload)),
     // 데스크톱 알림 클릭 → 백엔드가 창을 앞으로 올린 뒤 대상 세션 id 를 보낸다
     onActivateSession: (cb) => listen('ta:activate-session', (e) => cb(e.payload)),
     // Tauri 는 파일 드롭을 웹뷰 대신 네이티브 이벤트로 준다 (실제 경로 포함)

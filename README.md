@@ -17,6 +17,7 @@ macOS · Windows 지원 (Tauri 2 — 시스템 WebView 기반이라 Electron 대
 - **재시작 세션 복원** — 앱을 다시 켜면 지난번 열려 있던 세션이 같은 경로·같은 이름으로, 분할 배치까지 그대로 다시 열립니다. 화면 내용은 복원하지 않는 대신, 그 경로의 최근 Claude/Codex 기록이 있으면 `이어서 하기` 배너로 `--resume` 을 한 번에 실행합니다.
 - **명령 프리셋** — 자주 쓰는 작업 지시를 전역/프로젝트별로 등록. 클릭=실행, Shift+클릭=입력만, 우클릭=수정.
 - **이미지 첨부** — 클립보드 이미지 `Cmd/Ctrl+V` 또는 파일 드래그앤드롭 → PNG 저장 후 경로 자동 입력(Claude Code 가 이미지로 인식). 하단 스트립에서 **어떤 이미지를 전달했는지 썸네일로 확인**, 클릭하면 원본 열기.
+- **모바일 원격 제어** — 폰 브라우저(PWA)에서 세션 상태 확인, 출력 보기, 프롬프트·특수키(Esc·Ctrl+C·방향키·y/1/2) 입력, 프리셋 실행, 새 세션 열기, 사진 첨부. "제어" 버튼으로 터미널 크기를 폰에 맞추고, 데스크톱 배너에서 되찾을 수 있습니다. 완료·허가 대기는 ntfy 푸시로 받습니다. QR 페어링 기기별 토큰, 기본 꺼짐.
 - **테마** — 다크/라이트 프리셋 12종 또는 배경색·강조색 직접 지정. 배경 밝기에 따라 글자·상태·프로젝트 색과 코드 하이라이트가 자동 보정됩니다.
 - **자동 업데이트** — 새 버전이 릴리즈되면 앱이 알려주고 클릭 한 번으로 업데이트.
 
@@ -41,6 +42,12 @@ macOS · Windows 지원 (Tauri 2 — 시스템 WebView 기반이라 Electron 대
 3. **작업 지시 프리셋**: 상단 `+ 프리셋` 으로 등록 → 칩 클릭으로 실행.
 4. **이미지 전달**: 화면 캡처 후 터미널에서 `Cmd/Ctrl+V`, 또는 이미지 파일을 창에 드롭.
 5. **상태 확인**: 사이드바의 세션 점 색으로 진행/완료 확인. 비활성 세션이 끝나면 알림이 옵니다.
+6. **폰에서 보기 (모바일 원격 제어)**:
+   - PC와 폰에 [Tailscale](https://tailscale.com) 을 설치하고 같은 계정으로 로그인합니다. 폰은 Tailscale 앱에서 VPN On Demand(iOS)·상시 VPN(Android)을 켜 두면 항상 연결됩니다. (평문 HTTP 서버라 공개 Wi-Fi·인터넷에 직접 열지 마세요)
+   - 상단 `📱` 버튼 → Tailscale IP 를 자동으로 찾아 서버를 켜고 QR·코드를 보여줍니다. 폰 카메라로 QR 스캔(5분 유효, 1회용) → 연결.
+   - 안내에 따라 홈 화면에 추가하면 이후엔 아이콘만 눌러 바로 열립니다. iPhone 홈 화면 앱은 Safari 와 저장소가 분리되어 처음 한 번 `📱` 의 8자 코드를 입력합니다.
+   - 한 번 연결하면 앱을 다시 켜도 서버가 자동으로 뜨고 폰은 그대로 접속됩니다. 기기는 `📱` 창에서 폐기할 수 있고 30일간 미사용 시 자동 만료됩니다.
+   - 푸시 알림: 설정 → `모바일 원격 제어` 에서 ntfy 를 켜고, 폰 ntfy 앱에서 표시된 토픽을 구독합니다.
 
 ## 소스에서 빌드
 
@@ -51,6 +58,7 @@ git clone https://github.com/zzamjak-cloud/TerminalAssistance.git
 cd TerminalAssistance
 npm install
 npm run dev      # 개발 실행
+npm run dev:isolated  # 설치본과 설정·데이터를 분리해 개발 실행 (최초 1회 설치본 프로젝트·프리셋 복사)
 npm test         # 렌더러 단위 테스트 (scripts/test/*.test.js — 순수 node, 의존성 없음)
 npm run build    # 배포 빌드 (dmg / exe)
 ```
@@ -152,6 +160,8 @@ src-tauri/          Rust 백엔드
   src/pty.rs        PTY 세션 관리 + 상태 머신 (portable-pty, 500ms 폴링 스레드 1개)
   src/store.rs      프로젝트·프리셋·설정 JSON 영속화
   src/main.rs       IPC 커맨드 + 플러그인 배선 (clipboard/dialog/notification/opener/updater)
+  src/remote/       모바일 원격 서버 (axum HTTP/WS, 페어링·토큰 인증, 업로드, ntfy 푸시)
+src/mobile/         모바일 웹앱 (원격 서버가 정적 서빙, PWA)
 src/renderer/       프론트엔드 (순수 웹, 번들러 없음)
   terminal-view.js  xterm.js 세션 뷰 (비활성 세션도 버퍼 유지 → 전환 비용 0)
   sidebar.js        프로젝트/세션 목록 + 상태 시각화

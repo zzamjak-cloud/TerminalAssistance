@@ -42,6 +42,21 @@ const App = {
     // 아래의 터미널 생성·스크롤백 주입·분할 배치 복원 경로를 그대로 탄다.
     // (웹뷰 리로드일 때는 백엔드에 세션이 이미 살아 있어 아무것도 하지 않는다)
     const restoreResult = await App.restoreSessions();
+    // 원격 생성 세션 이벤트는 getState 보다 먼저 받는다 — 그 사이 만들어진 세션을 놓치지 않게.
+    // 부팅이 끝날 때까지는 모아 두었다가 처리한다 (id 중복은 adoptRemoteSession 이 거른다)
+    const createdDuringBoot = [];
+    const controlDuringBoot = [];
+    let booted = false;
+    await ta.onSessionCreated((info) => {
+      if (booted) void App.adoptRemoteSession(info);
+      else createdDuringBoot.push(info);
+    });
+    // 제어권도 같은 이유로 먼저 받는다. 부팅 끝에 순서대로 재생하면 getState 스냅샷보다
+    // 오래된 이벤트가 섞여도 마지막 이벤트가 최종 상태가 된다 (변화마다 이벤트가 나간다)
+    await ta.onRemoteControl((p) => {
+      if (booted) TerminalView.setRemoteControl(p);
+      else controlDuringBoot.push(p);
+    });
     const st = await ta.getState();
     Object.assign(App.state, {
       projects: st.projects, presets: st.presets, recipes: st.recipes || [], settings: st.settings, sessions: st.sessions,
@@ -57,6 +72,7 @@ const App = {
     const restoring = st.sessions.slice();
     for (const s of restoring) {
       TerminalView.create(s, App.state.settings.fontSize, { frozen: true });
+      TerminalView.applySessionControl(s);
     }
 
     ta.onData((p) => TerminalView.feed(p));
@@ -81,6 +97,12 @@ const App = {
       App.renderTopbar();
       App.renderComposerQueue(); // 보이는 패널 전부의 예약 목록 갱신
     });
+    // 폰이 입력했다 — 데스크톱이 추적하던 입력 줄 내용은 더 이상 믿을 수 없다
+    ta.onRemoteInput((p) => App.onRemoteInput(p));
+    ta.onRemoteImage((p) => App.onRemoteImage(p));
+    // 📱 배지(연결된 폰)·폰 연결 모달 갱신
+    ta.onRemoteStatus((v) => App.onRemoteStatus(v));
+    ta.remoteGetConfig().then((v) => App.onRemoteStatus(v)).catch(() => {});
     ta.onExit(({ sessionId }) => {
       TerminalView.write(sessionId, '\r\n\x1b[31m[세션 종료됨 — 닫기(✕)로 정리]\x1b[0m\r\n');
     });
@@ -116,6 +138,7 @@ const App = {
     document.getElementById('btn-add-project').onclick = () => App.showProjectModal();
     document.getElementById('btn-clear-sessions').onclick = () => App.showClearSessionsModal();
     document.getElementById('btn-settings').onclick = () => App.showSettingsModal();
+    document.getElementById('btn-phone').onclick = () => App.showPhoneConnectModal();
     document.getElementById('btn-dashboard').onclick = () => App.toggleDashboard();
     document.getElementById('btn-dashboard-close').onclick = () => App.closeDashboard();
     document.getElementById('btn-help').onclick = () => App.showHelpModal();
@@ -185,6 +208,10 @@ const App = {
 
     // 자동 업데이트 확인 (백그라운드 — 실패는 조용히 무시)
     setTimeout(() => App.checkUpdate(), 2500);
+
+    booted = true;
+    for (const info of createdDuringBoot.splice(0)) void App.adoptRemoteSession(info);
+    for (const p of controlDuringBoot.splice(0)) TerminalView.setRemoteControl(p);
   },
 
   // ── 크래시 복구 가시화 ──
@@ -770,6 +797,54 @@ const App = {
     } catch (e) {
       alert('세션 생성 실패: ' + e);
     }
+  },
+
+  // 원격(모바일)에서 만든 세션을 들인다. 사용자가 보던 화면은 빼앗지 않는다 —
+  // 활성 세션이 없을 때만 띄운다. 이벤트가 늦게 와 그 사이 출력이 지나갔을 수 있으므로
+  // frozen 으로 만들고 스크롤백 스냅샷으로 복원한다 (부팅 복구와 같은 경로).
+  async adoptRemoteSession(info) {
+    if (!info || !info.id || App.state.sessions.some((s) => s.id === info.id)) return false;
+    App.state.sessions.push(info);
+    App.refreshGitRemoteForSessions([info]);
+    TerminalView.create(info, App.state.settings.fontSize, { frozen: true });
+    TerminalView.applySessionControl(info);
+    try {
+      TerminalView.restore(info.id, await ta.getScrollback(info.id));
+    } catch (_) {
+      TerminalView.restore(info.id, null);
+    }
+    if (!App.state.activeId) App.activateSession(info.id);
+    else App.renderAll();
+    await App.resyncAdoptedStatus(info.id);
+    return true;
+  },
+
+  // 이벤트에는 입력 내용이 없어 줄이 비었는지 알 수 없다 — reset(빈 줄로 확정) 대신
+  // invalidate 로 다음 Enter 까지 추적을 멈춘다 (틀린 내용으로 잘라내기·복원하지 않게)
+  onRemoteInput(p) {
+    if (p && p.id) TerminalView.invalidateTypedLine(p.id);
+  },
+
+  // 경로 삽입은 폰이 자기 입력창에서 한다 — 데스크톱에서 또 넣으면 경로가 두 번 들어간다.
+  // 데스크톱은 무엇이 왔는지만 알린다.
+  onRemoteImage(p) {
+    if (!p || !p.path) return;
+    const s = App.state.sessions.find((x) => x.id === p.sessionId);
+    App.showToast('📱 이미지 수신' + (s ? ' — ' + App.sessionLabel(s) : '') + ' · ' + p.path, 5000);
+  },
+
+  // 세션이 목록에 들어가기 전 도착한 ta:status 는 버려졌다 — 백엔드의 현재 상태로 맞춘다
+  async resyncAdoptedStatus(id) {
+    let st;
+    try { st = await ta.getState(); } catch (_) { return; }
+    const live = (st.sessions || []).find((x) => x.id === id);
+    const s = App.state.sessions.find((x) => x.id === id);
+    if (!live || !s || live.status === s.status) return;
+    s.status = live.status;
+    App.noteStatusForDashboard(id, live.status);
+    updateSessionStatus(s);
+    App.refreshPickerStatus(s);
+    App.renderTopbar();
   },
 
   activateSession(id, opts) {

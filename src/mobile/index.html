@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#14161c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TA 원격">
+  <title>TerminalAssistance 원격</title>
+  <!-- 가장 먼저 — 이후 스크립트의 로드 실패·부팅 오류를 화면에 보여 준다 -->
+  <script src="/boot-guard.js"></script>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="stylesheet" href="/xterm.css">
+  <link rel="stylesheet" href="/mobile.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 페어링 -->
+    <section id="screen-pair" class="screen hidden">
+      <div class="pair-box">
+        <img class="pair-logo" src="/icon.png" alt="">
+        <h1>TerminalAssistance 원격</h1>
+        <p class="pair-help" id="pair-help">데스크톱 앱 상단의 📱 버튼을 누르고, 표시된 QR 을 찍거나 8자 코드를 입력하세요.</p>
+        <form id="pair-form" autocomplete="off">
+          <label for="pair-code">페어링 코드</label>
+          <input id="pair-code" inputmode="text" autocapitalize="characters" autocorrect="off" autocomplete="one-time-code" spellcheck="false" maxlength="16" required>
+          <div class="pair-name-row">
+            <label for="pair-name">이 기기 이름</label>
+            <input id="pair-name" maxlength="40" spellcheck="false" required>
+          </div>
+          <button type="submit" id="pair-submit" class="primary">연결</button>
+        </form>
+        <p id="pair-error" class="pair-error" role="alert"></p>
+        <p id="pair-net-hint" class="pair-hint hidden">접속이 안 되면 폰의 Tailscale 앱이 켜져 있는지(VPN 연결됨) 확인하세요.</p>
+      </div>
+    </section>
+
+    <!-- PC 에 닿지 않음 (홈 화면 앱에서 VPN 이 꺼진 경우가 대부분) -->
+    <section id="screen-offline" class="screen hidden">
+      <div class="pair-box">
+        <img class="pair-logo" src="/icon.png" alt="">
+        <h1>PC 에 연결할 수 없음</h1>
+        <ul class="offline-tips">
+          <li>폰의 <b>Tailscale</b> 앱이 켜져 있는지(VPN 연결됨) 확인하세요.</li>
+          <li>PC 에서 TerminalAssistance 앱이 실행 중인지 확인하세요.</li>
+          <li>자주 끊기면 Tailscale 을 <b>상시 VPN</b>(iOS: VPN On Demand)으로, 배터리 사용을 <b>제한 없음</b>으로 두세요.</li>
+        </ul>
+        <button type="button" id="offline-retry" class="primary offline-retry">다시 시도</button>
+        <p id="offline-retry-note" class="pair-help offline-note"></p>
+      </div>
+    </section>
+
+    <!-- HTTPS 전환 후 옛 http 주소로 연 경우 -->
+    <section id="screen-moved" class="screen hidden">
+      <div class="pair-box">
+        <img class="pair-logo" src="/icon.png" alt="">
+        <h1>주소가 HTTPS 로 바뀌었습니다</h1>
+        <p class="pair-help">보안 연결로 바뀌어 새 주소에서 한 번 다시 연결(페어링)해야 합니다. 홈 화면 앱이면 새 주소에서 다시 홈 화면에 추가하세요.</p>
+        <p id="moved-url" class="pair-help moved-url"></p>
+        <button type="button" id="moved-go" class="primary offline-retry">새 주소로 이동</button>
+      </div>
+    </section>
+
+    <!-- 세션 대시보드 -->
+    <section id="screen-dash" class="screen hidden">
+      <header class="bar">
+        <span class="bar-title">세션</span>
+        <span id="dash-count" class="bar-sub"></span>
+        <span class="conn" id="conn-dash" title="연결 상태"></span>
+        <button id="btn-new" class="bar-btn" type="button">+ 새 세션</button>
+      </header>
+      <main id="dash-list" class="dash-list"></main>
+    </section>
+
+    <!-- 세션 뷰 -->
+    <section id="screen-term" class="screen hidden">
+      <header class="bar">
+        <button id="btn-back" class="bar-btn icon" type="button" aria-label="목록으로">‹</button>
+        <span id="term-status" class="status-tag"></span>
+        <span id="term-title" class="bar-title ellipsis"></span>
+        <span class="conn" id="conn-term" title="연결 상태"></span>
+        <button id="btn-control" class="bar-btn" type="button" title="이 화면 크기로 터미널 크기를 바꿔 조작합니다">제어</button>
+        <button id="btn-presets" class="bar-btn" type="button">프리셋</button>
+      </header>
+      <div id="term-wrap" class="term-wrap"><div id="term"></div></div>
+      <div class="keybar" id="keybar"></div>
+      <div id="upload-status" class="upload-status hidden" role="status"><span id="upload-text"></span><span class="upload-bar"><i id="upload-fill"></i></span></div>
+      <form id="composer" class="composer" autocomplete="off">
+        <!-- capture 를 주지 않아야 카메라·앨범 선택지가 함께 뜬다 -->
+        <input type="file" id="image-input" accept="image/*" class="hidden">
+        <button type="button" id="btn-image" class="composer-icon" aria-label="이미지 첨부">📎</button>
+        <textarea id="composer-input" rows="1" placeholder="프롬프트 입력" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="send"></textarea>
+        <button type="submit" id="composer-send" class="primary">전송</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- 하단 시트 (새 세션 프로젝트 선택 · 프리셋) -->
+  <div id="sheet-backdrop" class="sheet-backdrop hidden">
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-head"><span id="sheet-title"></span><button id="sheet-close" class="bar-btn icon" type="button" aria-label="닫기">✕</button></div>
+      <div id="sheet-body" class="sheet-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script src="/xterm.js"></script>
+  <script src="/dashboard-core.js"></script>
+  <script src="/remote-core.js"></script>
+  <script src="/mobile.js"></script>
+</body>
+</html>

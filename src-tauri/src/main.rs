@@ -6,8 +6,10 @@ mod claude_usage;
 mod codex;
 mod explorer;
 mod hooks;
+mod images;
 mod plans;
 mod pty;
+mod remote;
 mod store;
 mod util;
 mod worktree;
@@ -16,7 +18,6 @@ use pty::PtyManager;
 use serde_json::json;
 use std::fs;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 use store::{new_id, LaunchRecipe, Preset, Project, SavedSession, Store};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -406,7 +407,13 @@ fn update_settings(
 // ── 세션 배치 영속화 (재시작 복원용) ──
 // 살아 있는 세션 목록만 스냅샷해 설정에 남긴다. 화면 내용은 저장하지 않는다.
 // 호출 지점은 세션 생성·종료·이름변경 세 곳뿐이라 상시 부하가 없다.
-fn save_session_layout(store: &StoreState, ptys: &State<PtyManager>) {
+// 목록 스냅샷~저장을 직렬화 — 동시 호출(데스크톱·원격)에서 늦게 찍은 낡은 목록이 최신을 덮지 않게
+static LAYOUT_LOCK: Mutex<()> = Mutex::new(());
+// 세션 생성 전체를 직렬화 — 동시 생성이 같은 S 번호를 받거나 세션 상한을 넘지 않게
+static CREATE_LOCK: Mutex<()> = Mutex::new(());
+
+fn save_session_layout(store: &Mutex<Store>, ptys: &PtyManager) {
+    let _layout = plock(&LAYOUT_LOCK);
     let saved: Vec<SavedSession> = ptys
         .list()
         .into_iter()
@@ -442,6 +449,8 @@ fn restore_sessions(
     store: StoreState,
     ptys: State<PtyManager>,
 ) -> serde_json::Value {
+    // 원격 생성과 겹치면 '세션 없음' 판정이 어긋나므로 생성 경로와 함께 직렬화한다
+    let _create = plock(&CREATE_LOCK);
     // 이미 세션이 있으면(웹뷰 리로드) 아무것도 하지 않는다 — 중복 생성 방지
     if !ptys.list().is_empty() {
         return json!({ "restored": [], "skipped": [], "alreadyRunning": true });
@@ -496,6 +505,24 @@ fn create_session(
     ptys: State<PtyManager>,
     project_id: Option<String>,
 ) -> Result<pty::SessionInfo, String> {
+    create_session_inner(&app, &store, &ptys, project_id, None)
+}
+
+/// 데스크톱 커맨드와 원격(모바일) 생성이 공유하는 세션 생성 본문
+fn create_session_inner(
+    app: &AppHandle,
+    store: &Mutex<Store>,
+    ptys: &PtyManager,
+    project_id: Option<String>,
+    // Some(상한) = 원격 생성: 세션 수 상한을 검사하고, 데스크톱에 ta:session-created 로 알린다
+    remote_max: Option<usize>,
+) -> Result<pty::SessionInfo, String> {
+    let _create = plock(&CREATE_LOCK);
+    if let Some(max) = remote_max {
+        if ptys.list().len() >= max {
+            return Err(format!("세션이 너무 많습니다 (최대 {}개)", max));
+        }
+    }
     let (cwd, shell) = {
         let s = plock(&store);
         let proj = project_id
@@ -517,8 +544,12 @@ fn create_session(
         .max()
         .unwrap_or(0)
         + 1;
-    let info = ptys.create(app, project_id, cwd, &shell, Some(format!("S{}", n)), None)?;
-    save_session_layout(&store, &ptys);
+    let info = ptys.create(app.clone(), project_id, cwd, &shell, Some(format!("S{}", n)), None)?;
+    if remote_max.is_some() {
+        // 레이아웃 저장(디스크 I/O)보다 먼저 — 데스크톱 탭이 늦게 붙지 않게
+        let _ = app.emit("ta:session-created", &info);
+    }
+    save_session_layout(store, ptys);
     Ok(info)
 }
 
@@ -582,25 +613,7 @@ fn clipboard_image(app: AppHandle) -> Option<String> {
     let buf = image::RgbaImage::from_raw(w, h, rgba)?;
 
     let dir = app.path().app_data_dir().ok()?.join("images");
-    fs::create_dir_all(&dir).ok()?;
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_millis();
-    let path = dir.join(format!("img_{}.png", ts));
-    buf.save(&path).ok()?;
-
-    // 7일 지난 스냅샷 정리 (디스크 누수 방지)
-    if let Ok(entries) = fs::read_dir(&dir) {
-        let cutoff = SystemTime::now() - std::time::Duration::from_secs(7 * 24 * 3600);
-        for e in entries.flatten() {
-            if let Ok(md) = e.metadata() {
-                if md.modified().map(|m| m < cutoff).unwrap_or(false) {
-                    let _ = fs::remove_file(e.path());
-                }
-            }
-        }
-    }
+    let path = images::save_png(&dir, &buf).ok()?;
     Some(path.to_string_lossy().into_owned())
 }
 
@@ -984,6 +997,7 @@ fn main() {
         .manage(PtyManager::new())
         .manage(PendingUpdate::default())
         .manage(MemState::new(sysinfo::System::new()))
+        .manage(remote::RemoteHub::new())
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             app.manage(Mutex::new(Store::load(config_dir)));
@@ -993,6 +1007,7 @@ fn main() {
             for win in app.webview_windows().values() {
                 let _ = win.set_title(&title);
             }
+            remote::init(app.handle()); // 설정이 켜져 있으면 원격 서버 기동 + 푸시 감시
             hooks::clean_state_dir(); // 이전 실행이 남긴 훅 상태 파일 정리
             hooks::refresh_hook_script(); // 설치된 훅 스크립트를 최신 임베드 버전으로 갱신
 
@@ -1079,11 +1094,27 @@ fn main() {
             hooks::hooks_status,
             hooks::claude_session_of,
             hooks::set_claude_hooks,
-            hooks::set_codex_hooks
+            hooks::set_codex_hooks,
+            remote::remote_get_config,
+            remote::remote_set_config,
+            remote::remote_start_pairing,
+            remote::remote_revoke_device,
+            remote::remote_test_push,
+            remote::remote_release_control,
+            remote::remote_quick_connect,
+            remote::remote_enable_push,
+            remote::remote_open_on_phone,
+            remote::remote_setup_status,
+            remote::remote_open_tailscale,
+            remote::remote_qr
         ])
         .build(tauri::generate_context!())
         .expect("Terminal Assistance 실행 실패")
         .run(|_app, _event| {
+            // 우리가 건 tailscale serve 매핑을 남기지 않는다 (best-effort)
+            if let tauri::RunEvent::Exit = _event {
+                remote::shutdown(_app);
+            }
             // 크래시 복구 중(창 재생성 사이, 창 0개)의 자동 종료 요청만 무시 —
             // 사용자 종료(X 버튼, app.exit)는 그대로 진행된다.
             #[cfg(windows)]

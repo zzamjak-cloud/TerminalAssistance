@@ -154,6 +154,107 @@ pub fn session_restore_skip_reason(
     None
 }
 
+/// 페어링된 원격 기기. 토큰 원문은 저장하지 않는다 (SHA-256 hex 만)
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RemoteDevice {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "tokenHash")]
+    pub token_hash: String,
+    #[serde(rename = "createdMs", default)]
+    pub created_ms: u64,
+    #[serde(rename = "lastSeenMs", default)]
+    pub last_seen_ms: u64,
+    /// 페어링 시 접속 IP — Tailscale 피어 온라인 상태를 찾는 열쇠
+    #[serde(rename = "tailscaleIp", default, skip_serializing_if = "Option::is_none")]
+    pub tailscale_ip: Option<String>,
+    /// android | ios | other — 오프라인 안내 분기
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// 페어링한 출처 스킴 (http | https). 쿠키는 출처별이라 HTTPS 전환 후 http 기기는 재페어링해야 한다
+    #[serde(default = "default_device_scheme")]
+    pub scheme: String,
+}
+
+fn default_device_scheme() -> String {
+    "http".into()
+}
+
+/// 원격 푸시 설정. kind 는 "off" | "ntfy" — 모르는 값(향후 추가 종류)도 설정 파일 전체를
+/// 깨뜨리지 않도록 문자열로 받고 사용 시점에 해석한다
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PushConfig {
+    #[serde(default = "default_push_kind")]
+    pub kind: String,
+    #[serde(default = "default_ntfy_url")]
+    pub url: String,
+    /// 빈 값이면 원격 모듈이 최초 로드 시 랜덤 토픽을 발급해 저장한다
+    #[serde(default)]
+    pub topic: String,
+    #[serde(rename = "onDone", default = "default_true")]
+    pub on_done: bool,
+    #[serde(rename = "onWaiting", default = "default_true")]
+    pub on_waiting: bool,
+    /// 알림 본문에 프로젝트명을 넣을지 — 기본은 세션 제목만 (외부 서버에 남는 정보 최소화)
+    #[serde(rename = "includeProject", default)]
+    pub include_project: bool,
+}
+
+fn default_push_kind() -> String {
+    "off".into()
+}
+fn default_ntfy_url() -> String {
+    "https://ntfy.sh".into()
+}
+
+impl Default for PushConfig {
+    fn default() -> Self {
+        PushConfig {
+            kind: default_push_kind(),
+            url: default_ntfy_url(),
+            topic: String::new(),
+            on_done: true,
+            on_waiting: true,
+            include_project: false,
+        }
+    }
+}
+
+/// 모바일 원격 제어 설정. Settings 와 분리한 이유: get_state 가 settings 를 렌더러로
+/// 통째 보내므로, 여기 든 토큰 해시가 웹뷰로 새지 않게 한다
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RemoteConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_remote_bind")]
+    pub bind: String,
+    #[serde(default = "default_remote_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub devices: Vec<RemoteDevice>,
+    #[serde(default)]
+    pub push: PushConfig,
+}
+
+fn default_remote_bind() -> String {
+    "127.0.0.1".into()
+}
+fn default_remote_port() -> u16 {
+    7788
+}
+
+impl Default for RemoteConfig {
+    fn default() -> Self {
+        RemoteConfig {
+            enabled: false,
+            bind: default_remote_bind(),
+            port: default_remote_port(),
+            devices: Vec::new(),
+            push: PushConfig::default(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct StoreData {
     #[serde(default)]
@@ -169,6 +270,8 @@ pub struct StoreData {
     /// 마지막으로 열려 있던 세션 목록 (재시작 복원용). 세션 생성·종료·이름변경 때만 갱신한다.
     #[serde(rename = "sessionLayout", default)]
     pub session_layout: Vec<SavedSession>,
+    #[serde(default)]
+    pub remote: RemoteConfig,
 }
 
 pub struct Store {
@@ -269,5 +372,40 @@ mod tests {
         .unwrap();
         assert_eq!(older.projects.len(), 1);
         assert!(older.projects[0].parent_id.is_none());
+    }
+
+    #[test]
+    fn remote_config_defaults_for_old_store_and_roundtrips() {
+        // remote 필드가 없던 설정 파일: 기본값(꺼짐, 127.0.0.1:7788, 푸시 off)
+        let old: StoreData = serde_json::from_str(r#"{"projects":[],"settings":{"fontSize":14}}"#).unwrap();
+        assert!(!old.remote.enabled);
+        assert_eq!(old.remote.bind, "127.0.0.1");
+        assert_eq!(old.remote.port, 7788);
+        assert_eq!(old.remote.push.kind, "off");
+        assert_eq!(old.remote.push.url, "https://ntfy.sh");
+        assert!(old.remote.devices.is_empty());
+
+        // 일부 필드만 있는 remote, 모르는 푸시 종류도 설정 전체를 깨뜨리지 않는다
+        let partial: StoreData = serde_json::from_str(
+            r#"{"remote":{"enabled":true,"push":{"kind":"telegram"},"devices":[{"id":"d","name":"폰","tokenHash":"ab"}]}}"#,
+        )
+        .unwrap();
+        assert!(partial.remote.enabled);
+        assert_eq!(partial.remote.port, 7788);
+        assert_eq!(partial.remote.push.kind, "telegram");
+        assert!(partial.remote.push.on_done);
+        assert!(!partial.remote.push.include_project);
+        assert_eq!(partial.remote.devices[0].last_seen_ms, 0);
+        // 진단 필드가 없던 구버전 기기도 읽히고, 없으면 저장 시에도 쓰지 않는다
+        assert!(partial.remote.devices[0].tailscale_ip.is_none() && partial.remote.devices[0].platform.is_none());
+        assert!(!serde_json::to_string(&partial.remote.devices[0]).unwrap().contains("tailscaleIp"));
+        assert_eq!(partial.remote.devices[0].scheme, "http", "구버전 기기는 http 로 페어링된 것");
+
+        let json = serde_json::to_string(&partial).unwrap();
+        let back: StoreData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.remote.devices[0].token_hash, "ab");
+        // 토큰 해시는 settings 가 아닌 remote 에만 있다 (get_state 로 렌더러에 새지 않음)
+        let settings_json = serde_json::to_string(&back.settings).unwrap();
+        assert!(!settings_json.contains("tokenHash"));
     }
 }

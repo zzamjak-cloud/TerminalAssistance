@@ -1,0 +1,266 @@
+/* 모바일 원격 웹앱 — 데스크톱 styles.css 기본 다크 테마 토큰을 그대로 쓴다 */
+:root {
+  --bg: #14161c;
+  --bg-panel: #1b1e27;
+  --bg-hover: #242836;
+  --border: #2b3040;
+  --fg: #d5d9e4;
+  --fg-dim: #8b91a3;
+  --accent: #4f8cc9;
+  --accent-strong: #2e6cd6;
+  --accent-fill: #1c3a63;
+  --accent-on-fill: #eaf1fb;
+  --running: #3fb950;
+  --running-tint: rgba(63, 185, 80, .15);
+  --waiting: #d29922;
+  --waiting-tint: rgba(210, 153, 34, .18);
+  --done: #58a6ff;
+  --done-tint: rgba(88, 166, 255, .18);
+  --exited: #f85149;
+  --exited-tint: rgba(248, 81, 73, .15);
+  --idle: #8b91a3;
+  --idle-tint: rgba(139, 145, 163, .12);
+  --caution: #f0883e;
+  --overlay: rgba(0, 0, 0, .55);
+  --term-bg: #0f1116;
+  /* visualViewport 높이 — 키보드가 올라오면 mobile.js 가 갱신한다 */
+  --app-h: 100dvh;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--fg);
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+.hidden { display: none !important; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+button, input, textarea {
+  font: inherit; color: inherit;
+}
+button {
+  background: var(--bg-hover); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; cursor: pointer;
+  touch-action: manipulation;
+}
+button:active { filter: brightness(1.25); }
+button:disabled { opacity: .5; }
+button.primary { background: var(--accent-fill); border-color: var(--accent-strong); color: var(--accent-on-fill); font-weight: 600; }
+/* iOS 는 16px 미만 입력창에 포커스하면 화면을 확대한다 */
+input, textarea {
+  width: 100%;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-size: 16px;
+  outline: none;
+}
+input:focus, textarea:focus { border-color: var(--accent); }
+
+#app { height: var(--app-h); }
+.screen {
+  display: flex; flex-direction: column;
+  height: var(--app-h);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* ── 상단 바 ── */
+.bar {
+  flex: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  min-height: 48px;
+}
+.bar-title { font-weight: 600; font-size: 15px; min-width: 0; flex: 1; }
+.bar-sub { color: var(--fg-dim); font-size: 12px; }
+.bar-btn { padding: 6px 10px; font-size: 13px; flex: none; }
+.bar-btn.icon { padding: 2px 10px; font-size: 20px; line-height: 1.2; background: none; border-color: transparent; }
+.conn {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--exited);
+}
+.conn.online { background: var(--running); }
+.conn.connecting { background: var(--waiting); }
+
+/* ── 페어링 ── */
+#screen-pair { justify-content: center; align-items: center; padding: 24px; }
+.pair-box { width: 100%; max-width: 360px; }
+.pair-logo { width: 56px; height: 56px; border-radius: 12px; display: block; margin-bottom: 12px; }
+.pair-box h1 { font-size: 20px; margin: 0 0 6px; }
+.pair-help { color: var(--fg-dim); font-size: 13px; margin: 0 0 18px; }
+.pair-box label { display: block; font-size: 12px; color: var(--fg-dim); margin: 12px 0 6px; }
+#pair-code { font-family: Menlo, Consolas, monospace; letter-spacing: 2px; text-transform: uppercase; }
+#pair-submit { width: 100%; margin-top: 18px; padding: 12px; }
+.pair-error { color: var(--exited); font-size: 13px; min-height: 1.4em; margin: 12px 0 0; }
+.pair-hint { color: var(--caution); font-size: 13px; margin: 6px 0 0; }
+#screen-offline { justify-content: center; align-items: center; padding: 24px; }
+.offline-tips { padding-left: 20px; margin: 12px 0 18px; font-size: 14px; line-height: 1.6; color: var(--fg); }
+.offline-tips li { margin-bottom: 6px; }
+.offline-retry { width: 100%; padding: 12px; font-size: 16px; }
+.offline-note { margin-top: 10px; text-align: center; }
+/* 홈 화면 앱 — 코드 입력 하나만 크게 */
+.pair-simple .pair-name-row { display: none; }
+.pair-simple .pair-help { font-size: 15px; color: var(--fg); }
+.pair-simple #pair-code { font-size: 28px; padding: 14px 10px; text-align: center; letter-spacing: 6px; }
+.pair-simple #pair-submit { font-size: 17px; padding: 14px; }
+
+/* ── 홈 화면에 추가 안내 시트 ── */
+.install-text { font-size: 14px; line-height: 1.5; margin: 4px 4px 12px; }
+.install-steps { margin: 0 0 12px; padding-left: 22px; font-size: 14px; line-height: 1.6; }
+.install-steps li { margin-bottom: 8px; }
+.share-ico, .add-ico {
+  display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+  min-width: 26px; height: 26px; padding: 0 4px; border-radius: 6px;
+  background: var(--bg-hover); border: 1px solid var(--border); color: var(--accent);
+}
+.install-btn { width: 100%; padding: 12px; margin-bottom: 12px; }
+.install-actions { display: flex; gap: 8px; justify-content: flex-end; padding-bottom: env(safe-area-inset-bottom); }
+
+/* ── 대시보드 ── */
+.dash-list {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 12px 12px calc(env(safe-area-inset-bottom) + 16px);
+}
+.dash-empty { color: var(--fg-dim); text-align: center; margin-top: 30vh; }
+.dash-group { margin-bottom: 18px; }
+.dash-group-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--fg-dim); margin: 0 2px 8px;
+}
+.dash-group-swatch { width: 4px; height: 14px; border-radius: 2px; background: var(--border); flex: none; }
+.dash-group-name { color: var(--fg); font-weight: 600; }
+.dash-group-branch { font-size: 11px; }
+.dash-card {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; text-align: left;
+  padding: 12px; margin-bottom: 8px;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-left: 4px solid var(--idle);
+  border-radius: 10px;
+}
+.dash-card .card-main { flex: 1; min-width: 0; }
+.dash-card .card-title { font-size: 15px; }
+.dash-card .card-meta { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
+.dash-card.s-running { border-left-color: var(--running); }
+.dash-card.s-waiting { border-left-color: var(--waiting); background: var(--waiting-tint); }
+.dash-card.s-done { border-left-color: var(--done); background: var(--done-tint); }
+.dash-card.s-exited { border-left-color: var(--exited); opacity: .7; }
+
+.status-tag {
+  flex: none;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 7px; border-radius: 10px;
+  background: var(--idle-tint); color: var(--idle);
+}
+.status-tag.s-running { background: var(--running-tint); color: var(--running); }
+.status-tag.s-waiting { background: var(--waiting-tint); color: var(--waiting); }
+.status-tag.s-done { background: var(--done-tint); color: var(--done); }
+.status-tag.s-exited { background: var(--exited-tint); color: var(--exited); }
+
+/* ── 세션 뷰 ── */
+.term-wrap {
+  flex: 1; min-height: 0;
+  overflow: auto; -webkit-overflow-scrolling: touch;
+  background: var(--term-bg);
+  padding: 4px;
+}
+/* PTY 크기는 데스크톱이 정한다 — 폰에서는 늘이지 않고 셀 크기 그대로 둔다 (넘치면 가로 스크롤) */
+#term { display: inline-block; min-width: 100%; }
+#term .xterm-viewport { background: var(--term-bg) !important; }
+
+.keybar {
+  flex: none;
+  /* 가로 스크롤 없이 모든 키가 보이게 — 균등 폭 8칸, 좁은 폰은 4칸 × 2줄 */
+  display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+}
+.keybar button {
+  min-width: 0; padding: 8px 0;
+  font-family: Menlo, Consolas, monospace; font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: clip;
+}
+@media (max-width: 384px) {
+  .keybar { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .keybar button { font-size: 12px; padding: 7px 0; }
+}
+
+.composer {
+  flex: none;
+  display: flex; gap: 8px; align-items: flex-end;
+  padding: 8px 8px calc(env(safe-area-inset-bottom) + 8px);
+  background: var(--bg-panel);
+}
+/* 키보드가 올라오면 홈 인디케이터 여백은 필요 없다 */
+body.kb-open .composer { padding-bottom: 8px; }
+#composer-input { flex: 1; resize: none; max-height: 30vh; line-height: 1.35; }
+#composer-send { flex: none; padding: 10px 14px; }
+
+/* ── 하단 시트 ── */
+.sheet-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  background: var(--overlay);
+  display: flex; align-items: flex-end;
+}
+.sheet {
+  width: 100%; max-height: 75vh;
+  display: flex; flex-direction: column;
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+  border-radius: 14px 14px 0 0;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 12px 8px 16px; font-weight: 600;
+}
+.sheet-body { overflow-y: auto; padding: 0 12px 12px; }
+.sheet-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 4px; border-top: 1px solid var(--border);
+}
+.sheet-item .item-main { flex: 1; min-width: 0; }
+.sheet-item .item-label { font-size: 15px; }
+.sheet-item .item-sub { font-size: 11px; color: var(--fg-dim); font-family: Menlo, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-item .swatch { width: 10px; height: 10px; border-radius: 3px; background: var(--border); flex: none; }
+.sheet-item button { flex: none; font-size: 13px; padding: 6px 10px; }
+.sheet-empty { color: var(--fg-dim); padding: 16px 4px; }
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom) + 90px);
+  z-index: 60; max-width: 90vw;
+  background: var(--bg-hover); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 14px; font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .4);
+}
+.toast.error { border-color: var(--exited); color: #ff8a84; }
+
+/* ── 이미지 첨부 · 제어권 ── */
+.composer-icon { flex: none; padding: 9px 10px; font-size: 18px; line-height: 1; background: none; }
+.upload-status {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; font-size: 12px; color: var(--fg-dim);
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+}
+.upload-status.error { color: var(--exited); }
+.upload-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.upload-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+#btn-control.holding { background: var(--waiting-tint); border-color: var(--waiting); color: var(--waiting); }
+/* 상시 VPN 안내 */
+.vpn-head { margin-top: 8px; }
+.vpn-title { font-size: 13px; font-weight: 600; margin: 8px 4px 4px; }
+.vpn-steps { list-style: none; margin: 0 0 8px; padding: 0 4px; font-size: 14px; }
+.vpn-steps li { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.vpn-ico {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none;
+  border-radius: 7px; background: var(--bg-hover); border: 1px solid var(--border); font-size: 15px;
+}
+#screen-moved { justify-content: center; align-items: center; padding: 24px; }
+.moved-url { font-family: Menlo, Consolas, monospace; word-break: break-all; color: var(--fg); }

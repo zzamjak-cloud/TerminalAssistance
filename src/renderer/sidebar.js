@@ -201,6 +201,11 @@ function renderSidebar() {
       }
     };
     row.appendChild(x);
+    row.oncontextmenu = (e) => {
+      if (isSessionRenameInput(e.target)) return;
+      e.preventDefault();
+      App.showSessionPhoneMenu(e, s.id);
+    };
     row.onclick = (e) => {
       if (isSessionRenameInput(e.target) || isSessionRowControl(e.target)) return;
       if (e.detail >= 2) {

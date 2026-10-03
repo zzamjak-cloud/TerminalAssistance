@@ -324,6 +324,12 @@ button:disabled:hover { border-color: var(--border); }
    작아 보인다 — 글리프만 키우고 line-height 로 버튼 높이는 토글 버튼(23px)에 맞춘다 */
 #btn-settings { padding: 0 7px; font-size: 19px; line-height: 21px; color: var(--fg-dim); }
 #btn-settings:hover { color: var(--fg); }
+#btn-phone { position: relative; padding: 0 6px; font-size: 15px; line-height: 21px; }
+/* 연결된 폰이 있으면 초록 점 */
+#btn-phone.connected::after {
+  content: ''; position: absolute; top: 1px; right: 1px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--running); box-shadow: 0 0 0 1.5px var(--bg-panel, var(--bg));
+}
 
 /* ── 분할 모드 드롭다운 (1×1 ~ 3×2 · 2×3) ── */
 #split-controls { position: relative; display: flex; }
@@ -1484,3 +1490,98 @@ body.sorting * { cursor: grabbing !important; }
 @media (max-width: 620px) {
   .help-row { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* ── 설정 팝업: 모바일 원격 제어 섹션 (modals.js initRemoteSettings) ── */
+/* 섹션을 펼치면 팝업이 화면보다 길어진다 — 이 팝업만 자체 스크롤 */
+#modal:has(#m-remote) { max-height: 90vh; overflow-y: auto; }
+.remote-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.remote-section .hidden { display: none; }
+.remote-section > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--fg); }
+.remote-state { margin-left: auto; font-size: 11px; color: var(--fg-dim); }
+.remote-state.on { color: var(--running); }
+.remote-row { display: flex; gap: 8px; }
+.remote-row > div { flex: 1; min-width: 0; }
+.remote-row > .remote-port { flex: 0 0 96px; }
+.remote-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.remote-urls { margin-top: 8px; }
+.remote-url {
+  font-family: Menlo, Consolas, "D2Coding", monospace; font-size: 11.5px;
+  user-select: text; word-break: break-all;
+}
+.remote-pair {
+  display: flex; gap: 12px; align-items: center; margin-top: 10px;
+  padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.remote-pair img { width: 148px; height: 148px; flex: none; background: #fff; border-radius: 6px; padding: 6px; }
+.remote-pair.expired img { opacity: .2; }
+.remote-pair-info { flex: 1; min-width: 0; }
+.remote-code {
+  font-family: Menlo, Consolas, "D2Coding", monospace; font-size: 22px; font-weight: 700;
+  letter-spacing: 3px; user-select: text;
+}
+.remote-devices { display: flex; flex-direction: column; gap: 6px; }
+/* 📱 폰 연결 모달 */
+.phone-pair { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 12px; }
+.phone-qr { width: 220px; height: 220px; background: #fff; border-radius: 8px; padding: 8px; }
+.phone-qr.expired { opacity: .2; }
+.phone-code {
+  font-family: Menlo, Consolas, "D2Coding", monospace; font-size: 30px; font-weight: 700;
+  letter-spacing: 6px; user-select: text;
+}
+.phone-done { color: var(--running); font-size: 16px; font-weight: 700; }
+.phone-done.hidden, .phone-connect .hidden { display: none; }
+.phone-steps { margin: 0 0 10px; padding-left: 20px; font-size: 12px; line-height: 1.6; color: var(--fg-dim); }
+.phone-steps b { color: var(--fg); }
+.phone-connect .remote-url { margin-bottom: 10px; color: var(--fg-dim); text-align: center; }
+.phone-fail-title { font-weight: 600; margin-bottom: 6px; }
+.phone-qr.small { width: 150px; height: 150px; }
+/* 📱 단계별 마법사 */
+.pw-steps { display: flex; flex-direction: column; gap: 8px; }
+.pw-step { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.pw-step.done { opacity: .7; }
+.pw-step.current { border-color: var(--accent); }
+.pw-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.pw-badge {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%;
+  font-size: 11px; background: var(--bg); border: 1px solid var(--border); flex: none;
+}
+.pw-step.done .pw-badge { background: var(--running); border-color: var(--running); color: #fff; }
+.pw-body { margin-top: 8px; }
+.pw-note { margin-top: 4px; }
+.pw-qrs { display: flex; gap: 16px; justify-content: center; margin-top: 8px; }
+.pw-qr { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.pw-summary-line { margin-bottom: 10px; color: var(--running); font-weight: 600; }
+.phone-https {
+  margin: 4px 0 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+}
+.phone-https-title { font-weight: 600; margin-bottom: 4px; }
+.phone-https-why { margin: 0 0 6px; padding-left: 18px; font-size: 12px; color: var(--fg-dim); line-height: 1.6; }
+/* Tailscale 온라인 상태 점 */
+.remote-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: var(--fg-dim); }
+.remote-dot.online { background: var(--running); }
+.remote-dot.offline { background: var(--exited, #f85149); }
+.remote-device {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+}
+.remote-device-main { flex: 1; min-width: 0; }
+.remote-device-name { font-size: 12px; }
+.remote-device .form-help { margin-top: 2px; }
+.remote-device button { flex: none; font-size: 11px; padding: 3px 9px; }
+.remote-device button.armed {
+  background: var(--danger-bg); border-color: var(--exited);
+  color: var(--danger-fg); font-weight: 700;
+}
+
+/* ── 원격 제어권 (terminal-view.js setRemoteControl) ── */
+/* PTY 가 폰 크기라 패널보다 크면 스크롤로 본다 (작으면 남는 영역은 여백) */
+.term-holder.remote-held { overflow: auto; }
+.remote-control-banner {
+  position: absolute; top: 6px; right: 14px; z-index: 5;
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px 4px 10px;
+  background: var(--waiting-tint-hi); color: var(--fg);
+  border: 1px solid var(--waiting); border-radius: 8px;
+  font-size: 12px; box-shadow: var(--shadow);
+}
+.remote-control-banner button { font-size: 11px; padding: 2px 9px; }
