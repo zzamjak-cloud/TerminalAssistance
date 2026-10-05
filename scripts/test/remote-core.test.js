@@ -12,7 +12,8 @@ vm.runInContext(
   + ';globalThis.__r = { shouldKeepChunk, remoteKeySequence, REMOTE_KEY_BAR, buildPromptWrites,'
   + ' fitTerminalFont, reconnectDelay, parseServerMessage, pairCodeFromHash, normalizePairCode,'
   + ' upsertSession, presetsForSession, REMOTE_FONT_MIN, RECONNECT_MAX_MS,'
-  + ' SNAP_RESET, snapModeSuffix, newReqId, isReplyTo, nextViewportBaseline, isKeyboardOpen };',
+  + ' SNAP_RESET, snapModeSuffix, newReqId, isReplyTo, nextViewportBaseline, isKeyboardOpen,'
+  + ' clampZoom, parseStoredZoom, zoomedFontSize, touchDistance, pinchZoom, isDoubleTap, TERM_ZOOM_MAX, TERM_FONT_ZOOM_CAP };',
   sandbox
 );
 const r = sandbox.__r;
@@ -57,6 +58,21 @@ exports.run = function (t) {
   const narrow = r.fitTerminalFont(300, 200, 0.6);
   t.check('최소 크기 밑이면 최소 크기 + 가로 스크롤', narrow.fontSize === r.REMOTE_FONT_MIN && narrow.scroll);
   t.check('측정 전(폭 0)에는 기본값', r.fitTerminalFont(0, 80, 0.6).scroll === false);
+
+  // ── 글꼴 확대 배율 ──
+  t.check('배율 범위 1~최대', r.clampZoom(0.2) === 1 && r.clampZoom(99) === r.TERM_ZOOM_MAX && r.clampZoom(1.7) === 1.7);
+  t.check('깨진 배율은 1', r.clampZoom(NaN) === 1 && r.parseStoredZoom(null) === 1 && r.parseStoredZoom('abc') === 1);
+  t.check('저장 배율 복원', r.parseStoredZoom('2') === 2 && r.parseStoredZoom('0.5') === 1);
+  t.check('배율 1 은 맞춤 크기 그대로', r.zoomedFontSize(8, 1) === 8);
+  t.check('배율 곱 → 0.5 단위 내림', r.zoomedFontSize(8.5, 1.5) === 12.5 && r.zoomedFontSize(7, 1.3) === 9);
+  t.check('확대 상한', r.zoomedFontSize(14, 3) === r.TERM_FONT_ZOOM_CAP);
+  t.check('핀치: 거리 비율만큼', r.pinchZoom(1, 100, 200) === 2 && r.pinchZoom(2, 100, 50) === 1);
+  t.check('핀치: 거리 0 이면 그대로', r.pinchZoom(1.5, 0, 100) === 1.5);
+  t.check('터치 거리', r.touchDistance({ clientX: 0, clientY: 0 }, { clientX: 3, clientY: 4 }) === 5);
+  t.check('두 번 탭: 짧고 가까우면', r.isDoubleTap({ t: 1000, x: 10, y: 10 }, 1200, 20, 10)
+    && !r.isDoubleTap({ t: 1000, x: 10, y: 10 }, 1500, 10, 10)
+    && !r.isDoubleTap({ t: 1000, x: 10, y: 10 }, 1100, 100, 10)
+    && !r.isDoubleTap(null, 1, 0, 0));
 
   // ── 재연결 백오프 ──
   t.check('지수 증가', r.reconnectDelay(0) === 500 && r.reconnectDelay(1) === 1000 && r.reconnectDelay(3) === 4000);

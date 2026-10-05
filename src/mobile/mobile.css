@@ -169,6 +169,8 @@ input:focus, textarea:focus { border-color: var(--accent); }
   overflow: auto; -webkit-overflow-scrolling: touch;
   background: var(--term-bg);
   padding: 4px;
+  /* 두 손가락 확대는 글꼴 배율로 직접 처리한다 — 브라우저 페이지 확대는 하단 UI 까지 키운다 */
+  touch-action: pan-x pan-y;
 }
 /* PTY 크기는 데스크톱이 정한다 — 폰에서는 늘이지 않고 셀 크기 그대로 둔다 (넘치면 가로 스크롤) */
 #term { display: inline-block; min-width: 100%; }

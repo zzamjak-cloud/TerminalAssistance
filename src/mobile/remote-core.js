@@ -112,6 +112,55 @@ function fitTerminalFont(availWidth, cols, cellWidthPerPx, opts) {
   return { fontSize: Math.min(max, ideal), scroll: false };
 }
 
+// ── 터미널 글꼴 확대 (두 손가락) ──
+// 브라우저 확대는 하단 특수키·입력창까지 키워 화면을 가린다. 대신 터미널 글꼴만 배율로 키운다.
+// 배율 1 = 화면 폭 맞춤(fitTerminalFont). 키우면 넘치는 만큼 가로 스크롤한다.
+const TERM_ZOOM_KEY = 'ta-remote-term-zoom';
+const TERM_ZOOM_MIN = 1;
+const TERM_ZOOM_MAX = 3;
+// 배율을 곱해도 이 크기는 넘지 않는다 (큰 태블릿에서 과하게 커지지 않게)
+const TERM_FONT_ZOOM_CAP = 32;
+
+function clampZoom(zoom) {
+  const z = Number(zoom);
+  if (!Number.isFinite(z)) return TERM_ZOOM_MIN;
+  return Math.min(TERM_ZOOM_MAX, Math.max(TERM_ZOOM_MIN, z));
+}
+
+// 저장된 배율 문자열 → 유효 배율 (없거나 깨졌으면 1)
+function parseStoredZoom(raw) {
+  if (raw === null || raw === undefined || raw === '') return TERM_ZOOM_MIN;
+  return clampZoom(parseFloat(raw));
+}
+
+// 맞춤 글꼴 × 배율 → 실제 글꼴 크기 (0.5px 단위 내림, 상한 적용)
+function zoomedFontSize(baseSize, zoom) {
+  const base = baseSize > 0 ? baseSize : REMOTE_FONT_MAX;
+  const raw = Math.floor(base * clampZoom(zoom) * 2) / 2;
+  return Math.max(REMOTE_FONT_MIN, Math.min(TERM_FONT_ZOOM_CAP, raw));
+}
+
+// 두 터치점 사이 거리
+function touchDistance(a, b) {
+  const dx = (a.clientX || 0) - (b.clientX || 0);
+  const dy = (a.clientY || 0) - (b.clientY || 0);
+  return Math.hypot(dx, dy);
+}
+
+// 핀치 시작 시 배율·거리 기준으로 현재 거리의 배율
+function pinchZoom(startZoom, startDist, curDist) {
+  if (!(startDist > 0) || !(curDist > 0)) return clampZoom(startZoom);
+  return clampZoom(startZoom * (curDist / startDist));
+}
+
+// 두 번 탭 판정 — 짧은 간격·가까운 위치의 한 손가락 탭이면 true
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_DIST = 24;
+function isDoubleTap(prev, now, x, y) {
+  if (!prev) return false;
+  return now - prev.t <= DOUBLE_TAP_MS && Math.hypot(x - prev.x, y - prev.y) <= DOUBLE_TAP_DIST;
+}
+
 // ── 재연결 백오프 ──
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 15000;

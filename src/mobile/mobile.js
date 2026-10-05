@@ -849,7 +849,78 @@ const Remote = {
     Remote.term = term;
     Remote.termCols = 100;
     Remote.termRows = 30;
+    Remote.bindTermZoom();
     Remote.fitFont();
+  },
+
+  // 저장된 확대 배율 — 처음 한 번만 읽는다
+  termZoom: null,
+  getTermZoom() {
+    if (Remote.termZoom === null) {
+      let raw = null;
+      try { raw = localStorage.getItem(TERM_ZOOM_KEY); } catch (_) {}
+      Remote.termZoom = parseStoredZoom(raw);
+    }
+    return Remote.termZoom;
+  },
+
+  // 배율을 바꾸고 글꼴에 반영한다. persist 가 true 면 저장하고 크기를 토스트로 알린다
+  setTermZoom(zoom, persist) {
+    const z = clampZoom(zoom);
+    const changed = z !== Remote.termZoom;
+    Remote.termZoom = z;
+    if (changed) Remote.fitFont();
+    if (persist) {
+      try { localStorage.setItem(TERM_ZOOM_KEY, String(z)); } catch (_) {}
+      if (Remote.term) Remote.toast(z === TERM_ZOOM_MIN ? '글꼴 화면 맞춤' : '글꼴 ' + Remote.term.options.fontSize + 'px');
+    }
+  },
+
+  // 두 손가락 벌리기 = 터미널 글꼴만 확대 · 두 번 탭 = 화면 맞춤으로 복귀.
+  // 브라우저 페이지 확대는 막는다 — 하단 특수키·입력창까지 커져 화면을 가리기 때문.
+  bindTermZoom() {
+    const wrap = document.getElementById('term-wrap');
+    if (!wrap || wrap.dataset.zoomBound) return;
+    wrap.dataset.zoomBound = '1';
+    let pinch = null; // { startDist, startZoom }
+    let lastTap = null;
+    let raf = 0;
+    wrap.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        pinch = { startDist: touchDistance(e.touches[0], e.touches[1]), startZoom: Remote.getTermZoom() };
+        lastTap = null;
+        e.preventDefault();
+        return;
+      }
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        const now = Date.now();
+        if (isDoubleTap(lastTap, now, t.clientX, t.clientY)) {
+          lastTap = null;
+          if (Remote.getTermZoom() !== TERM_ZOOM_MIN) { Remote.setTermZoom(TERM_ZOOM_MIN, true); e.preventDefault(); }
+          return;
+        }
+        lastTap = { t: now, x: t.clientX, y: t.clientY };
+      }
+    }, { passive: false });
+    wrap.addEventListener('touchmove', (e) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      const dist = touchDistance(e.touches[0], e.touches[1]);
+      const z = pinchZoom(pinch.startZoom, pinch.startDist, dist);
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; Remote.setTermZoom(z, false); });
+    }, { passive: false });
+    const end = () => {
+      if (!pinch) return;
+      pinch = null;
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      Remote.setTermZoom(Remote.getTermZoom(), true);
+    };
+    wrap.addEventListener('touchend', (e) => { if (e.touches.length < 2) end(); });
+    wrap.addEventListener('touchcancel', end);
+    // iOS 는 viewport 의 user-scalable=no 를 무시한다 — 제스처 이벤트로 페이지 확대를 막는다
+    document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
+    document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
   },
 
   // 폰은 PTY 크기를 바꾸지 않는다 (resize 미전송) — 데스크톱이 정한 크기에 xterm 을 고정한다
@@ -866,15 +937,20 @@ const Remote = {
   fitFont() {
     if (!Remote.term) return;
     // 제어권 보유 중엔 PTY 가 이 화면 크기다 — 줄이지 않고 제어용 글꼴 그대로 보여 준다
+    const zoom = Remote.getTermZoom();
     if (Remote.isHolding()) {
-      if (Remote.term.options.fontSize !== CONTROL_FONT_SIZE) Remote.term.options.fontSize = CONTROL_FONT_SIZE;
+      const size = zoomedFontSize(CONTROL_FONT_SIZE, zoom);
+      if (Remote.term.options.fontSize !== size) Remote.term.options.fontSize = size;
       return;
     }
     const wrap = document.getElementById('term-wrap');
     const style = getComputedStyle(wrap);
     const avail = wrap.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     const fit = fitTerminalFont(avail, Remote.termCols, measureCellRatio());
-    if (Remote.term.options.fontSize !== fit.fontSize) Remote.term.options.fontSize = fit.fontSize;
+    const size = zoomedFontSize(fit.fontSize, zoom);
+    if (Remote.term.options.fontSize !== size) Remote.term.options.fontSize = size;
+    // 확대 중엔 넘치는 게 의도다 (가로 스크롤) — 아래 보정은 맞춤 배율일 때만
+    if (zoom !== TERM_ZOOM_MIN) return;
     // xterm 은 셀 폭을 기기 픽셀로 반올림한다 — 캔버스 추정이 모자라 넘치면 반 단계씩 더 줄인다
     let tries = 6;
     const refine = () => {
