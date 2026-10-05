@@ -29,12 +29,12 @@ exports.run = function (t) {
   t.check('스냅샷이 없으면 모두 살린다', r.shouldKeepChunk(0, null) === true);
 
   // ── 특수키 ──
-  const expect = { esc: '\x1b', ctrlc: '\x03', up: '\x1b[A', down: '\x1b[B', enter: '\r', y: 'y', '1': '1', '2': '2' };
+  const expect = { esc: '\x1b', ctrlc: '\x03', up: '\x1b[A', down: '\x1b[B', enter: '\r' };
   t.check('특수키 시퀀스 매핑',
     Object.entries(expect).every(([k, v]) => r.remoteKeySequence(k) === v));
-  t.check('모르는 키는 null', r.remoteKeySequence('toString') === null && r.remoteKeySequence('x') === null);
-  t.check('키 바는 Esc·Ctrl+C·↑·↓·Enter·y·1·2 순서',
-    r.REMOTE_KEY_BAR.map((k) => k.key).join(',') === 'esc,ctrlc,up,down,enter,y,1,2');
+  t.check('모르는 키는 null', r.remoteKeySequence('toString') === null && r.remoteKeySequence('x') === null && r.remoteKeySequence('y') === null);
+  t.check('키 바는 Esc·Ctrl+C·↑·↓·Enter 순서',
+    r.REMOTE_KEY_BAR.map((k) => k.key).join(',') === 'esc,ctrlc,up,down,enter');
 
   // ── 프롬프트 입력 ──
   const one = r.buildPromptWrites('hello', true);

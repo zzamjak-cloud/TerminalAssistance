@@ -15,10 +15,7 @@ const REMOTE_KEYS = {
   ctrlc: '\x03',
   up: '\x1b[A',
   down: '\x1b[B',
-  enter: '\r',
-  y: 'y',
-  '1': '1',
-  '2': '2'
+  enter: '\r'
 };
 
 const REMOTE_KEY_BAR = [
@@ -26,10 +23,7 @@ const REMOTE_KEY_BAR = [
   { key: 'ctrlc', label: 'Ctrl+C' },
   { key: 'up', label: '↑' },
   { key: 'down', label: '↓' },
-  { key: 'enter', label: 'Enter' },
-  { key: 'y', label: 'y' },
-  { key: '1', label: '1' },
-  { key: '2', label: '2' }
+  { key: 'enter', label: 'Enter' }
 ];
 
 function remoteKeySequence(name) {
