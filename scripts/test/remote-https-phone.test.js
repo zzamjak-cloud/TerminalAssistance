@@ -13,7 +13,7 @@ const r = mob.__r;
 const desk = { App: {}, console, document: {}, localStorage: { getItem: () => null, setItem() {} } };
 vm.createContext(desk);
 vm.runInContext(fs.readFileSync(path.join(ROOT, 'renderer', 'modals.js'), 'utf8')
-  + ';globalThis.__d = { remoteHttpsAdvice, remoteDeviceStatus, remoteOfflineHelp, remoteOpenOnPhoneError, remoteDevicesKey };', desk);
+  + ';globalThis.__d = { remoteHttpsAdvice, remoteDeviceStatus, remoteOfflineHelp, remoteOpenOnPhoneError, remoteDevicesKey, SAMSUNG_WALLET_NOTE };', desk);
 const d = desk.__d;
 
 exports.name = 'HTTPS 안내 · 폰에서 열기 · 연결 진단';
@@ -40,6 +40,7 @@ exports.run = function (t) {
     && d.remoteDeviceStatus({ tailscaleOnline: null }) === 'unknown' && d.remoteDeviceStatus({}) === 'unknown');
   t.check('Android 안내: 상시 VPN·배터리', /상시 VPN/.test(d.remoteOfflineHelp('android')) && /제한 없음/.test(d.remoteOfflineHelp('android')));
   t.check('iOS 안내: VPN On Demand', /On Demand/.test(d.remoteOfflineHelp('ios')));
+  t.check('삼성 월렛 안내: 분할 터널링·검색어', /split tunneling/.test(d.SAMSUNG_WALLET_NOTE) && /spay/.test(d.SAMSUNG_WALLET_NOTE));
   t.check('폰에서 열기 오류 분기', d.remoteOpenOnPhoneError('no-push') === 'setup-push'
     && d.remoteOpenOnPhoneError('원격 서버가 실행 중이 아닙니다') === 'start-server'
     && d.remoteOpenOnPhoneError('푸시 전송 실패') === 'other');

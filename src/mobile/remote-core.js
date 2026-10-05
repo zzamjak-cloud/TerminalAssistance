@@ -360,6 +360,15 @@ function vpnTipSteps(platform) {
           { icon: '📱', text: '설정 → 애플리케이션 → Tailscale' },
           { icon: '🔋', text: '배터리 → 제한 없음' }
         ]
+      },
+      {
+        // 삼성 월렛(삼성페이)은 VPN 이 켜져 있으면 결제를 막는다 — Tailscale 에서 월렛만 제외하면 둘 다 쓸 수 있다
+        title: '삼성 월렛(삼성페이)이 VPN 해제를 요구하면',
+        steps: [
+          { icon: '🛡️', text: 'Tailscale 앱 → 왼쪽 위 프로필 아이콘' },
+          { icon: '🔀', text: 'App-based split tunneling' },
+          { icon: '✅', text: '삼성 월렛·삼성 패스 체크 (한글 앱은 목록 맨 아래, 검색은 spay)' }
+        ]
       }
     ];
   }

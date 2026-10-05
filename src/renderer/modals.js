@@ -1067,6 +1067,10 @@ Object.assign(App, {
     }
     if (id === 'phone') {
       help('폰에 Tailscale 앱을 설치하고 이 PC 와 같은 계정으로 로그인하세요. 폰이 tailnet 에 보이면 자동으로 넘어갑니다.');
+      const note = document.createElement('div');
+      note.className = 'form-help';
+      note.innerHTML = SAMSUNG_WALLET_NOTE;
+      body.appendChild(note);
       const qrs = document.createElement('div');
       qrs.className = 'pw-qrs';
       for (const [label, url] of [['Android (Play 스토어)', STORE_URL_ANDROID], ['iPhone (App Store)', STORE_URL_IOS]]) {
@@ -1210,7 +1214,8 @@ Object.assign(App, {
         <div class="phone-done hidden" id="pc-done">연결됨 ✓</div>
       </div>
       <ol class="phone-steps">
-        <li>폰에 <a href="#" id="pc-ts">Tailscale</a> 을 설치하고 이 컴퓨터와 <b>같은 계정</b>으로 로그인 (VPN On Demand·상시 VPN 을 켜 두면 편합니다)</li>
+        <li>폰에 <a href="#" id="pc-ts">Tailscale</a> 을 설치하고 이 컴퓨터와 <b>같은 계정</b>으로 로그인 (VPN On Demand·상시 VPN 을 켜 두면 편합니다)
+          <div class="phone-steps-note">${SAMSUNG_WALLET_NOTE}</div></li>
         <li>폰 카메라로 QR 스캔 — 또는 아래 주소를 열고 코드 입력</li>
         <li>열린 페이지를 <b>홈 화면에 추가</b> — 다음부터 아이콘으로 바로 접속</li>
       </ol>
@@ -1507,6 +1512,9 @@ function remoteDeviceStatus(d) {
   if (!d || d.tailscaleOnline === null || d.tailscaleOnline === undefined) return 'unknown';
   return d.tailscaleOnline ? 'online' : 'offline';
 }
+
+// 삼성 월렛(삼성페이)은 VPN 이 켜져 있으면 결제를 막는다 — Tailscale 분할 터널링으로 월렛만 제외하면 해결된다
+const SAMSUNG_WALLET_NOTE = '갤럭시에서 삼성 월렛(삼성페이)이 "VPN 해제" 를 요구하면: Tailscale 앱 → 프로필 아이콘 → <b>App-based split tunneling</b> 에서 삼성 월렛·삼성 패스를 체크해 제외하세요 (한글 앱은 목록 맨 아래, 검색은 spay).';
 
 // 폰이 VPN 을 놓치지 않게 하는 설정 — 플랫폼별
 function remoteOfflineHelp(platform) {

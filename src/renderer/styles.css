@@ -1532,6 +1532,8 @@ body.sorting * { cursor: grabbing !important; }
 .phone-done.hidden, .phone-connect .hidden { display: none; }
 .phone-steps { margin: 0 0 10px; padding-left: 20px; font-size: 12px; line-height: 1.6; color: var(--fg-dim); }
 .phone-steps b { color: var(--fg); }
+/* 단계 아래 보조 안내(삼성 월렛 VPN 충돌 등) */
+.phone-steps-note { margin-top: 2px; font-size: 11px; opacity: 0.85; }
 .phone-connect .remote-url { margin-bottom: 10px; color: var(--fg-dim); text-align: center; }
 .phone-fail-title { font-weight: 600; margin-bottom: 6px; }
 .phone-qr.small { width: 150px; height: 150px; }

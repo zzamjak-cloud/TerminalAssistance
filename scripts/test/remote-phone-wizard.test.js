@@ -57,4 +57,5 @@ exports.run = function (t) {
   const a = JSON.stringify(r.vpnTipSteps('android'));
   t.check('Android: 상시 VPN·배터리 제한 없음', /상시 VPN/.test(a) && /제한 없음/.test(a));
   t.check('iOS: VPN On Demand', /On Demand/.test(JSON.stringify(r.vpnTipSteps('ios'))));
+  t.check('Android: 삼성 월렛 분할 터널링 안내', /split tunneling/.test(a) && /삼성 월렛/.test(a) && !/split tunneling/.test(JSON.stringify(r.vpnTipSteps('ios'))));
 };
