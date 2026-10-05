@@ -386,22 +386,54 @@ async fn upload(
     }
 }
 
-async fn static_file(method: Method, uri: Uri) -> Response {
+/// 설치된 앱 이름에 붙일 PC 이름 — serve Host(`<name>.ts.net:7443`)의 첫 레이블.
+/// 요청 Host 가 아니라 서버 설정에서 뽑고 DNS 레이블 문자만 남겨 HTML/JSON 에 그대로 넣어도 안전하다
+fn pc_label(https_host: Option<&str>) -> Option<String> {
+    let label: String = https_host?
+        .split(['.', ':'])
+        .next()?
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(32)
+        .collect();
+    (!label.is_empty()).then_some(label)
+}
+
+/// 같은 폰에 여러 PC 의 앱을 설치하면 이름이 같아 구분이 안 된다 → 앱 이름·제목에 PC 이름을 붙인다
+fn branded(path: &str, body: &[u8], pc: &str) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?;
+    match path {
+        "/manifest.webmanifest" => Some(
+            text.replace(r#""name": "TerminalAssistance 원격""#, &format!(r#""name": "TA 원격 · {pc}""#))
+                .replace(r#""short_name": "TA 원격""#, &format!(r#""short_name": "TA · {pc}""#)),
+        ),
+        "/" | "/index.html" => Some(
+            text.replace(
+                r#"<meta name="apple-mobile-web-app-title" content="TA 원격">"#,
+                &format!(r#"<meta name="apple-mobile-web-app-title" content="TA · {pc}">"#),
+            )
+            .replace("<title>TerminalAssistance 원격</title>", &format!("<title>TA 원격 · {pc}</title>")),
+        ),
+        _ => None,
+    }
+}
+
+async fn static_file(State(ctx): State<Arc<Ctx>>, method: Method, uri: Uri) -> Response {
     if method != Method::GET && method != Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
-    match super::assets::lookup(uri.path()) {
-        None => StatusCode::NOT_FOUND.into_response(),
-        Some((body, ctype)) => (
-            [
-                (header::CONTENT_TYPE, ctype),
-                // 앱 업데이트 시 옛 셸이 남지 않게 — 오프라인 캐시는 sw.js 가 담당
-                (header::CACHE_CONTROL, "no-cache"),
-                (header::REFERRER_POLICY, "no-referrer"),
-            ],
-            body,
-        )
-            .into_response(),
+    let Some((body, ctype)) = super::assets::lookup(uri.path()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let headers = [
+        (header::CONTENT_TYPE, ctype),
+        // 앱 업데이트 시 옛 셸이 남지 않게 — 오프라인 캐시는 sw.js 가 담당
+        (header::CACHE_CONTROL, "no-cache"),
+        (header::REFERRER_POLICY, "no-referrer"),
+    ];
+    match pc_label(ctx.https_host.as_deref()).and_then(|pc| branded(uri.path(), body, &pc)) {
+        Some(text) => (headers, text).into_response(),
+        None => (headers, body).into_response(),
     }
 }
 
@@ -872,6 +904,15 @@ mod tests {
         status_from(ctx, r, [127, 0, 0, 1]).await
     }
 
+    async fn body_of(ctx: &Arc<Ctx>, r: Request<Body>) -> (StatusCode, String) {
+        let app = router(Arc::clone(ctx))
+            .layer(axum::extract::connect_info::MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))));
+        let res = app.oneshot(r).await.unwrap();
+        let st = res.status();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (st, String::from_utf8_lossy(&body).into_owned())
+    }
+
     async fn paired_cookie(ctx: &Arc<Ctx>) -> String {
         let (code, _) = plock(&ctx.pairing).start(Instant::now());
         let body = json!({ "code": code, "deviceName": "폰" }).to_string();
@@ -895,6 +936,9 @@ mod tests {
         }
         let (st, _) = status_of(&ctx, req("GET", "/nope", HOST).body(Body::empty()).unwrap()).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+        // HTTP 모드(serve Host 없음)는 PC 이름을 모르므로 원래 이름 그대로
+        let (_, body) = body_of(&ctx, req("GET", "/manifest.webmanifest", HOST).body(Body::empty()).unwrap()).await;
+        assert!(body.contains(r#""short_name": "TA 원격""#), "{body}");
     }
 
     #[tokio::test]
@@ -1073,6 +1117,11 @@ mod tests {
         assert_eq!(st, StatusCode::OK);
         let csp = h.get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap();
         assert!(csp.contains(&format!("connect-src 'self' wss://{}", TS)), "{csp}");
+        // 앱 이름·제목에 PC 이름
+        let (_, body) = body_of(&ctx, req("GET", "/manifest.webmanifest", TS).body(Body::empty()).unwrap()).await;
+        assert!(body.contains(r#""name": "TA 원격 · mac""#) && body.contains(r#""short_name": "TA · mac""#), "{body}");
+        let (_, body) = body_of(&ctx, req("GET", "/", TS).body(Body::empty()).unwrap()).await;
+        assert!(body.contains("<title>TA 원격 · mac</title>") && body.contains(r#"content="TA · mac""#));
         // 로컬 직접 접속은 여전히 ws
         let (_, h) = status_of(&ctx, req("GET", "/", HOST).body(Body::empty()).unwrap()).await;
         assert!(h.get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().contains("ws://127.0.0.1"));
