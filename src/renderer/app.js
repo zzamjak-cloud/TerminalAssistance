@@ -1062,7 +1062,9 @@ const App = {
     let id = null;
     let composer = null;
     if (position && typeof position.x === 'number') {
-      const scale = window.devicePixelRatio || 1;
+      // wry(macOS)는 드롭 좌표를 이미 논리 좌표(pt)로 넘긴다 — 여기서 또 나누면 좌표가
+      // 절반으로 줄어 항상 첫 패널로 판정된다. Windows/Linux 는 실제 물리 픽셀이다.
+      const scale = App.state.platform === 'macos' ? 1 : (window.devicePixelRatio || 1);
       const x = position.x / scale, y = position.y / scale;
       // 프롬프트 입력창 위에 놓았으면 그 패널 작성기에, 터미널 위면 터미널에 삽입한다
       composer = App.composerAtPoint(x, y);
