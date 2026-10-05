@@ -76,6 +76,7 @@ Object.assign(App, {
 
   // 미리보기 공통 골격: 제목(파일명) + 경로 부제 + 본문 + [외부로 열기 | 편집 | 닫기]
   // opts.edit = 편집 버튼 표시 (텍스트 형식이고 잘리지 않은 파일만 — 잘린 내용을 저장하면 나머지가 날아간다)
+  // opts.copy = "내용 복사" 버튼으로 복사할 원문. 마크다운은 원문 그대로 복사해야 노션 붙여넣기 시 서식으로 변환된다
   _previewShell(path, name, bodyClass, fill, opts) {
     App.modal(`
       <h3></h3>
@@ -84,6 +85,7 @@ Object.assign(App, {
       <div class="modal-actions">
         <button id="m-open-ext">외부 프로그램으로 열기</button>
         <span style="flex:1"></span>
+        ${opts && opts.copy != null ? '<button id="m-copy">내용 복사</button>' : ''}
         ${opts && opts.edit ? '<button id="m-edit" class="primary">편집</button>' : ''}
         <button id="m-close">닫기</button>
       </div>`,
@@ -95,6 +97,16 @@ Object.assign(App, {
         m.querySelector('#m-close').onclick = close;
         const edit = m.querySelector('#m-edit');
         if (edit) edit.onclick = () => App.showFileEditor(path); // 같은 자리에 편집기 모달로 교체
+        const copy = m.querySelector('#m-copy');
+        if (copy) copy.onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(opts.copy);
+            copy.textContent = '복사됨 ✓';
+          } catch (_) {
+            copy.textContent = '복사 실패';
+          }
+          setTimeout(() => { copy.textContent = '내용 복사'; }, 1500);
+        };
         fill(m.querySelector('.' + bodyClass.split(' ')[0]));
       }, { xl: true });
   },
@@ -143,7 +155,7 @@ Object.assign(App, {
         c.classList.add('hljs');
       });
       App._truncNotice(body, file);
-    }, { edit: !file.truncated });
+    }, { edit: !file.truncated, copy: file.content });
   },
 
   _previewJson(path, name, file) {
@@ -172,7 +184,7 @@ Object.assign(App, {
       pre.appendChild(code);
       body.appendChild(pre);
       App._truncNotice(body, file);
-    }, { edit: !file.truncated && isEditableFile(path) });
+    }, { edit: !file.truncated && isEditableFile(path), copy: file.content });
   },
 
   _previewUnsupported(path, name, reason, readFailed) {
