@@ -703,7 +703,7 @@ const Remote = {
   renderControlButton() {
     const btn = document.getElementById('btn-control');
     const holding = Remote.isHolding();
-    btn.textContent = holding ? '반환' : '제어';
+    btn.textContent = holding ? '최적 해제' : '최적보기';
     btn.classList.toggle('holding', holding);
   },
 
@@ -876,6 +876,28 @@ const Remote = {
     }
   },
 
+  // 현재 화면이 대체 버퍼(전체 화면 TUI)인가
+  inAltBuffer() {
+    try { return !!(Remote.term && Remote.term.buffer.active.type === 'alternate'); } catch (_) { return false; }
+  },
+
+  // 스와이프를 xterm 의 휠 처리에 태운다 — xterm 이 TUI 의 마우스 트래킹 여부에 따라 마우스
+  // 리포트 또는 방향키로 변환해 준다(데스크톱 휠과 같은 경로). 폰 터미널은 disableStdin 이라
+  // 그 출력이 막히므로, 디스패치하는 동안만 열고 onData 로 받아 PTY 에 쓴다.
+  forwardWheel(deltaY, clientX, clientY) {
+    const term = Remote.term;
+    const screen = document.querySelector('#term .xterm-screen');
+    if (!term || !screen || !Remote.viewId) return;
+    if (!Remote._wheelTap) Remote._wheelTap = term.onData((d) => { if (Remote._wheelOpen) Remote.write(d); });
+    Remote._wheelOpen = true;
+    term.options.disableStdin = false;
+    try {
+      screen.dispatchEvent(new WheelEvent('wheel', { deltaY, deltaMode: 0, clientX, clientY, bubbles: true, cancelable: true }));
+    } catch (_) {}
+    term.options.disableStdin = true;
+    Remote._wheelOpen = false;
+  },
+
   // 두 손가락 벌리기 = 터미널 글꼴만 확대 · 두 번 탭 = 화면 맞춤으로 복귀.
   // 브라우저 페이지 확대는 막는다 — 하단 특수키·입력창까지 커져 화면을 가리기 때문.
   bindTermZoom() {
@@ -883,6 +905,7 @@ const Remote = {
     if (!wrap || wrap.dataset.zoomBound) return;
     wrap.dataset.zoomBound = '1';
     let pinch = null; // { startDist, startZoom }
+    let swipe = null; // { x, y, locked } — 한 손가락 스와이프 (locked: 이번 제스처는 TUI 로 보내는 중)
     let lastTap = null;
     let raf = 0;
     wrap.addEventListener('touchstart', (e) => {
@@ -895,6 +918,7 @@ const Remote = {
       if (e.touches.length === 1) {
         const t = e.touches[0];
         const now = Date.now();
+        swipe = { y: t.clientY, x: t.clientX, locked: false };
         if (isDoubleTap(lastTap, now, t.clientX, t.clientY)) {
           lastTap = null;
           if (Remote.getTermZoom() !== TERM_ZOOM_MIN) { Remote.setTermZoom(TERM_ZOOM_MIN, true); e.preventDefault(); }
@@ -904,6 +928,21 @@ const Remote = {
       }
     }, { passive: false });
     wrap.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1 && swipe && !pinch) {
+        const t = e.touches[0];
+        const dy = wheelDeltaFromTouch(swipe.y, t.clientY);
+        if (!dy) return;
+        const atTop = wrap.scrollTop <= 0;
+        const atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 1;
+        if (swipeTarget(Remote.inAltBuffer(), dy, atTop, atBottom, swipe.locked) === 'tui') {
+          swipe.locked = true;
+          e.preventDefault();
+          Remote.forwardWheel(dy, t.clientX, t.clientY);
+        }
+        swipe.y = t.clientY;
+        swipe.x = t.clientX;
+        return;
+      }
       if (!pinch || e.touches.length !== 2) return;
       e.preventDefault();
       const dist = touchDistance(e.touches[0], e.touches[1]);
@@ -911,6 +950,7 @@ const Remote = {
       if (!raf) raf = requestAnimationFrame(() => { raf = 0; Remote.setTermZoom(z, false); });
     }, { passive: false });
     const end = () => {
+      swipe = null;
       if (!pinch) return;
       pinch = null;
       if (raf) { cancelAnimationFrame(raf); raf = 0; }

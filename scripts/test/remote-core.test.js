@@ -13,7 +13,8 @@ vm.runInContext(
   + ' fitTerminalFont, reconnectDelay, parseServerMessage, pairCodeFromHash, normalizePairCode,'
   + ' upsertSession, presetsForSession, REMOTE_FONT_MIN, RECONNECT_MAX_MS,'
   + ' SNAP_RESET, snapModeSuffix, newReqId, isReplyTo, nextViewportBaseline, isKeyboardOpen,'
-  + ' clampZoom, parseStoredZoom, zoomedFontSize, touchDistance, pinchZoom, isDoubleTap, TERM_ZOOM_MAX, TERM_FONT_ZOOM_CAP };',
+  + ' clampZoom, parseStoredZoom, zoomedFontSize, touchDistance, pinchZoom, isDoubleTap, TERM_ZOOM_MAX, TERM_FONT_ZOOM_CAP,'
+  + ' swipeTarget, wheelDeltaFromTouch };',
   sandbox
 );
 const r = sandbox.__r;
@@ -69,6 +70,12 @@ exports.run = function (t) {
   t.check('핀치: 거리 비율만큼', r.pinchZoom(1, 100, 200) === 2 && r.pinchZoom(2, 100, 50) === 1);
   t.check('핀치: 거리 0 이면 그대로', r.pinchZoom(1.5, 0, 100) === 1.5);
   t.check('터치 거리', r.touchDistance({ clientX: 0, clientY: 0 }, { clientX: 3, clientY: 4 }) === 5);
+  // ── 대체 버퍼 스와이프 ──
+  t.check('일반 버퍼는 항상 네이티브 스크롤', r.swipeTarget(false, -10, true, true, false) === 'native' && r.swipeTarget(false, 10, true, true, true) === 'native');
+  t.check('대체 버퍼: 영역이 꼭 맞으면(위·아래 끝) TUI 로', r.swipeTarget(true, -10, true, true, false) === 'tui' && r.swipeTarget(true, 10, true, true, false) === 'tui');
+  t.check('대체 버퍼: 확대로 영역이 스크롤 중이면 끝에서만 TUI', r.swipeTarget(true, -10, false, false, false) === 'native' && r.swipeTarget(true, 10, false, true, false) === 'tui' && r.swipeTarget(true, -10, true, false, false) === 'tui');
+  t.check('대체 버퍼: 한 번 TUI 로 보내기 시작한 제스처는 끝까지', r.swipeTarget(true, 10, false, false, true) === 'tui');
+  t.check('손가락 위로 = 휠 아래(양수)', r.wheelDeltaFromTouch(300, 280) === 20 && r.wheelDeltaFromTouch(280, 300) === -20);
   t.check('두 번 탭: 짧고 가까우면', r.isDoubleTap({ t: 1000, x: 10, y: 10 }, 1200, 20, 10)
     && !r.isDoubleTap({ t: 1000, x: 10, y: 10 }, 1500, 10, 10)
     && !r.isDoubleTap({ t: 1000, x: 10, y: 10 }, 1100, 100, 10)

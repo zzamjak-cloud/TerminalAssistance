@@ -161,6 +161,24 @@ function isDoubleTap(prev, now, x, y) {
   return now - prev.t <= DOUBLE_TAP_MS && Math.hypot(x - prev.x, y - prev.y) <= DOUBLE_TAP_DIST;
 }
 
+// ── 대체 버퍼 TUI 스와이프 ──
+// Claude Code 같은 전체 화면 TUI 는 대체 버퍼라 xterm 스크롤백이 없다 — 데스크톱의 휠처럼
+// 스와이프를 TUI 로 보내야 TUI 가 자기 이전 내용을 스크롤한다. 터미널이 화면보다 커서(확대)
+// 감싸는 영역이 스크롤되는 중이면 그 끝에 닿았을 때만 TUI 로 넘긴다.
+// deltaY: 휠 기준 부호 (양수 = 아래로 스크롤 = 손가락은 위로)
+function swipeTarget(altBuffer, deltaY, atTop, atBottom, locked) {
+  if (!altBuffer) return 'native';
+  if (locked) return 'tui';
+  if (deltaY < 0) return atTop ? 'tui' : 'native';
+  if (deltaY > 0) return atBottom ? 'tui' : 'native';
+  return 'native';
+}
+
+// 터치 이동 → 휠 delta (손가락이 위로 가면 양수)
+function wheelDeltaFromTouch(prevY, curY) {
+  return prevY - curY;
+}
+
 // ── 재연결 백오프 ──
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 15000;
@@ -321,11 +339,11 @@ function holdsControl(control, myDeviceId) {
   return !!(control && control.holder && myDeviceId && control.holder === myDeviceId);
 }
 
-// 제어권이 나에게서 떠났을 때 알릴 문구 (null = 알릴 것 없음)
+// 최적보기(제어권)가 나에게서 떠났을 때 알릴 문구 (null = 알릴 것 없음)
 function controlLostText(prev, next, myDeviceId) {
   if (!holdsControl(prev, myDeviceId) || holdsControl(next, myDeviceId)) return null;
-  if (next && next.holder) return '제어권이 ' + (next.deviceName || '다른 기기') + '(으)로 넘어갔습니다';
-  return '제어권이 반환되었습니다';
+  if (next && next.holder) return '최적보기가 ' + (next.deviceName || '다른 기기') + '(으)로 넘어갔습니다';
+  return '최적보기가 해제되었습니다 (PC 에서 되찾음)';
 }
 
 // ── 홈 화면 앱화 ──

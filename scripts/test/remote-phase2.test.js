@@ -151,7 +151,7 @@ exports.run = function (t) {
   t.check('보유 판정', r.holdsControl({ holder: 'me' }, 'me') && !r.holdsControl({ holder: 'x' }, 'me')
     && !r.holdsControl({ holder: null }, 'me') && !r.holdsControl({ holder: 'me' }, null));
   t.check('다른 기기가 빼앗으면 알림', /폰B/.test(r.controlLostText({ holder: 'me' }, { holder: 'b', deviceName: '폰B' }, 'me')));
-  t.check('반환되면 알림', /반환/.test(r.controlLostText({ holder: 'me' }, { holder: null }, 'me')));
+  t.check('반환되면 알림', /해제/.test(r.controlLostText({ holder: 'me' }, { holder: null }, 'me')));
   t.check('원래 내 것이 아니었으면 알림 없음', r.controlLostText({ holder: 'b' }, { holder: null }, 'me') === null);
 
   // ── 모바일: control 메시지 반영 ──
@@ -160,10 +160,10 @@ exports.run = function (t) {
     R.deviceId = 'me';
     R.viewId = 's1';
     R.handle({ t: 'control', id: 's1', holder: 'me', deviceName: '내 폰', cols: 54, rows: 42 });
-    t.check('내가 보유 → 반환 버튼', R.isHolding() && els.get('btn-control').textContent === '반환'
+    t.check('내가 보유 → 반환 버튼', R.isHolding() && els.get('btn-control').textContent === '최적 해제'
       && els.get('btn-control').classList.contains('holding'));
     R.handle({ t: 'control', id: 's1', holder: 'other', deviceName: '아이패드', cols: 80, rows: 30 });
-    t.check('다른 기기가 가져가면 상태 반영 + 알림', !R.isHolding() && els.get('btn-control').textContent === '제어'
+    t.check('다른 기기가 가져가면 상태 반영 + 알림', !R.isHolding() && els.get('btn-control').textContent === '최적보기'
       && log.toasts.some((m) => /아이패드/.test(m)) && log.fits >= 2);
     R.handle({ t: 'control', id: 's1', holder: 'me', cols: 54, rows: 42 });
     R.toggleControl();
