@@ -881,6 +881,55 @@ const Remote = {
     try { return !!(Remote.term && Remote.term.buffer.active.type === 'alternate'); } catch (_) { return false; }
   },
 
+  // 스와이프 한 조각(dy px, 손가락 위로 = 양수)을 적용한다. 감싸는 영역이 그 방향으로 더 스크롤될 수
+  // 있으면(확대 상태) 영역을 움직이고, 끝에 닿았으면 셀 높이마다 휠 이벤트 하나씩 TUI 로 보낸다.
+  applySwipe(swipe, dy) {
+    const wrap = document.getElementById('term-wrap');
+    if (!wrap) return;
+    const atTop = wrap.scrollTop <= 0;
+    const atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 1;
+    if (swipeTarget(true, dy, atTop, atBottom, swipe.locked) !== 'tui') {
+      wrap.scrollTop += dy;
+      return;
+    }
+    swipe.locked = true;
+    const steps = wheelStepsFor(swipe.acc + dy, Remote.cellHeight());
+    swipe.acc = steps.rest;
+    const sign = steps.count < 0 ? -1 : 1;
+    for (let i = 0; i < Math.abs(steps.count); i++) Remote.forwardWheel(sign * Remote.cellHeight(), swipe.x, swipe.y);
+  },
+
+  // 현재 글꼴의 셀 높이(px)
+  cellHeight() {
+    const screen = document.querySelector('#term .xterm-screen');
+    const rows = Remote.term && Remote.term.rows;
+    const h = screen && rows ? screen.offsetHeight / rows : 0;
+    return h > 0 ? h : 16;
+  },
+
+  // 손을 뗀 뒤 관성 — 속도가 잦아들 때까지 같은 경로로 계속 스크롤한다
+  _fling: null,
+  startFling(swipe, v) {
+    if (!v) return;
+    const state = { x: swipe.x, y: swipe.y, locked: swipe.locked, acc: swipe.acc, v, last: Date.now() };
+    const tick = () => {
+      if (Remote._fling !== state) return;
+      const now = Date.now();
+      const step = flingStep(state.v, now - state.last);
+      state.last = now;
+      state.v = step.v;
+      if (step.travel) Remote.applySwipe(state, step.travel);
+      if (state.v) state.raf = requestAnimationFrame(tick);
+      else Remote._fling = null;
+    };
+    Remote._fling = state;
+    state.raf = requestAnimationFrame(tick);
+  },
+  stopFling() {
+    if (Remote._fling && Remote._fling.raf) cancelAnimationFrame(Remote._fling.raf);
+    Remote._fling = null;
+  },
+
   // 스와이프를 xterm 의 휠 처리에 태운다 — xterm 이 TUI 의 마우스 트래킹 여부에 따라 마우스
   // 리포트 또는 방향키로 변환해 준다(데스크톱 휠과 같은 경로). 폰 터미널은 disableStdin 이라
   // 그 출력이 막히므로, 디스패치하는 동안만 열고 onData 로 받아 PTY 에 쓴다.
@@ -918,7 +967,8 @@ const Remote = {
       if (e.touches.length === 1) {
         const t = e.touches[0];
         const now = Date.now();
-        swipe = { y: t.clientY, x: t.clientX, locked: false };
+        Remote.stopFling();
+        swipe = { y: t.clientY, x: t.clientX, locked: false, alt: Remote.inAltBuffer(), samples: [{ t: now, y: t.clientY }], acc: 0 };
         if (isDoubleTap(lastTap, now, t.clientX, t.clientY)) {
           lastTap = null;
           if (Remote.getTermZoom() !== TERM_ZOOM_MIN) { Remote.setTermZoom(TERM_ZOOM_MIN, true); e.preventDefault(); }
@@ -929,18 +979,19 @@ const Remote = {
     }, { passive: false });
     wrap.addEventListener('touchmove', (e) => {
       if (e.touches.length === 1 && swipe && !pinch) {
+        // 대체 버퍼가 아니면(일반 셸) xterm 스크롤백을 브라우저 네이티브로 스크롤한다
+        if (!swipe.alt) return;
+        // 첫 touchmove 부터 막아야 브라우저가 제스처를 가져가지 않고 이벤트를 계속 준다
+        e.preventDefault();
         const t = e.touches[0];
         const dy = wheelDeltaFromTouch(swipe.y, t.clientY);
-        if (!dy) return;
-        const atTop = wrap.scrollTop <= 0;
-        const atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 1;
-        if (swipeTarget(Remote.inAltBuffer(), dy, atTop, atBottom, swipe.locked) === 'tui') {
-          swipe.locked = true;
-          e.preventDefault();
-          Remote.forwardWheel(dy, t.clientX, t.clientY);
-        }
+        const dx = swipe.x - t.clientX;
         swipe.y = t.clientY;
         swipe.x = t.clientX;
+        swipe.samples.push({ t: Date.now(), y: t.clientY });
+        if (swipe.samples.length > 6) swipe.samples.shift();
+        if (dx) wrap.scrollLeft += dx;
+        if (dy) Remote.applySwipe(swipe, dy);
         return;
       }
       if (!pinch || e.touches.length !== 2) return;
@@ -950,6 +1001,7 @@ const Remote = {
       if (!raf) raf = requestAnimationFrame(() => { raf = 0; Remote.setTermZoom(z, false); });
     }, { passive: false });
     const end = () => {
+      if (swipe && swipe.alt && !pinch) Remote.startFling(swipe, flingVelocity(swipe.samples, Date.now()));
       swipe = null;
       if (!pinch) return;
       pinch = null;

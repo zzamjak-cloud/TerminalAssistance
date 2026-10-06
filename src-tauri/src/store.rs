@@ -81,6 +81,11 @@ pub struct Settings {
     /// 배경 대비 최소 명암비 — dim/회색 출력이 배경에 묻히는 것을 자동 보정 (1.0 = 끔)
     #[serde(rename = "minContrast", default = "default_min_contrast")]
     pub min_contrast: f32,
+    /// Claude Code 를 클래식 렌더러로 실행 (CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1).
+    /// 대화가 터미널 자체 스크롤백에 남아 PC·폰 모두 네이티브로 매끄럽게 스크롤되고 드래그 선택도 된다.
+    /// 끄면 Claude Code 기본(전체 화면 모드) — 깜빡임 없는 그리기·마우스 클릭 기능 대신 스크롤백이 없다.
+    #[serde(rename = "claudeClassicRenderer", default = "default_true")]
+    pub claude_classic_renderer: bool,
 }
 
 fn default_font_size() -> u32 {
@@ -108,6 +113,7 @@ impl Default for Settings {
             line_height: 1.0,
             letter_spacing: 0.0,
             min_contrast: 1.0,
+            claude_classic_renderer: true,
         }
     }
 }

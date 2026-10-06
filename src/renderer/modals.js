@@ -533,6 +533,8 @@ Object.assign(App, {
       <div class="check"><input type="checkbox" id="m-notify-wait" ${st.notifyOnWaiting ? 'checked' : ''}><label for="m-notify-wait" style="margin:0">비활성 세션 허가 대기 시 알림</label></div>
       <div class="check"><input type="checkbox" id="m-show-prompt-input" ${st.showPromptInput === true ? 'checked' : ''}><label for="m-show-prompt-input" style="margin:0">하단 프롬프트 입력창 사용</label></div>
       <div class="form-help">기본적으로 숨깁니다. 사용하지 않으면 Cmd/Ctrl+J 커서 전환도 비활성화됩니다.</div>
+      <div class="check"><input type="checkbox" id="m-claude-classic" ${st.claudeClassicRenderer !== false ? 'checked' : ''}><label for="m-claude-classic" style="margin:0">Claude Code 를 클래식 렌더러로 실행 (대화를 터미널 스크롤백에 남김)</label></div>
+      <div class="form-help">켜면 PC 의 스크롤바·드래그 선택과 폰의 스와이프 스크롤이 터미널 자체 스크롤백으로 매끄럽게 동작합니다. 끄면 Claude Code 기본인 전체 화면 모드(깜빡임 없는 그리기·마우스 클릭)로 실행되지만 스크롤백이 없어 폰에서는 휠 이벤트 단위로만 스크롤됩니다. 새로 만드는 세션부터 적용됩니다.</div>
       <label>AI 도구 연동 — 허가 대기(🟡) 감지</label>
       <div class="check"><input type="checkbox" id="m-hook-claude" ${hooks.claude ? 'checked' : ''}><label for="m-hook-claude" style="margin:0">Claude Code 훅 (~/.claude/settings.json 병합, 백업 생성)</label></div>
       <div class="check"><input type="checkbox" id="m-hook-codex" ${hooks.codex ? 'checked' : ''}><label for="m-hook-codex" style="margin:0">Codex 알림 (~/.codex/config.toml 병합, 백업 생성)</label></div>
@@ -634,6 +636,7 @@ Object.assign(App, {
             notifyOnDone: m.querySelector('#m-notify').checked,
             notifyOnWaiting: m.querySelector('#m-notify-wait').checked,
             showPromptInput: m.querySelector('#m-show-prompt-input').checked,
+            claudeClassicRenderer: m.querySelector('#m-claude-classic').checked,
             lineHeight: Number(m.querySelector('#m-line-height').value),
             letterSpacing: Number(m.querySelector('#m-letter-spacing').value),
             minContrast: Number(m.querySelector('#m-min-contrast').value)

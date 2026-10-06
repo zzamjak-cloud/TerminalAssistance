@@ -4583,7 +4583,7 @@ dependencies = [
 
 [[package]]
 name = "terminal-assistance"
-version = "0.19.8"
+version = "0.19.9"
 dependencies = [
  "axum",
  "futures-util",

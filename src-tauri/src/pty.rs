@@ -713,6 +713,8 @@ impl PtyManager {
         project_id: Option<String>,
         cwd: Option<String>,
         shell_override: &str,
+        // true 면 Claude Code 를 클래식 렌더러로 (대화가 터미널 스크롤백에 남는다) — store::Settings 참고
+        claude_classic_renderer: bool,
         title: Option<String>,
         restore: Option<(String, u64)>,
     ) -> Result<SessionInfo, String> {
@@ -743,6 +745,11 @@ impl PtyManager {
         cmd.env("COLORTERM", "truecolor");
         // Claude Code 훅(자식 프로세스)이 자기 세션을 식별하는 열쇠 — hooks.rs 참고
         cmd.env("TA_SESSION_ID", &id);
+        // 전체 화면(대체 버퍼) 모드는 스크롤백이 없어 PC 스크롤바·드래그 선택, 폰 스와이프가 모두 TUI 에
+        // 의존한다. 클래식 렌더러는 대화를 터미널 스크롤백에 남겨 양쪽 다 네이티브로 스크롤된다.
+        if claude_classic_renderer {
+            cmd.env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
+        }
         // GUI 앱은 LANG 을 상속받지 못해 셸이 C 로케일로 동작 → 한글 등 멀티바이트 입력이 깨짐
         if std::env::var("LANG").is_err() {
             cmd.env("LANG", "ko_KR.UTF-8");

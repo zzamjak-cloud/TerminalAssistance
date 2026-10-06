@@ -14,7 +14,7 @@ vm.runInContext(
   + ' upsertSession, presetsForSession, REMOTE_FONT_MIN, RECONNECT_MAX_MS,'
   + ' SNAP_RESET, snapModeSuffix, newReqId, isReplyTo, nextViewportBaseline, isKeyboardOpen,'
   + ' clampZoom, parseStoredZoom, zoomedFontSize, touchDistance, pinchZoom, isDoubleTap, TERM_ZOOM_MAX, TERM_FONT_ZOOM_CAP,'
-  + ' swipeTarget, wheelDeltaFromTouch };',
+  + ' swipeTarget, wheelDeltaFromTouch, wheelStepsFor, flingStep, flingVelocity };',
   sandbox
 );
 const r = sandbox.__r;
@@ -75,6 +75,13 @@ exports.run = function (t) {
   t.check('대체 버퍼: 영역이 꼭 맞으면(위·아래 끝) TUI 로', r.swipeTarget(true, -10, true, true, false) === 'tui' && r.swipeTarget(true, 10, true, true, false) === 'tui');
   t.check('대체 버퍼: 확대로 영역이 스크롤 중이면 끝에서만 TUI', r.swipeTarget(true, -10, false, false, false) === 'native' && r.swipeTarget(true, 10, false, true, false) === 'tui' && r.swipeTarget(true, -10, true, false, false) === 'tui');
   t.check('대체 버퍼: 한 번 TUI 로 보내기 시작한 제스처는 끝까지', r.swipeTarget(true, 10, false, false, true) === 'tui');
+  t.check('셀 단위 휠 개수 + 이월', (() => { const s = r.wheelStepsFor(37, 16); return s.count === 2 && Math.abs(s.rest - 5) < 1e-9; })()
+    && r.wheelStepsFor(-20, 16).count === -1 && r.wheelStepsFor(10, 16).count === 0 && r.wheelStepsFor(10, 16).rest === 10);
+  t.check('셀 높이 0 이면 기본값으로', r.wheelStepsFor(32, 0).count === 2);
+  t.check('플링: 속도가 줄며 거리를 낸다', (() => { const s = r.flingStep(1, 16); return s.v > 0 && s.v < 1 && s.travel > 0 && s.travel < 16; })());
+  t.check('플링: 느려지면 멈춘다', r.flingStep(0.03, 16).v === 0 && r.flingStep(0, 16).v === 0);
+  t.check('플링 속도: 최근 샘플만, 위로 쓸면 양수', r.flingVelocity([{ t: 0, y: 500 }, { t: 1000, y: 400 }, { t: 1050, y: 300 }], 1050) === 2
+    && r.flingVelocity([{ t: 0, y: 300 }, { t: 50, y: 400 }], 50) === -2 && r.flingVelocity([{ t: 0, y: 1 }], 0) === 0);
   t.check('손가락 위로 = 휠 아래(양수)', r.wheelDeltaFromTouch(300, 280) === 20 && r.wheelDeltaFromTouch(280, 300) === -20);
   t.check('두 번 탭: 짧고 가까우면', r.isDoubleTap({ t: 1000, x: 10, y: 10 }, 1200, 20, 10)
     && !r.isDoubleTap({ t: 1000, x: 10, y: 10 }, 1500, 10, 10)

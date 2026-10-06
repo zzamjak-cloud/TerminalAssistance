@@ -62,7 +62,8 @@
       showPromptInput: patch.showPromptInput ?? null,
       lineHeight: patch.lineHeight ?? null,
       letterSpacing: patch.letterSpacing ?? null,
-      minContrast: patch.minContrast ?? null
+      minContrast: patch.minContrast ?? null,
+      claudeClassicRenderer: patch.claudeClassicRenderer ?? null
     }),
 
     // 설치된 셸 자동 감지 목록 — [{ label, value }] (설정 드롭다운용, 빈 value = OS 기본)

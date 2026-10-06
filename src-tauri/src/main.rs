@@ -370,6 +370,7 @@ fn update_settings(
     line_height: Option<f32>,
     letter_spacing: Option<f32>,
     min_contrast: Option<f32>,
+    claude_classic_renderer: Option<bool>,
 ) -> Result<store::Settings, String> {
     let mut s = plock(&store);
     if let Some(v) = font_size {
@@ -395,6 +396,9 @@ fn update_settings(
     }
     if let Some(v) = letter_spacing {
         s.data.settings.letter_spacing = v.clamp(0.0, 4.0);
+    }
+    if let Some(v) = claude_classic_renderer {
+        s.data.settings.claude_classic_renderer = v;
     }
     if let Some(v) = min_contrast {
         s.data.settings.min_contrast = v.clamp(1.0, 21.0);
@@ -455,11 +459,12 @@ fn restore_sessions(
     if !ptys.list().is_empty() {
         return json!({ "restored": [], "skipped": [], "alreadyRunning": true });
     }
-    let (saved, shell, project_ids) = {
+    let (saved, shell, classic, project_ids) = {
         let s = plock(&store);
         (
             s.data.session_layout.clone(),
             s.data.settings.shell.clone(),
+            s.data.settings.claude_classic_renderer,
             s.data
                 .projects
                 .iter()
@@ -484,6 +489,7 @@ fn restore_sessions(
             item.project_id.clone(),
             Some(item.cwd.clone()),
             &shell,
+            classic,
             Some(item.title.clone()),
             Some((item.id.clone(), item.created_at_ms)),
         ) {
@@ -523,12 +529,12 @@ fn create_session_inner(
             return Err(format!("세션이 너무 많습니다 (최대 {}개)", max));
         }
     }
-    let (cwd, shell) = {
+    let (cwd, shell, classic) = {
         let s = plock(&store);
         let proj = project_id
             .as_ref()
             .and_then(|pid| s.data.projects.iter().find(|p| &p.id == pid));
-        (proj.map(|p| p.path.clone()), s.data.settings.shell.clone())
+        (proj.map(|p| p.path.clone()), s.data.settings.shell.clone(), s.data.settings.claude_classic_renderer)
     };
     // 세션 제목: 같은 그룹(프로젝트 또는 홈) 안의 순번 — S1, S2…
     // 프로젝트명 중복 표기를 없애고 '프로젝트명 — S2' 형태로 식별 가능하게 한다 (표기는 프론트)
@@ -544,7 +550,7 @@ fn create_session_inner(
         .max()
         .unwrap_or(0)
         + 1;
-    let info = ptys.create(app.clone(), project_id, cwd, &shell, Some(format!("S{}", n)), None)?;
+    let info = ptys.create(app.clone(), project_id, cwd, &shell, classic, Some(format!("S{}", n)), None)?;
     if remote_max.is_some() {
         // 레이아웃 저장(디스크 I/O)보다 먼저 — 데스크톱 탭이 늦게 붙지 않게
         let _ = app.emit("ta:session-created", &info);

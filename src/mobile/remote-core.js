@@ -179,6 +179,36 @@ function wheelDeltaFromTouch(prevY, curY) {
   return prevY - curY;
 }
 
+// 누적 이동(px)을 셀 높이 단위 휠 이벤트 개수로 쪼갠다 — TUI 는 휠 이벤트 하나에 몇 줄씩 움직이므로
+// 손가락이 한 셀 움직일 때마다 하나씩 보내야 손가락을 따라오는 느낌이 난다. 나머지는 이월.
+function wheelStepsFor(accPx, cellH) {
+  const h = cellH > 0 ? cellH : 16;
+  const count = Math.trunc(accPx / h);
+  return { count, rest: accPx - count * h };
+}
+
+// 플링(관성) 한 프레임 — 속도(px/ms)에 마찰을 곱해 줄이고 그 동안 이동한 거리를 돌려준다
+const FLING_FRICTION = 0.0035; // ms 당 감쇠 비율
+const FLING_MIN_V = 0.03; // px/ms — 이보다 느리면 멈춘다
+function flingStep(v, dtMs) {
+  const dt = Math.max(0, Math.min(64, dtMs || 16));
+  const decay = Math.max(0, 1 - FLING_FRICTION * dt);
+  const nv = v * decay;
+  if (Math.abs(nv) < FLING_MIN_V) return { travel: v * dt * 0.5, v: 0 };
+  return { travel: (v + nv) * 0.5 * dt, v: nv };
+}
+
+// 최근 터치 샘플로 놓는 순간의 속도(px/ms, 손가락이 위로 가면 양수) — 너무 오래된 샘플은 버린다
+function flingVelocity(samples, now) {
+  const recent = (samples || []).filter((s) => now - s.t <= 100);
+  if (recent.length < 2) return 0;
+  const a = recent[0];
+  const b = recent[recent.length - 1];
+  const dt = b.t - a.t;
+  if (dt <= 0) return 0;
+  return (a.y - b.y) / dt;
+}
+
 // ── 재연결 백오프 ──
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 15000;
