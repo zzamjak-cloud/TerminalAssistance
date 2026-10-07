@@ -76,6 +76,8 @@
     hooksStatus: () => invoke('hooks_status'),
     setClaudeHooks: (enable) => invoke('set_claude_hooks', { enable }),
     setCodexHooks: (enable) => invoke('set_codex_hooks', { enable }),
+    // UserPromptSubmit 훅이 마지막으로 받은 프롬프트 { hooked, id, prompt } (예약 큐 전송 확정용)
+    hookPrompt: (sessionId) => invoke('hook_prompt', { sessionId }),
 
     createSession: (projectId) => invoke('create_session', { projectId: projectId || null }),
     // Claude Code 가 저장해 둔 세션 목록 (cwd 기준) — [{ id, mtimeMs, preview }]

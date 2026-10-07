@@ -1099,6 +1099,7 @@ fn main() {
             pty::list_shells,
             hooks::hooks_status,
             hooks::claude_session_of,
+            hooks::hook_prompt,
             hooks::set_claude_hooks,
             hooks::set_codex_hooks,
             remote::remote_get_config,

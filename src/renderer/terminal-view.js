@@ -297,6 +297,30 @@ const TerminalView = {
     return this._typedLineOnScreen(v, String(text));
   },
 
+  // Claude Code 입력상자에 긴 붙여넣기를 접어 둔 표지 '[Pasted text #N]' 가 있는가.
+  // 대화 기록 쪽 표지를 잘못 잡으면 큐가 멈추므로, 입력상자 — 화면 아래쪽에서 찾은
+  // 가로 테두리(───) 두 줄 사이 — 만 본다. 테두리를 못 찾으면 false (판정 보류).
+  pastePlaceholderOnScreen(id) {
+    const v = this.views.get(id);
+    const b = v && v.term.buffer && v.term.buffer.active;
+    if (!b) return false;
+    const rows = v.term.rows || 24;
+    const bottom = Math.min(b.length - 1, b.baseY + rows - 1);
+    const top = Math.max(0, bottom - rows + 1);
+    const text = (y) => { const line = b.getLine(y); return line ? line.translateToString(true) : ''; };
+    const isRule = (s) => /^\s*─{10,}\s*$/.test(s);
+    let lower = -1;
+    for (let y = bottom; y >= top; y--) {
+      if (!isRule(text(y))) continue;
+      if (lower < 0) { lower = y; continue; }
+      for (let i = y + 1; i < lower; i++) {
+        if (/\[Pasted text #\d+/.test(text(i))) return true;
+      }
+      return false;
+    }
+    return false;
+  },
+
   // 사용자가 치다 만 잔여 입력 ('' = 없음). 추적이 유효하고 화면에서도 확인될 때만 인정한다 —
   // 예약 큐는 이게 비어 있을 때만 붙여넣는다 (남의 입력 위에 절대 겹쳐 쓰지 않는다).
   pendingTypedLine(id) {

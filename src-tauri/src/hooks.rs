@@ -39,7 +39,12 @@ write_state() {
   printf '{"state":"%s","ts":%s,"sid":"%s"}' "$1" "$ts" "$sid" > "$tmp" 2>/dev/null && mv -f "$tmp" "$file" 2>/dev/null
 }
 case "$event" in
-  UserPromptSubmit|PostToolUse) write_state busy ;;
+  UserPromptSubmit)
+    # 받은 프롬프트 payload 원문을 한 줄씩 누적 — 예약 큐가 '정말 전송됐는지'를 확정하는 근거.
+    # 연달아 제출돼도 앞 기록이 덮이지 않게 덮어쓰기가 아니라 덧붙인다.
+    printf '%s\n' "$input" >> "$dir/$TA_SESSION_ID.prompt" 2>/dev/null
+    write_state busy ;;
+  PostToolUse) write_state busy ;;
   Stop) write_state done ;;
   Notification)
     # 'permission' 포함 = 진짜 허가 요청. 그 외(60초 무입력 유휴 등)는 노이즈라 무시
@@ -53,21 +58,34 @@ exit 0
 const HOOK_PS1: &str = r#"# Terminal Assistance — Claude Code 훅 수신기 (자동 생성 파일, 수정하지 말 것)
 try {
   if (-not $env:TA_SESSION_ID) { exit 0 }
-  $inp = [Console]::In.ReadToEnd()
+  # stdin 은 UTF-8 바이트로 읽는다 — [Console]::In 은 OEM 코드페이지로 디코딩해 한글 프롬프트가 깨진다
+  $ms = New-Object System.IO.MemoryStream
+  [Console]::OpenStandardInput().CopyTo($ms)
+  $raw = $ms.ToArray()
+  $inp = [System.Text.Encoding]::UTF8.GetString($raw)
   $j = $inp | ConvertFrom-Json
   $dir = Join-Path $env:USERPROFILE ".terminal-assistance\hooks\state"
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $file = Join-Path $dir "$($env:TA_SESSION_ID).json"
   $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   function Write-State($s) {
-    $tmp = "$file.tmp"
+    $tmp = "$file.tmp.$PID" # 병렬 훅끼리 임시 파일이 겹치지 않게
     $body = "{""state"":""$s"",""ts"":$ts,""sid"":""$($j.session_id)""}"
     # Set-Content -Encoding utf8 은 PS 5.1 에서 BOM 을 붙인다 — 읽는 쪽 JSON 파서가 깨지므로 BOM 없이 쓴다
     [System.IO.File]::WriteAllText($tmp, $body, (New-Object System.Text.UTF8Encoding($false)))
     Move-Item -Force $tmp $file
   }
   switch ($j.hook_event_name) {
-    { $_ -in "UserPromptSubmit", "PostToolUse" } { Write-State "busy" }
+    "UserPromptSubmit" {
+      # 받은 프롬프트 payload 원문을 한 줄씩 누적 — 예약 큐가 '정말 전송됐는지'를 확정하는 근거.
+      # 상태 기록이 실패해도 이 기록은 남도록 먼저, 따로 감싼다.
+      try {
+        $fs = [System.IO.File]::Open((Join-Path $dir "$($env:TA_SESSION_ID).prompt"), 'Append', 'Write', 'ReadWrite')
+        try { $fs.Write($raw, 0, $raw.Length); $fs.WriteByte(10) } finally { $fs.Close() }
+      } catch {}
+      Write-State "busy"
+    }
+    "PostToolUse" { Write-State "busy" }
     "Stop" { Write-State "done" }
     "Notification" { if ("$($j.message)" -match "permission") { Write-State "waiting" } }
     "SessionEnd" { Remove-Item -Force $file -ErrorAction SilentlyContinue }
@@ -102,7 +120,66 @@ pub fn clean_state_dir() {
 pub fn remove_state(session_id: &str) {
     if let Some(dir) = state_dir() {
         let _ = fs::remove_file(dir.join(format!("{}.json", session_id)));
+        let _ = fs::remove_file(dir.join(format!("{}.prompt", session_id)));
     }
+}
+
+/// 프롬프트 기록에서 읽는 꼬리 분량 — 파일은 세션 동안 계속 자라므로 끝부분만 본다
+const PROMPT_TAIL_BYTES: u64 = 1 << 20;
+/// 돌려주는 최근 프롬프트 수
+const PROMPT_ENTRIES: usize = 20;
+
+/// 예약 큐의 전송 확정용 훅 스냅샷.
+///   hooked  = 상태 파일이 있다 (훅이 이 세션에서 한 번이라도 돌았다)
+///   stateTs = 상태 파일의 마지막 기록 시각(ms) — 훅이 지금도 살아 있는지 렌더러가 판단하는 근거
+///   entries = UserPromptSubmit 이 받은 최근 프롬프트 [{ id, prompt }] (오래된 것 → 최신)
+/// 파일 IO 가 있으므로 async — 메인 스레드에서 돌지 않게 한다.
+#[tauri::command]
+pub async fn hook_prompt(session_id: String) -> Value {
+    let Some(dir) = state_dir() else { return json!({ "hooked": false, "stateTs": 0, "entries": [] }) };
+    let state = fs::read_to_string(dir.join(format!("{}.json", session_id))).ok();
+    let hooked = state.is_some();
+    let state_ts = state.as_deref().and_then(parse_state_json).and_then(|v| v["ts"].as_u64()).unwrap_or(0);
+    let entries = read_prompt_tail(&dir.join(format!("{}.prompt", session_id)));
+    json!({ "hooked": hooked, "stateTs": state_ts, "entries": entries })
+}
+
+/// 프롬프트 기록 파일의 끝부분을 읽어 최근 항목을 돌려준다
+fn read_prompt_tail(path: &PathBuf) -> Vec<Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = fs::File::open(path) else { return Vec::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(PROMPT_TAIL_BYTES);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+    parse_prompt_lines(&buf, start)
+}
+
+/// 줄 단위 payload → [{ id, prompt }]. base = buf 의 파일 내 시작 위치.
+/// id 는 prompt_id, 없으면(구버전) 줄의 파일 내 위치 — 덧붙이기만 하므로 위치는 변하지 않는다.
+/// 꼬리 중간에서 시작했다면 첫 줄은 잘린 조각이라 버린다. 쓰는 중인 마지막 줄은 파싱 실패로 걸러진다.
+fn parse_prompt_lines(buf: &[u8], base: u64) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    for (i, line) in buf.split(|&b| b == b'\n').enumerate() {
+        let at = base + offset as u64;
+        offset += line.len() + 1;
+        if i == 0 && base > 0 {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(line) else { continue };
+        let Some(v) = parse_state_json(text) else { continue };
+        let Some(prompt) = v["prompt"].as_str() else { continue };
+        let id = v["prompt_id"].as_str().filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| format!("o{}", at));
+        out.push(json!({ "id": id, "prompt": prompt }));
+    }
+    let skip = out.len().saturating_sub(PROMPT_ENTRIES);
+    out.split_off(skip)
 }
 
 /// 앱 시작 시 훅 스크립트를 최신 임베드 버전으로 갱신 — 이미 설치된 사용자가
@@ -175,6 +252,9 @@ fn write_hook_script(home: &PathBuf) -> Result<(), String> {
     fs::create_dir_all(dir.join("state")).map_err(|e| e.to_string())?;
     let (name, body) = if cfg!(windows) { ("ta-hook.ps1", HOOK_PS1) } else { ("ta-hook.sh", HOOK_SH) };
     let path = dir.join(name);
+    // Windows PowerShell 5.1 은 BOM 없는 스크립트를 ANSI(CP949)로 읽는다 — 한글 주석의 끝 바이트가
+    // 줄바꿈을 삼켜 다음 코드 줄이 주석에 먹힌다. BOM 을 붙여 UTF-8 로 읽게 한다.
+    let body = if cfg!(windows) { format!("\u{feff}{}", body) } else { body.to_string() };
     fs::write(&path, body).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
@@ -233,6 +313,8 @@ pub fn install_claude() -> Result<(), String> {
 
 pub fn uninstall_claude() -> Result<(), String> {
     let home = home()?;
+    // 남은 상태 파일이 '훅 동작 중'으로 오인되지 않게 함께 비운다
+    clean_state_dir();
     let path = home.join(".claude").join("settings.json");
     let Ok(text) = fs::read_to_string(&path) else { return Ok(()) };
     let Ok(mut root) = serde_json::from_str::<Value>(&text) else {
@@ -375,6 +457,37 @@ mod tests {
     fn parses_hook_state_without_bom() {
         let v = parse_state_json("{\"state\":\"waiting\",\"ts\":2,\"sid\":\"y\"}").unwrap();
         assert_eq!(v["state"], "waiting");
+    }
+
+    // 누적 기록 — prompt_id 를 식별자로 쓰고, BOM·빈 줄·쓰는 중인 마지막 줄을 견딘다
+    #[test]
+    fn parses_prompt_lines() {
+        let text = "\u{feff}{\"prompt_id\":\"p1\",\"prompt\":\"안녕\\n둘째 줄\"}\n\n{\"prompt_id\":\"p2\",\"prompt\":\"b\"}\n{\"prompt_id\":\"p3\",\"pro";
+        let v = parse_prompt_lines(text.as_bytes(), 0);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0]["id"], "p1");
+        assert_eq!(v[0]["prompt"], "안녕\n둘째 줄");
+        assert_eq!(v[1]["id"], "p2");
+    }
+
+    // prompt_id 가 없으면(구버전) 파일 내 위치로 식별한다
+    #[test]
+    fn prompt_lines_fall_back_to_offset() {
+        let v = parse_prompt_lines(b"{\"prompt\":\"a\"}\n{\"prompt\":\"b\"}\n", 100);
+        // base > 0 이면 첫 줄은 잘린 조각으로 보고 버린다
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0]["id"], "o115");
+        assert_eq!(v[0]["prompt"], "b");
+    }
+
+    // 최근 PROMPT_ENTRIES 건만 남긴다
+    #[test]
+    fn prompt_lines_keep_recent() {
+        let text: String = (0..30).map(|i| format!("{{\"prompt_id\":\"p{}\",\"prompt\":\"x\"}}\n", i)).collect();
+        let v = parse_prompt_lines(text.as_bytes(), 0);
+        assert_eq!(v.len(), PROMPT_ENTRIES);
+        assert_eq!(v[0]["id"], "p10");
+        assert_eq!(v[PROMPT_ENTRIES - 1]["id"], "p29");
     }
 
     #[test]

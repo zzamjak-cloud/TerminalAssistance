@@ -178,8 +178,12 @@ Object.assign(App, {
         leftover: '터미널 입력줄에 내용이 남아 있어 예약을 보류했습니다',
         paste: '프롬프트가 터미널에 들어가지 않아 멈췄습니다',
         submit: '프롬프트는 들어갔지만 전송이 확인되지 않아 멈췄습니다',
+        unconfirmed: '전송된 것 같지만 확인되지 않아 멈췄습니다 — 터미널을 확인해 주세요',
+        mismatch: '예약과 다른 내용이 전송되어 멈췄습니다 — 터미널을 확인해 주세요',
         error: '예약 전송 중 오류가 나 멈췄습니다',
       }[paused.reason] || '예약 전송이 멈췄습니다';
+      // 이미 전송됐을 가능성이 높은 사유 — [다시 시도] 를 감춰 실수로 두 번 보내지 않게 한다
+      const maybeSent = paused.reason === 'unconfirmed' || paused.reason === 'mismatch';
       const row = document.createElement('div');
       row.className = 'composer-item queue-paused';
       const kind = document.createElement('span');
@@ -198,7 +202,7 @@ Object.assign(App, {
       };
       row.append(
         kind, text,
-        mk('다시 시도', '같은 내용을 다시 전송합니다', () => void PromptQueue.retry(id)),
+        ...(maybeSent ? [] : [mk('다시 시도', '같은 내용을 다시 전송합니다', () => void PromptQueue.retry(id))]),
         mk('입력창으로', '내용을 프롬프트 입력창으로 되돌립니다', () => void PromptQueue.releaseToComposer(id)),
         mk('취소', '이 예약만 버리고 다음 항목으로 넘어갑니다', () => void PromptQueue.cancelPaused(id))
       );
