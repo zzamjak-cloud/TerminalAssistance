@@ -69,12 +69,24 @@ Object.assign(App, {
           ta.listCodexSessions(cwd).catch(() => [])
         ]);
       } catch (_) { return; }
-      const items = App.buildSessionHistoryItems(cwd, claude, codex);
-      const latest = items[0];
-      if (!latest || Date.now() - latest.mtimeMs > RESUME_SUGGEST_MAX_AGE_MS) return;
-      // 같은 경로의 세션이 여러 개면 첫 세션에만 제안한다 — 같은 대화를 두 곳에서 재개하면
-      // Claude/Codex 쪽 기록이 엉킨다
-      App.mountResumeBanner(ids[0], latest);
+      const items = App.buildSessionHistoryItems(cwd, claude, codex)
+        .filter((it) => Date.now() - it.mtimeMs <= RESUME_SUGGEST_MAX_AGE_MS);
+      // 훅이 기록한 '그 탭에서 마지막으로 돌던 Claude 세션'을 우선한다 — 같은 경로의
+      // 최신 파일은 다른 탭이나 다른 도구(예: Claude 가 띄운 codex)의 기록일 수 있다
+      const lastSids = await Promise.all(ids.map((id) => ta.lastClaudeSession(id).catch(() => null)));
+      const claimed = new Set();
+      const unmatched = [];
+      ids.forEach((id, i) => {
+        const item = lastSids[i] && !claimed.has(lastSids[i])
+          ? items.find((it) => it.source !== 'codex' && it.id === lastSids[i])
+          : null;
+        if (!item) { unmatched.push(id); return; }
+        claimed.add(item.id);
+        App.mountResumeBanner(id, item);
+      });
+      // 이 경로에 기록이 맞은 탭이 하나도 없을 때만 최신 기록을 첫 탭에 제안한다 —
+      // 기록 없는 탭은 대개 셸 전용이고, 같은 대화를 두 곳에서 재개하면 기록이 엉킨다
+      if (!claimed.size && unmatched.length && items[0]) App.mountResumeBanner(unmatched[0], items[0]);
     }));
   },
 

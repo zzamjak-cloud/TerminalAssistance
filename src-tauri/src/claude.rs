@@ -31,9 +31,17 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).ok().map(PathBuf::from)
 }
 
-/// 한 레코드에서 사용자 프롬프트 텍스트 추출.
-/// 훅·사이드체인(서브에이전트)·메타 레코드와 <command-name> 류 래퍼 텍스트는 제외한다.
-fn user_text(v: &serde_json::Value) -> Option<String> {
+/// 미리보기 후보의 우선순위 — 낮을수록 좋다
+#[derive(PartialEq, PartialOrd, Clone, Copy)]
+enum PreviewRank {
+    Prompt = 0, // 일반 프롬프트·붙여넣기
+    Summary,    // 이어진 세션의 summary 레코드
+    Bash,       // `!` 셸 모드 입력
+    LastPrompt, // last-prompt 레코드
+}
+
+/// 레코드의 사용자 텍스트 원문 (사이드체인·메타 제외, 배열이면 첫 텍스트 블록)
+fn raw_user_text(v: &serde_json::Value) -> Option<String> {
     if v.get("type").and_then(|x| x.as_str()) != Some("user") {
         return None;
     }
@@ -43,8 +51,8 @@ fn user_text(v: &serde_json::Value) -> Option<String> {
         return None;
     }
     let content = v.get("message")?.get("content")?;
-    let text = match content {
-        serde_json::Value::String(s) => s.clone(),
+    match content {
+        serde_json::Value::String(s) => Some(s.clone()),
         // 배열 형태(텍스트+이미지 블록)면 첫 텍스트 블록 사용
         serde_json::Value::Array(arr) => arr.iter().find_map(|b| {
             if b.get("type").and_then(|x| x.as_str()) == Some("text") {
@@ -52,38 +60,95 @@ fn user_text(v: &serde_json::Value) -> Option<String> {
             } else {
                 None
             }
-        })?,
-        _ => return None,
-    };
-    let t = text.trim();
-    if t.is_empty() || t.starts_with('<') || t.starts_with("Caveat:") {
-        return None;
+        }),
+        _ => None,
     }
-    Some(t.chars().take(PREVIEW_LEN).collect())
 }
 
-/// 세션 파일 미리보기: 첫 사용자 프롬프트 우선, 없으면 이어진 세션의 summary 레코드로 폴백.
-/// 둘 다 없으면 None — 실제 대화가 없는 세션(빈 실행)은 목록에서 제외된다.
+/// `<tag ...>본문</tag>` 의 본문. 닫는 태그가 없으면(잘린 텍스트) 끝까지.
+fn tag_body<'a>(t: &'a str, tag: &str) -> Option<&'a str> {
+    let rest = t.strip_prefix('<')?.strip_prefix(tag)?;
+    // `<tagX>` 같은 다른 태그와 구분
+    if !rest.starts_with('>') && !rest.starts_with(' ') {
+        return None;
+    }
+    let body = &rest[rest.find('>')? + 1..];
+    let end = body.find(&format!("</{}>", tag)).unwrap_or(body.len());
+    Some(body[..end].trim())
+}
+
+fn clip(t: &str) -> String {
+    t.chars().take(PREVIEW_LEN).collect()
+}
+
+/// 한 레코드에서 사용자 프롬프트 미리보기 추출.
+/// 붙여넣기 래퍼는 본문을 쓰고, 셸 모드 입력은 `! 명령` 으로 낮은 순위 후보가 된다.
+/// <command-name>·<system-reminder> 류 래퍼 텍스트와 bash 출력은 제외한다.
+fn user_text(v: &serde_json::Value) -> Option<(PreviewRank, String)> {
+    let text = raw_user_text(v)?;
+    let t = text.trim();
+    if t.is_empty() || t.starts_with("Caveat:") {
+        return None;
+    }
+    if !t.starts_with('<') {
+        return Some((PreviewRank::Prompt, clip(t)));
+    }
+    if let Some(body) = tag_body(t, "pasted_content").filter(|b| !b.is_empty()) {
+        return Some((PreviewRank::Prompt, clip(body)));
+    }
+    if let Some(cmd) = tag_body(t, "bash-input").filter(|b| !b.is_empty()) {
+        return Some((PreviewRank::Bash, clip(&format!("! {}", cmd))));
+    }
+    None
+}
+
+/// 세션 파일 미리보기: 첫 사용자 프롬프트 우선, 없으면 summary → 셸 입력 → last-prompt 순으로 폴백.
+/// 앞부분이 셸 입력·붙여넣기·훅 출력으로 가득 차 SCAN_CAP 안에 프롬프트가 없어도
+/// 대화가 있었던 세션이면 목록에서 빠지지 않게 고정 문구로라도 돌려준다.
+/// 응답(assistant 레코드)이 하나도 없는 짧은 파일(빈 실행·로컬 슬래시 명령뿐)만 None — 목록에서 제외된다.
 fn extract_preview(path: &Path) -> Option<String> {
     let f = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(f.take(SCAN_CAP));
-    let mut line = String::new();
-    let mut summary: Option<String> = None;
+    let mut buf = Vec::new();
+    let mut best: Option<(PreviewRank, String)> = None;
+    let mut saw_reply = false;
+    let mut read = 0u64;
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => break, // EOF 또는 비 UTF-8 — 탐색 종료
-            Ok(_) => {}
+        buf.clear();
+        // 비 UTF-8 줄이 있어도 탐색을 멈추지 않도록 바이트 단위로 읽는다
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => read += n as u64,
         }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-        if let Some(t) = user_text(&v) {
-            return Some(t);
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&buf) else { continue };
+        let kind = v.get("type").and_then(|x| x.as_str());
+        if kind == Some("assistant") {
+            saw_reply = true;
         }
-        if summary.is_none() && v.get("type").and_then(|x| x.as_str()) == Some("summary") {
-            summary = v.get("summary").and_then(|x| x.as_str()).map(|s| s.chars().take(PREVIEW_LEN).collect());
+        let cand = match kind {
+            Some("summary") => v.get("summary").and_then(|x| x.as_str()).map(|s| (PreviewRank::Summary, clip(s))),
+            Some("last-prompt") => v
+                .get("lastPrompt")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| (PreviewRank::LastPrompt, clip(s))),
+            _ => user_text(&v),
+        };
+        if let Some(c) = cand {
+            if c.0 == PreviewRank::Prompt {
+                return Some(c.1);
+            }
+            if best.as_ref().map_or(true, |b| c.0 < b.0) {
+                best = Some(c);
+            }
         }
     }
-    summary
+    if let Some((_, t)) = best {
+        return Some(t);
+    }
+    // 상한까지 다 읽었다 = 대화가 쌓인 큰 세션. 미리보기만 못 찾았을 뿐 재개 대상이다
+    (saw_reply || read >= SCAN_CAP).then(|| "대화 내용 미리보기 없음".to_string())
 }
 
 /// cwd 에 해당하는 Claude Code 세션 목록 (최근 활동 순).
@@ -277,5 +342,60 @@ mod tests {
         assert!(msgs_of(r#"{"type":"user","message":{"content":"<system-reminder>x</system-reminder>"}}"#).is_empty());
         assert!(msgs_of(r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"y"}]}}"#).is_empty());
         assert!(msgs_of(r#"{"type":"summary","summary":"s"}"#).is_empty());
+    }
+    fn preview_of(lines: &[&str]) -> Option<String> {
+        let dir = std::env::temp_dir().join(format!("ta-claude-preview-{}-{}", std::process::id(), lines.len()));
+        let _ = fs::create_dir_all(&dir);
+        let p = dir.join(format!("{}.jsonl", uuid_like(lines)));
+        fs::write(&p, lines.join("\n")).unwrap();
+        let r = extract_preview(&p);
+        let _ = fs::remove_file(&p);
+        r
+    }
+
+    fn uuid_like(lines: &[&str]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        lines.hash(&mut h);
+        h.finish()
+    }
+
+    #[test]
+    fn preview_uses_pasted_content_body() {
+        let r = preview_of(&[
+            r#"{"type":"user","message":{"content":"<bash-input> ./run.sh</bash-input>"}}"#,
+            r#"{"type":"user","message":{"content":"<bash-stdout>ok</bash-stdout><bash-stderr></bash-stderr>"}}"#,
+            r#"{"type":"user","message":{"content":"\n\n<pasted_content id=\"1\">\n버그 고쳐줘\n</pasted_content>"}}"#,
+        ]);
+        assert_eq!(r.as_deref(), Some("버그 고쳐줘"));
+    }
+
+    #[test]
+    fn preview_falls_back_to_bash_input_and_last_prompt() {
+        let r = preview_of(&[
+            r#"{"type":"last-prompt","lastPrompt":"마지막"}"#,
+            r#"{"type":"user","message":{"content":"<bash-input> ./run.sh</bash-input>"}}"#,
+        ]);
+        assert_eq!(r.as_deref(), Some("! ./run.sh"));
+        let r = preview_of(&[
+            r#"{"type":"user","isMeta":true,"message":{"content":"x"}}"#,
+            r#"{"type":"last-prompt","lastPrompt":"마지막"}"#,
+        ]);
+        assert_eq!(r.as_deref(), Some("마지막"));
+    }
+
+    #[test]
+    fn preview_keeps_session_without_readable_prompt() {
+        // 읽을 프롬프트가 없어도 응답이 오간 세션은 목록에 남긴다
+        let r = preview_of(&[
+            r#"{"type":"user","isMeta":true,"message":{"content":"x"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"y"}]}}"#,
+        ]);
+        assert_eq!(r.as_deref(), Some("대화 내용 미리보기 없음"));
+        // 로컬 슬래시 명령뿐인 빈 실행은 제외
+        assert_eq!(preview_of(&[
+            r#"{"type":"user","message":{"content":"<command-name>/model</command-name>"}}"#,
+            r#"{"type":"user","message":{"content":"<local-command-stdout>ok</local-command-stdout>"}}"#,
+        ]), None);
     }
 }

@@ -355,8 +355,16 @@ fn is_subagent_meta(p: &serde_json::Value) -> bool {
             .is_some_and(|s| !s.is_null())
 }
 
+/// 비대화형 `codex exec` 실행이 남긴 rollout 인지 판별.
+/// 다른 에이전트(예: Claude Code 의 `omc ask codex`)가 같은 경로에서 수시로 띄우므로
+/// 목록에 두면 사용자가 직접 연 대화 세션을 밀어내고 '이어서 하기' 제안까지 가로챈다.
+fn is_exec_meta(p: &serde_json::Value) -> bool {
+    p.get("originator").and_then(|x| x.as_str()) == Some("codex_exec")
+        || p.get("source").and_then(|x| x.as_str()) == Some("exec")
+}
+
 /// rollout 파일의 session_meta 에서 (세션 id, cwd) 를 읽는다.
-/// 서브에이전트 rollout 은 재개 불가라 None 을 돌려 목록에서 제외한다.
+/// 서브에이전트·exec rollout 은 대화 세션이 아니므로 None 을 돌려 목록에서 제외한다.
 fn codex_meta(path: &Path) -> Option<(String, String)> {
     let f = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(f.take(SESSION_SCAN_CAP));
@@ -374,7 +382,7 @@ fn codex_meta(path: &Path) -> Option<(String, String)> {
             continue;
         }
         let p = v.get("payload")?;
-        if is_subagent_meta(p) {
+        if is_subagent_meta(p) || is_exec_meta(p) {
             return None;
         }
         let id = p
@@ -686,6 +694,8 @@ mod tests {
 
         // thread_source 가 없는 구버전 rollout
         assert!(!is_subagent_meta(&json!({ "id": "own-id", "cwd": "D:/proj" })));
+        assert!(is_exec_meta(&json!({ "originator": "codex_exec", "source": "exec" })));
+        assert!(!is_exec_meta(&json!({ "originator": "codex_cli_rs", "source": "cli" })));
     }
 
     #[test]

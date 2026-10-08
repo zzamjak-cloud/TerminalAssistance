@@ -82,6 +82,8 @@
     createSession: (projectId) => invoke('create_session', { projectId: projectId || null }),
     // Claude Code 가 저장해 둔 세션 목록 (cwd 기준) — [{ id, mtimeMs, preview }]
     listClaudeSessions: (cwd) => invoke('list_claude_sessions', { cwd }),
+    // 터미널 세션에서 마지막으로 돌던 Claude 세션 UUID (훅 기록, 없으면 null)
+    lastClaudeSession: (sessionId) => invoke('last_claude_session', { sessionId }),
     // 세션 열람 팝업용: 저장된 세션 기록 → 대화 메시지 [{ role, kind, text }]
     claudeSessionMessages: (cwd, id) => invoke('claude_session_messages', { cwd, id }),
     // Codex 가 저장해 둔 세션 목록 (cwd 기준) — [{ id, mtimeMs, preview }]

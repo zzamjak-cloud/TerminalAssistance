@@ -66,6 +66,7 @@ function load(opts) {
       restoreSessions: async () => o.restoreResult,
       listClaudeSessions: async () => o.claude || [],
       listCodexSessions: async () => o.codex || [],
+      lastClaudeSession: async (id) => (o.lastSids || {})[id] || null,
       // 배너의 '마지막 요청' 조회 — 열람 팝업과 같은 커맨드를 쓴다
       claudeSessionMessages: async () => o.messages || [],
       codexSessionMessages: async () => o.messages || []
@@ -186,6 +187,22 @@ exports.run = async function (t) {
     await ctx.App.restoreSessions();
     await ctx.App.afterSessionRestore({ restored: [{ id: 's1' }], skipped: [] });
     t.check('기록이 없으면 배너를 띄우지 않는다', ctx.holder.children.length === 0);
+  }
+  {
+    // 훅이 기록한 탭의 마지막 Claude 세션이 같은 경로의 더 최신 기록(codex 등)보다 우선한다
+    const mine = { id: 'mine', mtimeMs: Date.now() - 120000, preview: '내 세션' };
+    const ctx = load({
+      restoreResult: { restored: [{ id: 's1' }], skipped: [] },
+      sessions: [{ id: 's1', cwd: '/p' }],
+      claude: [recent, mine],
+      codex: [{ id: 'x1', mtimeMs: Date.now() - 1000, preview: 'exec' }],
+      lastSids: { s1: 'mine' }
+    });
+    await ctx.App.restoreSessions();
+    await ctx.App.afterSessionRestore({ restored: [{ id: 's1' }], skipped: [] });
+    const go = ctx.holder.children[0].children.find((c) => c.className === 'rb-go');
+    go.onclick();
+    t.check('훅이 기록한 세션을 우선 제안한다', ctx.resumed[0] && ctx.resumed[0][0] === 'mine', JSON.stringify(ctx.resumed));
   }
 
   // ── 배너 걷힘: 직접 입력 / 실행 시작 ──

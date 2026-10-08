@@ -31,12 +31,18 @@ event=$(printf '%s' "$input" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:spac
 # Claude 세션 UUID — 채팅 뷰가 어느 jsonl 을 tail 할지 아는 열쇠
 sid=$(printf '%s' "$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 dir="$HOME/.terminal-assistance/hooks/state"
+last_dir="$HOME/.terminal-assistance/hooks/last"
 mkdir -p "$dir" 2>/dev/null
 file="$dir/$TA_SESSION_ID.json"
 ts=$(($(date +%s) * 1000))
 write_state() {
   tmp="$file.tmp.$$"
   printf '{"state":"%s","ts":%s,"sid":"%s"}' "$1" "$ts" "$sid" > "$tmp" 2>/dev/null && mv -f "$tmp" "$file" 2>/dev/null
+  # 마지막 Claude 세션 UUID — 앱 재시작 후에도 남아 '이어서 하기'가 정확한 세션을 고르게 한다
+  if [ -n "$sid" ]; then
+    mkdir -p "$last_dir" 2>/dev/null
+    printf '%s' "$sid" > "$last_dir/$TA_SESSION_ID" 2>/dev/null
+  fi
 }
 case "$event" in
   UserPromptSubmit)
@@ -74,6 +80,12 @@ try {
     # Set-Content -Encoding utf8 은 PS 5.1 에서 BOM 을 붙인다 — 읽는 쪽 JSON 파서가 깨지므로 BOM 없이 쓴다
     [System.IO.File]::WriteAllText($tmp, $body, (New-Object System.Text.UTF8Encoding($false)))
     Move-Item -Force $tmp $file
+    # 마지막 Claude 세션 UUID — 앱 재시작 후에도 남아 '이어서 하기'가 정확한 세션을 고르게 한다
+    if ($j.session_id) {
+      $lastDir = Join-Path $env:USERPROFILE ".terminal-assistance\hooks\last"
+      New-Item -ItemType Directory -Force -Path $lastDir | Out-Null
+      [System.IO.File]::WriteAllText((Join-Path $lastDir $env:TA_SESSION_ID), "$($j.session_id)", (New-Object System.Text.UTF8Encoding($false)))
+    }
   }
   switch ($j.hook_event_name) {
     "UserPromptSubmit" {
@@ -117,11 +129,46 @@ pub fn clean_state_dir() {
     }
 }
 
+/// 터미널 세션별 마지막 Claude 세션 UUID 보관소. state 와 달리 앱 재시작에도 지우지 않는다 —
+/// 복원된 터미널 세션은 같은 id 로 되살아나므로 이 기록으로 이어갈 대화를 정확히 찾는다.
+fn last_dir() -> Option<PathBuf> {
+    home().ok().map(|h| hooks_dir(&h).join("last"))
+}
+
 pub fn remove_state(session_id: &str) {
     if let Some(dir) = state_dir() {
         let _ = fs::remove_file(dir.join(format!("{}.json", session_id)));
         let _ = fs::remove_file(dir.join(format!("{}.prompt", session_id)));
     }
+    // 사용자가 닫은 세션은 되살아나지 않으므로 기록도 함께 지운다
+    if let Some(dir) = last_dir() {
+        let _ = fs::remove_file(dir.join(session_id));
+    }
+}
+
+/// 복원 후 호출 — 되살아나지 않은 세션의 마지막 UUID 기록을 정리한다
+pub fn prune_last_sessions(keep: &std::collections::HashSet<String>) {
+    let Some(dir) = last_dir() else { return };
+    let Ok(entries) = fs::read_dir(&dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        if !name.to_str().is_some_and(|n| keep.contains(n)) {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+}
+
+/// 이 터미널 세션에서 마지막으로 돌던 Claude 세션 UUID (재시작 후 '이어서 하기' 대상 식별용)
+#[tauri::command]
+pub fn last_claude_session(session_id: String) -> Option<String> {
+    // 앱이 만든 id 형태(영숫자·-·_)만 받는다 — `C:foo` 같은 드라이브 상대 경로도 막는다
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+    let text = fs::read_to_string(last_dir()?.join(&session_id)).ok()?;
+    let sid = text.trim_start_matches('\u{feff}').trim();
+    // UUID 형태만 받는다 — 이 값은 `claude --resume` 인자로 쓰인다
+    (!sid.is_empty() && sid.chars().all(|c| c.is_ascii_hexdigit() || c == '-')).then(|| sid.to_string())
 }
 
 /// 프롬프트 기록에서 읽는 꼬리 분량 — 파일은 세션 동안 계속 자라므로 끝부분만 본다

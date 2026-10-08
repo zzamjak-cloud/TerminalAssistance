@@ -501,6 +501,8 @@ fn restore_sessions(
     }
     // 건너뛴 항목이 저장 목록에 계속 남아 매 실행 경고를 반복하지 않도록 정리한다
     save_session_layout(&store, &ptys);
+    let keep: std::collections::HashSet<String> = restored.iter().map(|r| r.id.clone()).collect();
+    hooks::prune_last_sessions(&keep);
     json!({ "restored": restored, "skipped": skipped, "alreadyRunning": false })
 }
 
@@ -1099,6 +1101,7 @@ fn main() {
             pty::list_shells,
             hooks::hooks_status,
             hooks::claude_session_of,
+            hooks::last_claude_session,
             hooks::hook_prompt,
             hooks::set_claude_hooks,
             hooks::set_codex_hooks,
