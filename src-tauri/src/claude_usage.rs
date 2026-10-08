@@ -1,5 +1,6 @@
 // Claude Code 남은 사용량 조회 — 코덱스와 달리 Claude Code 는 사용률을 로컬 파일에 남기지 않는다.
-// 그래서 ~/.claude/.credentials.json 에 저장된 OAuth 액세스 토큰으로 Anthropic 사용량 API
+// 그래서 Claude Code 의 OAuth 액세스 토큰(~/.claude/.credentials.json, macOS 는 키체인
+// 'Claude Code-credentials')으로 Anthropic 사용량 API
 // (GET /api/oauth/usage) 를 직접 조회한다. 토큰 갱신은 Claude Code 본체가 하므로 앱은 읽기만 한다
 // (앱이 갱신하면 회전된 refresh 토큰 때문에 Claude Code 로그인이 풀릴 수 있다).
 // 조회에 실패해도 마지막 성공값을 계속 돌려주고, 실패 이유(error)와 재시도 시각을 함께 실어 보낸다.
@@ -104,9 +105,65 @@ struct OAuth {
 }
 
 /// 자격 증명 읽기 — 읽기 전용. 갱신은 Claude Code 본체 담당이다.
+/// macOS 의 Claude Code 는 파일 대신 키체인에 같은 JSON 을 저장하므로 파일이 없으면 키체인을 본다.
 fn oauth() -> Option<OAuth> {
-    let txt = fs::read_to_string(home_dir()?.join(".claude").join(".credentials.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    let file = home_dir().and_then(|h| fs::read_to_string(h.join(".claude").join(".credentials.json")).ok());
+    if let Some(o) = file.as_deref().and_then(parse_oauth) {
+        return Some(o);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        keychain_oauth()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+const KEYCHAIN_REFRESH_MS: u64 = 60_000; // 키체인 재조회 간격 — 폴링마다 프로세스를 띄우지 않는다
+#[cfg(target_os = "macos")]
+const KEYCHAIN_FAIL_MS: u64 = 30 * 60_000; // 실패(항목 없음·접근 거부) 뒤 대기 — 거부 대화상자 반복 방지
+
+#[cfg(target_os = "macos")]
+struct KeychainCache {
+    text: Option<String>,
+    next_read_ms: u64,
+}
+
+#[cfg(target_os = "macos")]
+static KEYCHAIN: Mutex<KeychainCache> = Mutex::new(KeychainCache { text: None, next_read_ms: 0 });
+
+/// 키체인의 Claude Code 자격 증명. 캐시해 두고 주기적으로, 또는 캐시한 토큰이 만료됐을 때 다시 읽는다.
+/// 락을 쥔 채 읽어 동시 폴링이 접근 허용 대화상자를 겹쳐 띄우지 않게 한다.
+#[cfg(target_os = "macos")]
+fn keychain_oauth() -> Option<OAuth> {
+    let mut c = plock(&KEYCHAIN);
+    let now = now_ms();
+    let cached = c.text.as_deref().and_then(parse_oauth);
+    let expired = cached.as_ref().is_some_and(|o| o.expires_at_ms.is_some_and(|t| t <= now));
+    if now < c.next_read_ms && !(expired && c.text.is_some()) {
+        return cached;
+    }
+    let out = std::process::Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            c.text = String::from_utf8(o.stdout).ok().map(|t| t.trim().to_string());
+            c.next_read_ms = now + KEYCHAIN_REFRESH_MS;
+        }
+        _ => {
+            c.text = None;
+            c.next_read_ms = now + KEYCHAIN_FAIL_MS;
+        }
+    }
+    c.text.as_deref().and_then(parse_oauth)
+}
+
+fn parse_oauth(txt: &str) -> Option<OAuth> {
+    let v: serde_json::Value = serde_json::from_str(txt).ok()?;
     let o = v.get("claudeAiOauth")?;
     Some(OAuth {
         token: o.get("accessToken")?.as_str()?.to_string(),
@@ -251,7 +308,8 @@ fn view(st: &State, now_secs: u64) -> ClaudeUsage {
 #[tauri::command]
 pub async fn claude_usage() -> Option<ClaudeUsage> {
     let now = now_ms();
-    let cred = oauth();
+    // 키체인 조회는 외부 프로세스를 띄우므로 블로킹 스레드에서 읽는다
+    let cred = tauri::async_runtime::spawn_blocking(oauth).await.ok().flatten();
     {
         let mut g = plock(&STATE);
         let st = g.get_or_insert_with(State::default);
@@ -293,6 +351,15 @@ pub async fn claude_usage() -> Option<ClaudeUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_oauth_credentials() {
+        // 파일·키체인 모두 같은 JSON 형태
+        let o = parse_oauth(r#"{"claudeAiOauth":{"accessToken":"t","expiresAt":5,"subscriptionType":"max"}}"#).unwrap();
+        assert_eq!((o.token.as_str(), o.expires_at_ms, o.plan.as_deref()), ("t", Some(5), Some("max")));
+        assert!(parse_oauth("{}").is_none());
+        assert!(parse_oauth("not json").is_none());
+    }
 
     #[test]
     fn parses_rfc3339_offsets() {
