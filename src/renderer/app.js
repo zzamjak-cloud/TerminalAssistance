@@ -1143,17 +1143,27 @@ const App = {
     if (id !== App.state.activeId) App.activateSession(id, { noFocus: true });
     const command = await App.expandPresetCommand(preset.command, undefined, id);
     if (command === null) return;
-    if (execute) {
-      ta.write(id, command + '\r');
-      TerminalView.resetTypedLine(id);
-    } else {
-      TerminalView.paste(id, command);
-    }
     // 프리셋 클릭 후에는 작성기가 아니라 터미널에 포커스를 둔다 —
     // /model 처럼 즉시 방향키 선택이 필요한 대화형 명령이 바로 조작 가능해야 한다.
     TerminalView.activate(id, { noFocus: true });
     TerminalView.focusTerminal(id);
+    if (execute) {
+      // 명령과 Enter 는 따로, 간격을 두고 쓴다. 한 덩어리로 쓰면 TUI 가 빠른 입력 묶음을 붙여넣기로 보고
+      // 끝의 Enter 를 줄바꿈으로 넣는다 — 긴 '! cmd //c start ...' 프리셋이 실행되지 않던 원인(실측).
+      // Claude Code 는 30ms 간격이면 충분하지만 Codex 는 붙여넣기 직후 약 120ms 안의 Enter 를 줄바꿈으로 처리한다.
+      ta.write(id, command);
+      TerminalView.resetTypedLine(id);
+      await new Promise((r) => setTimeout(r, App.PRESET_ENTER_DELAY_MS));
+      if (!TerminalView.views.has(id)) return;
+      ta.write(id, '\r');
+      TerminalView.resetTypedLine(id);
+    } else {
+      TerminalView.paste(id, command);
+    }
   },
+
+  // 프리셋 즉시 실행 시 명령 쓰기와 Enter 사이 간격 (Codex 붙여넣기 판정 창보다 넉넉하게)
+  PRESET_ENTER_DELAY_MS: 250,
 
   async runRecipe(recipe) {
     const commands = (recipe.commands || []).map((c) => c.trim()).filter(Boolean);
