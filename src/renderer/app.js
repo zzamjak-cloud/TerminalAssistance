@@ -694,17 +694,23 @@ const App = {
     App.renderUsageGauge('panel-claude', 'Claude', u, installed);
   },
 
-  // ── 시스템 메모리 폴링 (상단바 표시) ──
+  // ── 시스템 CPU·메모리 폴링 (상단바 표시) ──
   async pollStatus() {
     App.refreshBranch(); // 같은 2초 주기에 브랜치도 함께 갱신 (checkout 반영)
     try {
       const m = await ta.getMemory();
-      let cls = 'ok';                       // < 60% : 원활 (녹색)
-      if (m.pct >= 85) cls = 'crit';        // ≥ 85% : 위험 (빨강, 점멸)
-      else if (m.pct >= 75) cls = 'warn';   // ≥ 75% : 버거움 (주황)
-      else if (m.pct >= 60) cls = 'mid';    // ≥ 60% : 주의 (노랑)
+      const level = (pct) => {
+        if (pct >= 85) return 'crit';       // ≥ 85% : 위험 (빨강, 점멸)
+        if (pct >= 75) return 'warn';       // ≥ 75% : 버거움 (주황)
+        if (pct >= 60) return 'mid';        // ≥ 60% : 주의 (노랑)
+        return 'ok';                        // < 60% : 원활 (녹색)
+      };
+      const cpuEl = document.getElementById('panel-cpu');
+      cpuEl.className = 'gauge ' + level(m.cpu);
+      cpuEl.textContent = `cpu ${m.cpu}%`;
+      cpuEl.title = `시스템 CPU 사용률 ${m.cpu}%`;
       const el = document.getElementById('panel-mem');
-      el.className = 'gauge ' + cls;
+      el.className = 'gauge ' + level(m.pct);
       el.textContent = `mem ${m.pct}%`;
       el.title = `시스템 메모리 ${m.usedGb} / ${m.totalGb} GB`;
     } catch (_) { /* 조회 실패는 무시 */ }

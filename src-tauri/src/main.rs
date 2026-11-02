@@ -46,13 +46,16 @@ fn get_state(store: StoreState, ptys: State<PtyManager>) -> serde_json::Value {
     })
 }
 
-// ── 시스템 메모리 현황 (헤더 표시용) ──
+// ── 시스템 CPU·메모리 현황 (헤더 표시용) ──
 type MemState = Mutex<sysinfo::System>;
 
 #[tauri::command]
 fn get_memory(mem: State<MemState>) -> serde_json::Value {
     let mut s = plock(&mem);
     s.refresh_memory();
+    // CPU 사용률은 직전 refresh 와의 차이로 계산되므로 2초 폴링 간격이 곧 측정 구간이 된다
+    s.refresh_cpu_usage();
+    let cpu = s.global_cpu_usage().round() as u32;
     let total = s.total_memory();
     let used = s.used_memory();
     let pct = if total > 0 {
@@ -62,6 +65,7 @@ fn get_memory(mem: State<MemState>) -> serde_json::Value {
     };
     json!({
         "pct": pct,
+        "cpu": cpu,
         "usedGb": (used as f64 / GIB * 10.0).round() / 10.0,
         "totalGb": (total as f64 / GIB * 10.0).round() / 10.0
     })
