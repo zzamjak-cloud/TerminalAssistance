@@ -4583,13 +4583,15 @@ dependencies = [
 
 [[package]]
 name = "terminal-assistance"
-version = "0.19.14"
+version = "0.19.15"
 dependencies = [
  "axum",
  "futures-util",
  "getrandom 0.2.17",
  "image",
  "mac-notification-sys",
+ "objc2",
+ "objc2-foundation",
  "portable-pty",
  "qrcode",
  "serde",

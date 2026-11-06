@@ -7,6 +7,8 @@ mod codex;
 mod explorer;
 mod hooks;
 mod images;
+#[cfg(target_os = "macos")]
+mod notify_macos;
 mod plans;
 mod pty;
 mod remote;
@@ -802,9 +804,6 @@ fn show_clickable_notification(
         .map_err(|e| e.to_string())
 }
 
-// macOS: 클릭 응답을 받으려면 wait_for_click 로 보내야 하는데, 그러면 사용자가 누르거나
-// 알림이 사라질 때까지 전송 호출이 블록된다. mac-notification-sys 는 메인 스레드 밖
-// 호출을 지원하므로(콜백은 메인 런루프가 받아 조건변수로 깨운다) 전용 스레드에서 보낸다.
 #[cfg(target_os = "macos")]
 fn show_clickable_notification(
     app: &AppHandle,
@@ -812,30 +811,7 @@ fn show_clickable_notification(
     body: String,
     session_id: Option<String>,
 ) -> Result<(), String> {
-    let handle = app.clone();
-    let identifier = app.config().identifier.clone();
-    let app_icon = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|dir| dir.join("icon.icns"))
-        .filter(|p| p.exists())
-        .map(|p| p.to_string_lossy().into_owned());
-    std::thread::spawn(move || {
-        // 번들 식별자 지정 — 내부적으로 최초 1회만 적용되고 이후 호출은 무시된다
-        let _ = mac_notification_sys::set_application(&identifier);
-        let mut n = mac_notification_sys::Notification::new();
-        n.title(title.as_str())
-            .message(body.as_str())
-            .wait_for_click(true);
-        if let Some(icon) = app_icon.as_deref() {
-            n.app_icon(icon);
-        }
-        if let Ok(mac_notification_sys::NotificationResponse::Click) = n.send() {
-            reveal_session(&handle, session_id);
-        }
-    });
-    Ok(())
+    notify_macos::show(app, title, body, session_id)
 }
 
 // 그 외 플랫폼: 클릭 처리 없이 기존 플러그인 경로를 그대로 쓴다
@@ -1011,6 +987,8 @@ fn main() {
         .manage(MemState::new(sysinfo::System::new()))
         .manage(remote::RemoteHub::new())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            notify_macos::init(app.handle(), &app.config().identifier);
             let config_dir = app.path().app_config_dir()?;
             app.manage(Mutex::new(Store::load(config_dir)));
             let ptys = app.state::<PtyManager>();

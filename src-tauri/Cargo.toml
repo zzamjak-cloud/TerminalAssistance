@@ -1,6 +1,6 @@
 [package]
 name = "terminal-assistance"
-version = "0.19.14"
+version = "0.19.15"
 description = "AI 시대의 멀티 프로젝트 터미널 워크스페이스"
 authors = ["zzamjak-cloud"]
 license = "GPL-3.0-only"
@@ -50,9 +50,12 @@ webview2-com = "0.38"
 # 데스크톱 알림 직접 발행 — 플러그인의 show() 는 클릭 콜백이 없어 토스트 Activated 를 못 받는다
 tauri-winrt-notification = "0.7"
 
-# macOS 알림 직접 발행 — 클릭 응답(wait_for_click)을 받기 위해 플러그인 대신 직접 쓴다
+# macOS 알림 직접 발행 — 클릭 콜백을 받기 위해 플러그인 대신 델리게이트를 직접 등록한다.
+# mac-notification-sys 는 미등록 dev 실행용 번들 ID 훅(set_application)에만 쓴다
 [target."cfg(target_os = \"macos\")".dependencies]
 mac-notification-sys = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
 
 [profile.release]
 # 諛고룷 諛붿씠?덈━ 理쒖냼??strip = true
