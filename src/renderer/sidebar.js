@@ -33,6 +33,30 @@ function initSidebarSort() {
   });
 }
 
+// 프로젝트 이름 검색 — 부분 일치(대소문자 무시). 헤더 입력은 리스트 재렌더와 분리돼 포커스가 유지된다
+let projectSearchQuery = '';
+let projectSearchReady = false;
+function initProjectSearch() {
+  if (projectSearchReady) return;
+  const input = document.getElementById('project-search');
+  const clear = document.getElementById('project-search-clear');
+  if (!input || !clear) return;
+  projectSearchReady = true;
+  const apply = () => {
+    projectSearchQuery = input.value.trim().toLowerCase();
+    clear.hidden = !input.value;
+    renderSidebar();
+  };
+  input.addEventListener('input', apply);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && input.value) { e.preventDefault(); e.stopPropagation(); input.value = ''; apply(); }
+  });
+  clear.addEventListener('click', () => { input.value = ''; apply(); input.focus(); });
+}
+function matchesProjectSearch(name) {
+  return !projectSearchQuery || String(name || '').toLowerCase().includes(projectSearchQuery);
+}
+
 let editingSessionId = null;
 let sidebarSessionRenameKeyReady = false;
 
@@ -163,6 +187,7 @@ function updateSessionStatus(s) {
 
 function renderSidebar() {
   initSidebarSessionRenameKeys();
+  initProjectSearch();
   const pendingRename = captureSessionRename(); // 진행 중이던 제목 편집 보존
   const list = document.getElementById('project-list');
   list.textContent = '';
@@ -226,8 +251,10 @@ function renderSidebar() {
 
   // ── '일반 터미널' 고정 블록 (목록 최상단) ──
   // 프로젝트에 속하지 않은 세션(홈 디렉토리 터미널)의 상주 프로젝트.
-  // 세션이 없어도 항상 표시 — 신규 일반 세션은 여기의 ＋ 로 추가한다.
-  {
+  // 세션이 없어도 항상 표시 — 신규 일반 세션은 여기의 ＋ 로 추가한다. (검색 중엔 이름이 일치할 때만)
+  let shownCount = 0;
+  if (matchesProjectSearch('일반 터미널')) {
+    shownCount++;
     const HOME_FOLD_KEY = '__home__'; // Collapsed 저장용 가상 id (실프로젝트 id 와 충돌 없음)
     const orphans = sessions.filter((s) => !s.projectId || !projects.some((p) => p.id === s.projectId));
     const folded = Collapsed.has(HOME_FOLD_KEY);
@@ -291,10 +318,27 @@ function renderSidebar() {
     list.appendChild(box);
   }
 
-  // 워크트리는 부모 바로 아래 들여쓰기로 붙는다 (부모를 접으면 함께 숨는다)
+  // 검색 중: 이름이 일치하는 프로젝트 + 일치하는 워크트리의 부모 + 일치하는 부모의 워크트리를 표시
+  const searching = !!projectSearchQuery;
+  const visibleIds = new Set();
+  if (searching) {
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    for (const p of projects) {
+      if (!matchesProjectSearch(p.name)) continue;
+      visibleIds.add(p.id);
+      if (p.parentId && byId.has(p.parentId)) visibleIds.add(p.parentId);
+    }
+    for (const p of projects) {
+      if (p.parentId && visibleIds.has(p.parentId) && matchesProjectSearch(byId.get(p.parentId).name)) visibleIds.add(p.id);
+    }
+  }
+
+  // 워크트리는 부모 바로 아래 들여쓰기로 붙는다 (부모를 접으면 함께 숨는다 — 검색 중엔 일치 항목을 보이도록 무시)
   for (const { project: p, depth } of orderProjectsWithWorktrees(projects)) {
     const isWorktree = depth > 0;
-    if (isWorktree && Collapsed.has(p.parentId)) continue;
+    if (searching && !visibleIds.has(p.id)) continue;
+    if (!searching && isWorktree && Collapsed.has(p.parentId)) continue;
+    shownCount++;
     const mySessions = sessions.filter((s) => s.projectId === p.id);
     const folded = Collapsed.has(p.id);
     // 현재 활성 세션이 이 프로젝트 소속(또는 빈 프로젝트 선택 중)이면 프로젝트 행도 파랑으로 강조
@@ -402,6 +446,13 @@ function renderSidebar() {
       for (const s of mySessions) box.appendChild(sessionRow(s));
     }
     list.appendChild(box);
+  }
+
+  if (searching && !shownCount) {
+    const empty = document.createElement('div');
+    empty.className = 'project-search-empty';
+    empty.textContent = '일치하는 프로젝트가 없습니다';
+    list.appendChild(empty);
   }
 
   initSidebarSort();
