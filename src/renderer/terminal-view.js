@@ -1226,6 +1226,10 @@ const TerminalView = {
           // IME 텍스트 경계를 넘어 지울 때는 textarea 변화 없이 keydown 만 온다 → DEL 폴백
           if (ev.keyCode !== 229 || ev.key !== 'Backspace') return;
           clearImeBackspaceFallback();
+          // 조합 중 백스페이스는 IME 가 조합 텍스트(아직 PTY 로 안 나간 글자)에서 자모를 지운다.
+          // 여기서 DEL 을 보내면 이미 확정된 앞 글자까지 지워진다 (조합 이벤트를 쓰는 macOS 웹뷰).
+          const chK = core._compositionHelper;
+          if (ev.isComposing || (chK && chK._isComposing)) return;
           if (deleteInputSerial !== handledDeleteInputSerial) {
             const deleteInputAge = Date.now() - lastDeleteInputAt;
             handledDeleteInputSerial = deleteInputSerial;
@@ -1235,7 +1239,9 @@ const TerminalView = {
           const fallbackBaseDeleteSerial = deleteInputSerial;
           imeBackspaceFallbackTimer = setTimeout(() => {
             imeBackspaceFallbackTimer = null;
-            if (!sawInput && deleteInputSerial === fallbackBaseDeleteSerial) {
+            const chT = core._compositionHelper;
+            const composingNow = !!(chT && chT._isComposing);
+            if (!sawInput && !composingNow && deleteInputSerial === fallbackBaseDeleteSerial) {
               core.coreService.triggerDataEvent('\x7f', true);
               mirrorTrimChar(); // 전송한 삭제를 미러에도 반영 — 남겨두면 diff 이중 삭제
               fallbackDeleteMirror = taEl.value;
