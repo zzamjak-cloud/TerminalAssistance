@@ -665,12 +665,27 @@ const TerminalView = {
     ta.openUrl(String(url)).catch((err) => console.warn('링크 열기 실패:', err));
   },
 
+  // 링크 판정 결과 캐시 — 호버마다 백엔드를 부르지 않게 (cwd + 후보 → 해석 결과)
+  _linkCache: new Map(),
+  LINK_CACHE_TTL: 15000,
+
   fileLinkProvider(term, sessionId) {
+    let seq = 0;
     return {
       provideLinks: (lineNo, cb) => {
-        let links = null;
-        try { links = this._computeFileLinks(term, sessionId, lineNo); } catch (_) {}
-        cb(links && links.length ? links : undefined);
+        const my = ++seq;
+        let done = false;
+        const reply = (links) => {
+          if (done) return;
+          done = true;
+          // 기다리는 사이 다른 줄을 물었다면 낡은 결과로 밑줄을 긋지 않는다
+          cb(my === seq && links && links.length ? links : undefined);
+        };
+        let p;
+        try { p = this._computeFileLinks(term, sessionId, lineNo); } catch (_) { return reply(null); }
+        if (!p || typeof p.then !== 'function') return reply(p);
+        p.then(reply, () => reply(null));
+        setTimeout(() => reply(null), 3000);
       }
     };
   },
@@ -693,20 +708,28 @@ const TerminalView = {
     return -1;
   },
 
-  // 터미널 래핑이 아니라 TUI(Claude Code 등)가 스스로 끊어 출력한 긴 경로를 잇기 위한 판정.
-  // 앞 줄이 화면 폭 가까이에서 '/' 로 끝나고 다음 줄이 들여쓰기 뒤 경로 문자로 시작하면
-  // 이어진 경로로 보고, 다음 줄에서 건너뛸 셀 수(들여쓰기 폭)를 돌려준다. 아니면 -1.
-  _softJoinSkip(term, buf, aRow, bRow, cell) {
+  // 내용 뒤에 '쓰인' 공백 셀이 있는가 — Claude TUI 는 단어 경계에서 끊을 때 공백을 남긴다.
+  // 지워진 빈 셀(getChars '')은 공백으로 치지 않는다.
+  _hasTrailingSpace(line, lastCol, cell) {
+    if (lastCol < 0 || lastCol + 1 >= line.length) return false;
+    const c = cell ? line.getCell(lastCol + 1, cell) : line.getCell(lastCol + 1);
+    return !!(c && c.getChars && c.getChars() === ' ');
+  },
+
+  // 터미널 래핑이 아니라 TUI(Claude Code·Codex)가 스스로 끊어 출력한 줄을 잇기 위한 판정.
+  // 앞 줄이 화면 폭 가까이까지 차 있고 경로 문자로 끝나며, 다음 줄이 들여쓰기 뒤 경로 문자로
+  // 시작하면 이어진 줄로 본다. 잘못 이어도 실재하지 않는 경로는 링크가 되지 않으므로 넉넉히 잇는다.
+  // 반환: { skip: 다음 줄에서 건너뛸 셀 수, sep: 이을 때 끼울 문자 } 또는 null
+  _softJoin(term, buf, aRow, bRow, cell) {
     const a = buf.getLine(aRow);
     const b = buf.getLine(bRow);
-    if (!a || !b) return -1;
+    if (!a || !b || b.isWrapped) return null;
     const lastCol = this._lastContentCol(a, cell);
-    // 폭이 모자라 끊긴 줄만 대상 — 짧게 끝난 줄은 진짜 줄바꿈이다
-    if (lastCol < 0 || lastCol + 1 < Math.max(20, Math.floor(term.cols * 0.5))) return -1;
+    if (lastCol < 0) return null;
     let tail = '';
     for (let x = Math.max(0, lastCol - 128); x <= lastCol; x++) tail += this._cellChar(a, x, cell);
     const m = tail.match(/[\p{L}\p{N}._$@%+~=:\\/-]+$/u);
-    if (!m || m[0].length < 4 || !/[\\/]$/.test(m[0]) || !/[\p{L}\p{N}]/u.test(m[0])) return -1;
+    if (!m || m[0].length < 2 || !/[\p{L}\p{N}]/u.test(m[0])) return null;
 
     let x = 0;
     let indented = false;
@@ -716,7 +739,7 @@ const TerminalView = {
       if (ch === ' ') { indented = true; x++; continue; }
       break;
     }
-    if (!indented || x >= b.length) return -1;
+    if (!indented || x >= b.length) return null;
     if ('│┃┆┊'.indexOf(this._cellChar(b, x, cell)) >= 0) { // 세로 장식선 한 칸은 건너뛴다
       x++;
       while (x < b.length) {
@@ -725,8 +748,20 @@ const TerminalView = {
         break;
       }
     }
-    if (x >= b.length || !/[\p{L}\p{N}._$@%+~=\\/-]/u.test(this._cellChar(b, x, cell))) return -1;
-    return x;
+    if (x >= b.length || !/[\p{L}\p{N}._$@%+~=\\/-]/u.test(this._cellChar(b, x, cell))) return null;
+    // 짧게 끝난 줄은 보통 진짜 줄바꿈이다. 다만 다음 줄 첫 단어가 앞 줄 남은 폭에 들어가지 않으면
+    // TUI 의 단어 단위 줄바꿈이다 ("~/Library/Application " ↵ "Support/…").
+    if (lastCol + 1 < Math.max(20, Math.floor(term.cols * 0.5))) {
+      let w = 0;
+      for (let k = x; k < b.length; k++) {
+        const ch = this._cellChar(b, k, cell);
+        if (ch === ' ') break;
+        w++;
+      }
+      if (lastCol + 2 + w <= term.cols - 2) return null;
+    }
+    const sep = TermLinks.joinSep(m[0], this._hasTrailingSpace(a, lastCol, cell), lastCol, term.cols);
+    return { skip: x, sep, sepAt: { y: aRow, x: lastCol + 1 } };
   },
 
   // row 가 속한 래핑 논리 줄의 [첫 행, 끝 행]
@@ -743,35 +778,32 @@ const TerminalView = {
       if (!line || !line.isWrapped) break;
       end++;
     }
-    return { start, end, skip: 0 };
+    return { start, end, skip: 0, join: null };
   },
 
-  // 물리 줄이 아니라 래핑을 잇댄 논리 줄 전체에서 경로를 찾는다 (긴 경로가 줄바꿈돼도 인식).
-  // TUI 가 직접 끊어 출력한 경로(줄 끝 '/' + 다음 줄 들여쓰기)도 한 덩어리로 잇는다.
-  // 와이드 문자(한글)는 셀 2칸을 차지해 문자열 인덱스 ≠ 열 이므로,
-  // 코드유닛마다 (행, 열) 좌표를 기록해 정확한 버퍼 범위로 되돌린다.
-  _computeFileLinks(term, sessionId, lineNo) {
-    const buf = term.buffer && term.buffer.active;
-    if (!buf) return null;
-    const cell = typeof buf.getNullCell === 'function' ? buf.getNullCell() : null;
+  // 물리 줄이 아니라 래핑·TUI 줄바꿈을 이은 논리 줄 텍스트와 (코드유닛 → 버퍼 좌표) 표.
+  // 와이드 문자(한글)는 셀 2칸을 차지해 문자열 인덱스 ≠ 열 이므로 좌표를 따로 기록한다.
+  _logicalText(term, buf, lineNo, cell) {
     const groups = [this._wrappedRange(buf, lineNo - 1)];
     while (groups.length < 5) { // 아래쪽으로 이어붙이기
       const last = groups[groups.length - 1];
       const next = last.end + 1;
       if (next >= buf.length) break;
-      const skip = this._softJoinSkip(term, buf, last.end, next, cell);
-      if (skip < 0) break;
+      const j = this._softJoin(term, buf, last.end, next, cell);
+      if (!j) break;
       const g = this._wrappedRange(buf, next);
-      g.skip = skip;
+      g.skip = j.skip;
+      g.join = j;
       groups.push(g);
     }
     while (groups.length < 5) { // 위쪽으로 이어붙이기
       const first = groups[0];
       const prev = first.start - 1;
       if (prev < 0) break;
-      const skip = this._softJoinSkip(term, buf, prev, first.start, cell);
-      if (skip < 0) break;
-      first.skip = skip;
+      const j = this._softJoin(term, buf, prev, first.start, cell);
+      if (!j) break;
+      first.skip = j.skip;
+      first.join = j;
       groups.unshift(this._wrappedRange(buf, prev));
     }
     // 비정상적으로 긴 논리 줄은 비용 때문에 건너뛴다
@@ -779,6 +811,7 @@ const TerminalView = {
     let text = '';
     const map = []; // text 코드유닛 인덱스 → { y, x } (0-based 버퍼 좌표)
     for (const g of groups) {
+      if (g.join && g.join.sep) { text += g.join.sep; map.push(g.join.sepAt); }
       for (let y = g.start; y <= g.end; y++) {
         const line = buf.getLine(y);
         if (!line) break;
@@ -793,34 +826,92 @@ const TerminalView = {
         }
       }
     }
-    const links = [];
-    const re = this.FILE_LINK_RE;
-    re.lastIndex = 0;
-    let m;
-    while ((m = re.exec(text))) {
-      const matched = m[0]
-        .replace(/[.,;'"”’]+$/, '') // 문장 끝 문장부호 꼬리 제거
-        .replace(this.FILE_LINK_TAIL_RE, '$1'); // 확장자에 바로 붙은 조사 제거
-      if (matched.length < 3 || !/\p{L}/u.test(matched)) continue;
-      // 직전에 공백 없이 URL 스킴(://)이 이어지면 URL 의 일부 — WebLinksAddon 에 맡긴다
-      // 매치가 '/' 로 시작하면 그 슬래시까지 붙여서 본다 — https:/ + / 처럼 스킴이 쪼개지지 않게
-      const before = text.slice(Math.max(0, m.index - 64), m.index)
-        + (/^[\\/]/.test(matched) ? matched[0] : '');
-      if (/[A-Za-z][\w+.-]*:\/\/\S*$/.test(before)) continue;
-      const startIdx = m.index;
-      const endIdx = m.index + matched.length - 1;
-      if (!map[startIdx] || !map[endIdx]) continue;
-      links.push({
-        range: {
-          start: { x: map[startIdx].x + 1, y: map[startIdx].y + 1 },
-          end: { x: map[endIdx].x + 1, y: map[endIdx].y + 1 }
-        },
-        text: matched,
-        decorations: { pointerCursor: true, underline: true },
-        activate: (_ev, linkText) => App.openFileLinkPreview(sessionId, linkText)
+    return { text, map };
+  },
+
+  // 화면 주변(±60행)에 GitHub 언급이 있는가 — owner/repo 축약형을 GitHub 링크로 볼지 판단
+  _githubContext(buf, row, cell) {
+    const from = Math.max(0, row - 60);
+    const to = Math.min(buf.length - 1, row + 60);
+    for (let y = from; y <= to; y++) {
+      const line = buf.getLine(y);
+      if (line && /github|깃허브|깃헙/i.test(line.translateToString(true))) return true;
+    }
+    return false;
+  },
+
+  _sessionCwd(sessionId) {
+    const session = App.state.sessions.find((x) => x.id === sessionId);
+    return (session && session.cwd) || App.claudeCwd() || '';
+  },
+
+  // 후보 경로들을 실제 파일·폴더로 해석 (캐시 → 남은 것만 백엔드 일괄 조회)
+  async _resolveLinkPaths(cwd, paths) {
+    const now = Date.now();
+    const result = new Map();
+    const missing = [];
+    for (const p of paths) {
+      const hit = this._linkCache.get(cwd + '\n' + p);
+      if (hit && now - hit.t < this.LINK_CACHE_TTL) result.set(p, hit.v);
+      else missing.push(p);
+    }
+    if (missing.length) {
+      let resolved = [];
+      try { resolved = await ta.resolveLinkCandidates(cwd, missing); } catch (_) {}
+      if (this._linkCache.size > 3000) this._linkCache.clear();
+      missing.forEach((p, i) => {
+        const v = (resolved && resolved[i]) || null;
+        this._linkCache.set(cwd + '\n' + p, { v, t: now });
+        result.set(p, v);
       });
     }
-    return links;
+    return result;
+  },
+
+  // 링크 후보 → 실존하는 파일·폴더, 스킴 없는 웹 주소, GitHub owner/repo, TUI 가 끊은 긴 URL.
+  // 존재하지 않는 'a/b' 단어에는 밑줄을 긋지 않는다.
+  async _computeFileLinks(term, sessionId, lineNo) {
+    const buf = term.buffer && term.buffer.active;
+    if (!buf) return null;
+    const cell = typeof buf.getNullCell === 'function' ? buf.getNullCell() : null;
+    const logical = this._logicalText(term, buf, lineNo, cell);
+    if (!logical) return null;
+    const { text, map } = logical;
+    const cands = TermLinks.candidates(text, this.FILE_LINK_RE, this.FILE_LINK_TAIL_RE)
+      .filter((c) => map[c.start] && map[c.end]);
+    const urls = TermLinks.urls(text, (i) => (map[i] ? map[i].y : -1))
+      .filter((u) => map[u.start] && map[u.end]);
+    if (!cands.length && !urls.length) return null;
+
+    const cwd = this._sessionCwd(sessionId);
+    const resolved = cands.length
+      ? await this._resolveLinkPaths(cwd, [...new Set(cands.map((c) => c.path))])
+      : new Map();
+    let ghCtx = null;
+    const items = [];
+    for (const c of cands) {
+      const r = resolved.get(c.path);
+      if (r) { items.push(Object.assign({ target: r }, c)); continue; }
+      if (ghCtx === null) ghCtx = this._githubContext(buf, lineNo - 1, cell);
+      const url = TermLinks.webUrlFor(c.path, ghCtx);
+      if (url) items.push(Object.assign({ url }, c));
+    }
+    for (const u of urls) items.push(u);
+    const lineRow = lineNo - 1;
+    return TermLinks.pickNonOverlapping(items)
+      // xterm 은 이 줄에 걸친 링크만 쓰지만, 다른 줄 링크를 섞으면 겹침 판정이 흔들린다
+      .filter((it) => map[it.start].y <= lineRow && map[it.end].y >= lineRow)
+      .map((it) => ({
+        range: {
+          start: { x: map[it.start].x + 1, y: map[it.start].y + 1 },
+          end: { x: map[it.end].x + 1, y: map[it.end].y + 1 }
+        },
+        text: text.slice(it.start, it.end + 1),
+        decorations: { pointerCursor: true, underline: true },
+        activate: () => (it.url
+          ? this.openExternalUrl(it.url)
+          : App.openResolvedLink(it.target, it.line))
+      }));
   },
 
   // opts.frozen: 복구(스크롤백 주입) 완료 전까지 라이브 출력을 큐에 보관
@@ -838,10 +929,21 @@ const TerminalView = {
       // OSC 8 하이퍼링크(Codex 등이 쓰는 이스케이프)는 WebLinksAddon 이 아니라 xterm 내장
       // OscLinkProvider 가 처리한다. linkHandler 를 주지 않으면 confirm() + window.open()
       // 폴백으로 떨어져 Tauri 웹뷰에서는 아무것도 열리지 않는다 — 외부 브라우저로 연결한다.
-      linkHandler: { activate: (_ev, uri) => this.openExternalUrl(uri) }
+      // file:// · 절대경로 하이퍼링크는 브라우저가 아니라 파일 미리보기로 연다.
+      linkHandler: {
+        activate: (_ev, uri) => (/^(?:file:|[\\/~]|[A-Za-z]:[\\/])/.test(String(uri))
+          ? App.openFileLinkPreview(session.id, String(uri))
+          : this.openExternalUrl(uri))
+      }
     }, this.readabilityOptions()));
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
+    // 파일 링크 provider 를 WebLinksAddon 보다 먼저 등록한다 — xterm 은 앞선 provider 의 링크를 우선하므로,
+    // TUI 가 여러 줄로 끊은 URL 의 첫 줄에서 WebLinksAddon 의 잘린 URL 이 이기지 않게 한다.
+    let fileLinkDisposable = null;
+    try {
+      fileLinkDisposable = term.registerLinkProvider(this.fileLinkProvider(term, session.id));
+    } catch (_) {}
     term.loadAddon(new WebLinksAddon.WebLinksAddon((_, url) => this.openExternalUrl(url)));
     term.open(holder);
     const richCopyHandler = (ev) => this.copySelectionAsHtml(term, ev);
@@ -1024,10 +1126,7 @@ const TerminalView = {
     holder.addEventListener('contextmenu', contextMenuHandler);
 
     // ── 파일 경로 링크: 클릭하면 미리보기 팝업 (URL 은 WebLinksAddon 이 처리) ──
-    let linkDisposable = null;
-    try {
-      linkDisposable = term.registerLinkProvider(this.fileLinkProvider(term, session.id));
-    } catch (_) {}
+    const linkDisposable = fileLinkDisposable;
 
     // ── 한글 등 IME 조합 입력 보정 (xterm 5.5.0) ──
     // xterm 은 조합 커밋 텍스트를 "compositionend 후 setTimeout 에 textarea 를 substring"
@@ -1353,6 +1452,13 @@ const TerminalView = {
           && typeof term.hasSelection === 'function' && term.hasSelection()) {
         ev.preventDefault();
         try { document.execCommand('copy'); } catch (_) {}
+        return false;
+      }
+      // Cmd/Ctrl+Shift+C: TUI 가 끊어 놓은 긴 명령어를 한 줄로 복사
+      if (mod && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'c'
+          && typeof term.hasSelection === 'function' && term.hasSelection()) {
+        ev.preventDefault();
+        void this.copySelectionOneLine(session.id);
         return false;
       }
       // Cmd/Ctrl+V: 클립보드에 이미지가 있으면 경로 첨부로 대체, 아니면 텍스트 붙여넣기
@@ -1885,6 +1991,68 @@ const TerminalView = {
       return v.lastSelection;
     }
     return '';
+  },
+
+  // 선택 영역의 물리 행 정보 — TUI 가 끊어 놓은 명령을 잇는 데 쓴다.
+  // 공개 좌표계가 엔진마다 0/1-based 로 달라 두 후보 중 getSelection() 과 맞는 쪽을 쓴다.
+  _selectionRows(term) {
+    const buf = term.buffer && term.buffer.active;
+    const pos = typeof term.getSelectionPosition === 'function' ? term.getSelectionPosition() : null;
+    if (!buf || !pos) return null;
+    const plain = String(term.getSelection() || '').replace(/\s+/g, '');
+    const cell = typeof buf.getNullCell === 'function' ? buf.getNullCell() : null;
+    for (const off of [0, -1]) {
+      const sx = Math.max(0, pos.start.x + off), sy = Math.max(0, pos.start.y + off);
+      const ex = Math.max(0, pos.end.x + off), ey = Math.max(0, pos.end.y + off);
+      if (ey < sy) continue;
+      const rows = [];
+      let ok = true;
+      for (let y = sy; y <= ey; y++) {
+        const line = buf.getLine(y);
+        if (!line) { ok = false; break; }
+        const from = y === sy ? sx : 0;
+        const to = y === ey ? Math.min(ex, line.length) : line.length;
+        let raw = '';
+        for (let x = from; x < to; x++) raw += this._cellChar(line, x, cell);
+        const lastCol = this._lastContentCol(line, cell);
+        rows.push({
+          raw,
+          body: raw.replace(/\s+$/, ''),
+          wrapped: y !== sy && !!line.isWrapped,
+          trailingSpace: this._hasTrailingSpace(line, lastCol, cell),
+          lastCol
+        });
+      }
+      if (ok && rows.map((r) => r.raw).join('').replace(/\s+/g, '') === plain) return rows;
+    }
+    return null;
+  },
+
+  // TUI 줄바꿈·들여쓰기를 걷어낸 한 줄 텍스트 (긴 명령어 복사용)
+  oneLineSelection(id) {
+    const v = this.views.get(id);
+    if (!v) return '';
+    const rows = this._selectionRows(v.term);
+    if (rows) return TermLinks.joinCommandRows(rows, v.term.cols);
+    // 버퍼 좌표를 못 맞추면(선택이 이미 사라짐 등) 텍스트만으로 근사한다
+    const text = this.getSelection(id, { allowCached: true });
+    if (!text) return '';
+    const lines = text.split(/\r?\n/);
+    return TermLinks.joinCommandRows(lines.map((l) => ({
+      raw: l, body: l.replace(/\s+$/, ''), wrapped: false, trailingSpace: /\s$/.test(l), lastCol: 0
+    })), Infinity);
+  },
+
+  async copySelectionOneLine(id) {
+    const text = this.oneLineSelection(id);
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      App.showToast('한 줄로 복사했습니다', 1500);
+      return true;
+    } catch (_) {
+      return false;
+    }
   },
 
   clearSelection(id) {

@@ -119,6 +119,7 @@
     movePath: (from, to) => invoke('move_path', { from, to }),
     // 터미널 파일 링크 해석: cwd/rel 직접 대응 → 단독 파일명이면 프로젝트 내 검색 (없으면 null)
     resolveProjectFile: (cwd, rel) => invoke('resolve_project_file', { cwd, rel }),
+    resolveLinkCandidates: (cwd, candidates) => invoke('resolve_link_candidates', { cwd, candidates }),
     write: (id, data) => invoke('write_session', { id, data }),
     resize: (id, cols, rows) => invoke('resize_session', { id, cols, rows }),
     closeSession: (id) => invoke('close_session', { id }),

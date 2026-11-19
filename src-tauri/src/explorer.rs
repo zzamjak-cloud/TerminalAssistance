@@ -114,6 +114,215 @@ pub async fn resolve_project_file(cwd: String, rel: String) -> Option<String> {
     None
 }
 
+#[derive(Serialize)]
+pub struct ResolvedLink {
+    path: String,
+    is_dir: bool,
+}
+
+/// cwd 아래 파일 목록(슬래시 구분 상대경로). 링크 판정이 마우스 호버마다 일어나므로
+/// 매번 트리를 훑지 않게 cwd 별로 잠시 캐시한다.
+struct FileIndex {
+    files: Vec<String>,
+    lower: Vec<String>,
+    built: std::time::Instant,
+}
+
+const LINK_INDEX_TTL: std::time::Duration = std::time::Duration::from_secs(20);
+const LINK_INDEX_MAX: usize = 200_000;
+
+fn link_index_cache() -> &'static std::sync::Mutex<HashMap<String, std::sync::Arc<FileIndex>>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::sync::Arc<FileIndex>>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn build_file_index(cwd: &str) -> FileIndex {
+    // git 저장소면 추적 + 무시되지 않은 새 파일 — 빌드 산출물·의존성 폴더가 자연히 빠진다
+    if let Some(out) = git_cmd(cwd, &["ls-files", "-co", "--exclude-standard", "-z"]) {
+        let files: Vec<String> = out
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .take(LINK_INDEX_MAX)
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect();
+        if !files.is_empty() {
+            return FileIndex::new(files);
+        }
+    }
+    const SKIP_DIRS: &[&str] = &[
+        "node_modules", "target", "dist", "build", "out", "vendor", "library", "temp", "obj", "logs",
+    ];
+    let root = Path::new(cwd);
+    let mut files = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0usize));
+    let mut seen = 0usize;
+    'walk: while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 30_000 {
+                break 'walk;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                if depth < 8 && !name.starts_with('.') && !SKIP_DIRS.contains(&name.to_lowercase().as_str()) {
+                    queue.push_back((e.path(), depth + 1));
+                }
+            } else if let Ok(rel) = e.path().strip_prefix(root) {
+                files.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    FileIndex::new(files)
+}
+
+impl FileIndex {
+    fn new(files: Vec<String>) -> Self {
+        let lower = files.iter().map(|f| f.to_lowercase()).collect();
+        FileIndex { files, lower, built: std::time::Instant::now() }
+    }
+}
+
+fn file_index(cwd: &str) -> std::sync::Arc<FileIndex> {
+    if let Ok(cache) = link_index_cache().lock() {
+        if let Some(ix) = cache.get(cwd) {
+            if ix.built.elapsed() < LINK_INDEX_TTL {
+                return ix.clone();
+            }
+        }
+    }
+    let ix = std::sync::Arc::new(build_file_index(cwd));
+    if let Ok(mut cache) = link_index_cache().lock() {
+        if cache.len() > 32 {
+            cache.clear();
+        }
+        cache.insert(cwd.to_string(), ix.clone());
+    }
+    ix
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `~`·`file://` 를 풀어 절대경로로 만든다. 상대경로면 None.
+fn absolute_link_path(raw: &str) -> Option<std::path::PathBuf> {
+    let mut s = raw.to_string();
+    if let Some(rest) = s.strip_prefix("file://") {
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        let mut p = percent_decode(rest);
+        // file:///C:/x → C:/x
+        if p.len() > 3 && p.starts_with('/') && p.as_bytes()[2] == b':' {
+            p.remove(0);
+        }
+        s = p;
+    }
+    if s == "~" || s.starts_with("~/") || s.starts_with("~\\") {
+        let home = crate::claude::home_dir()?;
+        return Some(if s.len() > 2 { home.join(&s[2..]) } else { home });
+    }
+    let p = Path::new(&s);
+    if p.is_absolute() || s.starts_with('/') || s.starts_with("\\\\") {
+        return Some(p.to_path_buf());
+    }
+    None
+}
+
+fn resolve_one_link(cwd: &str, raw: &str, index: &mut Option<std::sync::Arc<FileIndex>>) -> Option<ResolvedLink> {
+    let found = |p: &Path| -> Option<ResolvedLink> {
+        let meta = fs::metadata(p).ok()?;
+        Some(ResolvedLink { path: p.to_string_lossy().into_owned(), is_dir: meta.is_dir() })
+    };
+    if let Some(abs) = absolute_link_path(raw) {
+        return found(&abs);
+    }
+    let rel = raw.trim_start_matches("./").trim_start_matches(".\\");
+    if rel.is_empty() || cwd.is_empty() {
+        return None;
+    }
+    let root = Path::new(cwd);
+    if let Some(hit) = found(&root.join(rel)) {
+        return Some(hit);
+    }
+    if rel.starts_with("../") || rel.starts_with("..\\") {
+        return None;
+    }
+    // 단독 파일명은 이름 일치, 구분자가 있으면 경로 끝 일치(하위 폴더 기준 상대경로) — 가장 얕은 것
+    let ix = index.get_or_insert_with(|| file_index(cwd)).clone();
+    let want = rel.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    if want.is_empty() {
+        return None;
+    }
+    let depth = |s: &str| s.matches('/').count();
+    let mut best_file: Option<&String> = None;
+    let mut best_dir: Option<String> = None;
+    let needle = format!("/{}", want);
+    let dir_needle = format!("/{}/", want);
+    let dir_prefix = format!("{}/", want);
+    for (f, lower) in ix.files.iter().zip(ix.lower.iter()) {
+        let lower = lower.as_str();
+        if lower == want || lower.ends_with(&needle) {
+            if best_file.map_or(true, |b| depth(f) < depth(b)) {
+                best_file = Some(f);
+            }
+        } else if want.contains('/') && best_file.is_none() {
+            let pos = if lower.starts_with(&dir_prefix) {
+                Some(0)
+            } else {
+                lower.find(&dir_needle).map(|p| p + 1)
+            };
+            if let Some(p) = pos {
+                // lower 와 f 는 길이가 같지 않을 수 있어(유니코드 대소문자) 원본 기준 자르기는 문자 경계를 확인한다
+                let end = p + want.len();
+                if f.is_char_boundary(end) {
+                    let d = f[..end].to_string();
+                    if best_dir.as_ref().map_or(true, |b| depth(&d) < depth(b)) {
+                        best_dir = Some(d);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(f) = best_file {
+        return found(&root.join(f));
+    }
+    best_dir.and_then(|d| found(&root.join(d)))
+}
+
+/// 터미널 링크 후보를 일괄 해석한다 — 실제로 존재하는 파일·폴더만 Some.
+/// 렌더러는 Some 인 후보에만 밑줄을 긋는다 (존재하지 않는 'a/b' 단어에 링크가 생기지 않게).
+#[tauri::command]
+pub async fn resolve_link_candidates(cwd: String, candidates: Vec<String>) -> Vec<Option<ResolvedLink>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut index = None;
+        candidates
+            .iter()
+            .take(64)
+            .map(|c| resolve_one_link(&cwd, c.trim(), &mut index))
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// OS 콘솔 창이 깜빡이지 않게 git 프로세스를 실행 (windows_subsystem 빌드 대응).
 /// 성공(exit 0) 시에만 stdout 을 돌려준다 — 실패 사유가 필요하면 `git_cmd_full` 을 쓴다.
 pub(crate) fn git_cmd(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
@@ -897,6 +1106,32 @@ fn valid_entry_name(name: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn link_candidates_resolve_only_existing() {
+        let root = std::env::temp_dir().join(format!("ta-link-test-{}", std::process::id()));
+        let deep = root.join("crates/core/src");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("lib.rs"), "x").unwrap();
+        std::fs::create_dir_all(root.join("with space")).unwrap();
+        std::fs::write(root.join("with space/a.md"), "x").unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        let mut ix = None;
+        let r = |s: &str, ix: &mut Option<_>| super::resolve_one_link(&cwd, s, ix);
+        // 직접 경로·하위 폴더 기준 접미 경로·단독 파일명·폴더
+        assert!(r("crates/core/src/lib.rs", &mut ix).is_some_and(|x| !x.is_dir));
+        assert!(r("core/src/lib.rs", &mut ix).is_some());
+        assert!(r("lib.rs", &mut ix).is_some());
+        assert!(r("core/src", &mut ix).is_some_and(|x| x.is_dir));
+        assert!(r("with space/a.md", &mut ix).is_some());
+        // 존재하지 않는 'a/b' 단어는 링크가 아니다
+        assert!(r("SSN/ITIN", &mut ix).is_none());
+        assert!(r("/api/tasks", &mut ix).is_none());
+        // file:// URI (퍼센트 인코딩)
+        let uri = format!("file://{}/with%20space/a.md", cwd);
+        assert!(r(&uri, &mut ix).is_some());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn porcelain_status_mapping() {
         // ('?','?')→U, 워크트리 우선, 스테이지 전용은 인덱스 문자

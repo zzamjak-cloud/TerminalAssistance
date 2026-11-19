@@ -34,25 +34,35 @@ function previewExt(path) {
 }
 
 Object.assign(App, {
-  // 터미널 파일 링크 클릭 진입점: :줄번호 꼬리 제거 → 세션 cwd 기준 절대경로 해석 → 미리보기.
-  // 상대 경로는 백엔드에서 실제 파일로 해석한다 — 단독 파일명(terminal-view.js 등)은
-  // cwd 직속에 없으면 프로젝트를 검색해 찾는다.
+  // 터미널 링크 클릭 진입점(이미 해석된 대상): 폴더는 Finder/탐색기, 파일은 미리보기(줄 번호로 스크롤).
+  openResolvedLink(target, line) {
+    if (!target || !target.path) return;
+    if (target.is_dir) return ta.openPath(target.path);
+    return App.showFilePreview(target.path, { line: line || 0 });
+  },
+
+  // 해석 전 링크 문자열(OSC 8 file:// 하이퍼링크 등): 세션 cwd 기준으로 해석해 연다.
+  // ~·file://·하위 폴더 기준 상대경로·단독 파일명은 백엔드가 실제 파일로 해석한다.
   async openFileLinkPreview(sessionId, linkText) {
-    const raw = String(linkText || '').trim().replace(/(?::\d+)+$/, '');
-    if (!raw) return;
+    let raw = String(linkText || '').trim();
+    let line = 0;
+    const hash = raw.match(/#L(\d+)(?:-L?\d+)?$/i);
+    if (hash) { line = Number(hash[1]); raw = raw.slice(0, hash.index); }
+    const split = TermLinks.splitLineSuffix(raw);
+    if (!split.path) return;
+    line = line || split.line;
     const session = App.state.sessions.find((x) => x.id === sessionId);
-    const base = (session && session.cwd) || App.claudeCwd();
-    const isAbs = /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\') || raw.startsWith('/');
-    if (isAbs) return App.showFilePreview(raw);
-    if (!base) return;
-    const rel = raw.replace(/^\.[\\/]/, '');
+    const base = (session && session.cwd) || App.claudeCwd() || '';
     let resolved = null;
-    try { resolved = await ta.resolveProjectFile(base, rel); } catch (_) {}
-    return App.showFilePreview(resolved || `${String(base).replace(/[\\/]+$/, '')}/${rel}`);
+    try { resolved = (await ta.resolveLinkCandidates(base, [split.path]))[0]; } catch (_) {}
+    if (!resolved) return App.showToast(`파일을 찾을 수 없습니다: ${split.path}`, 3000);
+    return App.openResolvedLink(resolved, line);
   },
 
   // 파일 형식에 따라 알맞은 미리보기 팝업을 연다 (탐색기 진입점)
-  async showFilePreview(path) {
+  // opts.line: 코드 미리보기를 해당 줄로 스크롤한다 (터미널의 path:줄 링크)
+  async showFilePreview(path, opts) {
+    const line = (opts && opts.line) || 0;
     const name = normPath(path).split('/').pop();
     const ext = previewExt(path);
     if (PREVIEW_IMAGE_EXTS.has(ext)) return App._previewMedia(path, name, 'img');
@@ -71,7 +81,7 @@ Object.assign(App, {
 
     if (ext === 'md' || ext === 'markdown') return App._previewMarkdown(path, name, file);
     if (ext === 'json') return App._previewJson(path, name, file);
-    return App._previewCode(path, name, ext, file);
+    return App._previewCode(path, name, ext, file, line);
   },
 
   // 미리보기 공통 골격: 제목(파일명) + 경로 부제 + 본문 + [외부로 열기 | 편집 | 닫기]
@@ -165,11 +175,11 @@ Object.assign(App, {
     App._previewCodeBody(path, name, 'json', { ...file, content: text });
   },
 
-  _previewCode(path, name, ext, file) {
-    App._previewCodeBody(path, name, PREVIEW_EXT_LANG[ext] || 'plaintext', file);
+  _previewCode(path, name, ext, file, line) {
+    App._previewCodeBody(path, name, PREVIEW_EXT_LANG[ext] || 'plaintext', file, line);
   },
 
-  _previewCodeBody(path, name, lang, file) {
+  _previewCodeBody(path, name, lang, file, line) {
     App._previewShell(path, name, 'preview-text', (body) => {
       const pre = document.createElement('pre');
       const code = document.createElement('code');
@@ -184,6 +194,14 @@ Object.assign(App, {
       pre.appendChild(code);
       body.appendChild(pre);
       App._truncNotice(body, file);
+      if (line > 1) {
+        // 줄 높이는 렌더 후에만 알 수 있다 — 목표 줄이 위에서 몇 줄 아래 보이게 둔다
+        requestAnimationFrame(() => {
+          const total = (file.content.match(/\n/g) || []).length + 1;
+          const lh = code.offsetHeight / total;
+          if (lh > 0) body.scrollTop = Math.max(0, code.offsetTop + (line - 4) * lh);
+        });
+      }
     }, { edit: !file.truncated && isEditableFile(path), copy: file.content });
   },
 

@@ -1071,6 +1071,7 @@ fn main() {
             explorer::move_path,
             explorer::delete_file,
             explorer::resolve_project_file,
+            explorer::resolve_link_candidates,
             worktree::repo_info,
             worktree::worktree_add,
             worktree::worktree_check,

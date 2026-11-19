@@ -275,6 +275,8 @@ Object.assign(App, {
       // 선택이 이미 사라졌으면 캐시된 텍스트를 평문으로 복사
       try { void navigator.clipboard.writeText(selection); } catch (_) {}
     });
+    // TUI 가 줄바꿈해 둔 긴 명령어를 그대로 붙여넣을 수 있게 줄바꿈·들여쓰기를 걷어낸다
+    mkItem('한 줄로 복사 (명령어)', () => { void TerminalView.copySelectionOneLine(sessionId); });
     mkItem('메모에 등록하기', () => {
       App.showMemoModal({ prefillText: selection, sessionId });
     });
