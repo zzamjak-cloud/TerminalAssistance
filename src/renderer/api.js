@@ -32,13 +32,14 @@
     reorderProjects: (ids) => invoke('reorder_projects', { ids }),
     pickFolder: () => invoke('pick_folder'),
 
-    addPreset: (p) => invoke('add_preset', { label: p.label, command: p.command, projectId: p.projectId || null }),
+    addPreset: (p) => invoke('add_preset', { label: p.label, command: p.command, projectId: p.projectId || null, color: p.color || null }),
     updatePreset: (id, patch) => invoke('update_preset', {
       id,
       label: patch.label ?? null,
       command: patch.command ?? null,
       projectId: patch.projectId ?? null,
-      clearProject: patch.clearProject ?? null
+      clearProject: patch.clearProject ?? null,
+      color: patch.color ?? null
     }),
     removePreset: (id) => invoke('remove_preset', { id }),
     reorderPresets: (ids) => invoke('reorder_presets', { ids }),

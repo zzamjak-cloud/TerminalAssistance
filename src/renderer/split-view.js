@@ -485,7 +485,7 @@ Object.assign(App, {
         : [git.hasUpstream ? 1 : 0, git.behind, git.ahead, git.fetchFailed ? 1 : 0].join(':');
       const sig = [sid, App.sessionLabel(sess), branch, (proj && proj.color) || '', Theme.state.id, switchSig,
         gitSig, App._gitPulling === sess.cwd ? 'pulling' : '',
-        globals.concat(projs).map((p) => p.id + ':' + p.label + ':' + p.command).join(',')].join('|');
+        globals.concat(projs).map((p) => p.id + ':' + p.label + ':' + p.command + ':' + (p.color || '')).join(',')].join('|');
       // 세션 전환 드롭다운이 열려 있는 동안엔 바를 다시 만들지 않는다 — 상태 태그가 바뀔 때마다
       // 재생성되면 검색어를 치던 도중에 메뉴가 닫힌다. 닫힌 뒤 다음 렌더에서 반영된다.
       if (bar && bar.querySelector('.pane-session-menu:not(.hidden)')) continue;
@@ -763,6 +763,11 @@ Object.assign(App, {
       item.dataset.id = p.id; // 드래그 정렬 좌표
       item.title = p.command + '\n(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)';
       item.textContent = p.label;
+      if (p.color) {
+        item.classList.add('colored');
+        item.style.background = p.color;
+        item.style.color = Theme.isDarkHex(p.color) ? '#fff' : '#111';
+      }
       item.onclick = (e) => { App.closePanePresetMenus(); App.runPreset(p, !e.shiftKey, sid); };
       item.oncontextmenu = (e) => { e.preventDefault(); App.closePanePresetMenus(); App.showPresetModal(p); };
       return item;

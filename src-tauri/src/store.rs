@@ -40,6 +40,9 @@ pub struct Preset {
     /// None 이면 전역 프리셋, Some(id) 면 해당 프로젝트 전용
     #[serde(rename = "projectId")]
     pub project_id: Option<String>,
+    /// 드롭다운 항목 배경색 (None 이면 기본 스타일)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

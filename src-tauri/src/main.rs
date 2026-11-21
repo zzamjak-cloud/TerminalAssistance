@@ -254,12 +254,14 @@ fn add_preset(
     label: String,
     command: String,
     project_id: Option<String>,
+    color: Option<String>,
 ) -> Result<Preset, String> {
     let p = Preset {
         id: new_id(),
         label,
         command,
         project_id,
+        color: color.filter(|c| !c.is_empty()),
     };
     let mut s = plock(&store);
     s.data.presets.push(p.clone());
@@ -275,6 +277,7 @@ fn update_preset(
     command: Option<String>,
     project_id: Option<String>,
     clear_project: Option<bool>,
+    color: Option<String>,
 ) -> Result<(), String> {
     let mut s = plock(&store);
     let Some(p) = s.data.presets.iter_mut().find(|p| p.id == id) else {
@@ -290,6 +293,10 @@ fn update_preset(
         p.project_id = None;
     } else if project_id.is_some() {
         p.project_id = project_id;
+    }
+    // 빈 문자열 = 색 해제
+    if let Some(c) = color {
+        p.color = if c.is_empty() { None } else { Some(c) };
     }
     s.save()
 }

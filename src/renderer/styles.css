@@ -789,6 +789,13 @@ button:disabled:hover { border-color: var(--border); }
 /* 전역 프리셋: 파랑 배경, 목록 맨앞 고정 (구 상단 고정바 칩과 같은 구분) */
 .pane-preset-item.global { background: var(--accent-fill); }
 .pane-preset-item.global:hover { background: var(--accent-fill-hi); }
+/* 사용자 지정 색 (인라인 background) — hover 는 밝기로 표시 */
+.pane-preset-item.colored:hover { filter: brightness(1.15); }
+.color-chip.none {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-hover-hi); color: var(--fg-dim); font-size: 10px;
+  border-color: var(--border);
+}
 /* '+ 프리셋 추가' — 목록과 구분선으로 분리된 관리 진입점 */
 .pane-preset-add {
   border: none; background: none; color: var(--fg-dim);

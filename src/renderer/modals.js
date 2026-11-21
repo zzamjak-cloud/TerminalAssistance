@@ -337,10 +337,20 @@ Object.assign(App, {
   ],
 
   // 컬러칩 UI 구성: 프리셋 12개 + 커스텀 1개. 현재 선택값을 돌려주는 getter 반환
-  buildColorChips(container, initial) {
-    let value = initial || App.PRESET_COLORS[0];
+  // allowNone: '기본' 칩(값 null)을 맨 앞에 둔다 — 색 지정이 선택 사항인 곳(프리셋)용
+  buildColorChips(container, initial, allowNone) {
+    let value = initial || (allowNone ? null : App.PRESET_COLORS[0]);
     const chips = [];
     const sync = () => chips.forEach((c) => c.el.classList.toggle('selected', c.get() === value));
+    if (allowNone) {
+      const none = document.createElement('div');
+      none.className = 'color-chip none';
+      none.title = '기본 색상';
+      none.textContent = '기본';
+      none.onclick = () => { value = null; sync(); };
+      chips.push({ el: none, get: () => null });
+      container.appendChild(none);
+    }
     for (const col of App.PRESET_COLORS) {
       const el = document.createElement('div');
       el.className = 'color-chip';
@@ -371,7 +381,7 @@ Object.assign(App, {
       sync();
     };
     custom.appendChild(inp);
-    chips.push({ el: custom, get: () => customColor });
+    chips.push({ el: custom, get: () => customColor || undefined });
     container.appendChild(custom);
     sync();
     return () => value;
@@ -434,6 +444,7 @@ Object.assign(App, {
       <label>명령</label><input type="text" id="m-cmd" placeholder="예: npm run build && npm test">
       <div class="form-help">변수: {branch}, {projectPath}, {projectName}, {session}, {clipboard}, {input:작업명}</div>
       <label>범위</label><select id="m-scope"><option value="">전역 (모든 세션)</option>${opts}</select>
+      <label>색상 (드롭다운 항목 배경)</label><div class="color-chips" id="m-chips"></div>
       <div class="modal-actions">
         ${existing ? '<button id="m-del" class="danger">삭제</button>' : ''}
         <button id="m-cancel">취소</button><button id="m-save">저장</button>
@@ -441,6 +452,7 @@ Object.assign(App, {
       (m, close) => {
         const finish = () => { close(); App.renderPanePresets(); if (mgrOpts && mgrOpts.back) mgrOpts.back(); };
         const label = m.querySelector('#m-label'), cmd = m.querySelector('#m-cmd'), scope = m.querySelector('#m-scope');
+        const getColor = App.buildColorChips(m.querySelector('#m-chips'), existing ? existing.color : null, true);
         if (existing) { label.value = existing.label; cmd.value = existing.command; scope.value = existing.projectId || ''; }
         else if (mgrOpts && mgrOpts.scope !== undefined) {
           scope.value = mgrOpts.scope; // 관리 팝업에서 지정한 범위
@@ -460,12 +472,12 @@ Object.assign(App, {
           if (!label.value.trim() || !cmd.value.trim()) return alert('이름과 명령을 입력하세요.');
           try {
             if (existing) {
-              const patch = { label: label.value.trim(), command: cmd.value.trim() };
+              const patch = { label: label.value.trim(), command: cmd.value.trim(), color: getColor() || '' };
               if (scope.value) patch.projectId = scope.value; else patch.clearProject = true;
               await ta.updatePreset(existing.id, patch);
-              Object.assign(existing, { label: patch.label, command: patch.command, projectId: scope.value || null });
+              Object.assign(existing, { label: patch.label, command: patch.command, projectId: scope.value || null, color: patch.color || null });
             } else {
-              const p = await ta.addPreset({ label: label.value.trim(), command: cmd.value.trim(), projectId: scope.value || null });
+              const p = await ta.addPreset({ label: label.value.trim(), command: cmd.value.trim(), projectId: scope.value || null, color: getColor() || null });
               App.state.presets.push(p);
             }
           } catch (e) { alert('저장 실패: ' + e); return; }
