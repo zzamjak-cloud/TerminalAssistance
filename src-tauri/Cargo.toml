@@ -1,6 +1,6 @@
 [package]
 name = "terminal-assistance"
-version = "0.22.0"
+version = "0.23.0"
 description = "AI 시대의 멀티 프로젝트 터미널 워크스페이스"
 authors = ["zzamjak-cloud"]
 license = "GPL-3.0-only"
@@ -37,6 +37,10 @@ sha2 = "0.10"
 getrandom = "0.2"
 # 페어링 QR (SVG 문자열 — 이미지 의존성 없음)
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+# 남은 백그라운드 프로세스 종료(프로세스 그룹 신호) — unix 전용
+[target."cfg(unix)".dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

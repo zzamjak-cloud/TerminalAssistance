@@ -146,6 +146,25 @@ pub fn remove_state(session_id: &str) {
     }
 }
 
+/// PTY 를 새로 띄울 때(같은 id 로 복원 포함) 이전 수명의 상태 파일만 지운다 —
+/// SIGHUP 으로 죽은 Claude 의 낡은 세션 id 가 새 탭의 것으로 읽히지 않게. 'last' 기록은 배너용이라 남긴다
+pub fn clear_state_file(session_id: &str) {
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return;
+    }
+    if let Some(dir) = state_dir() {
+        let _ = fs::remove_file(dir.join(format!("{}.json", session_id)));
+        let _ = fs::remove_file(dir.join(format!("{}.prompt", session_id)));
+    }
+}
+
+/// 상태 파일의 마지막 기록 시각(ms)
+#[cfg_attr(unix, allow(dead_code))]
+pub fn state_ts(session_id: &str) -> Option<u64> {
+    let text = fs::read_to_string(state_dir()?.join(format!("{}.json", session_id))).ok()?;
+    parse_state_json(&text)?["ts"].as_u64()
+}
+
 /// 복원 후 호출 — 되살아나지 않은 세션의 마지막 UUID 기록을 정리한다
 pub fn prune_last_sessions(keep: &std::collections::HashSet<String>) {
     let Some(dir) = last_dir() else { return };

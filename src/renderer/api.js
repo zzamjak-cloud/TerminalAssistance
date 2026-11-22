@@ -64,7 +64,8 @@
       lineHeight: patch.lineHeight ?? null,
       letterSpacing: patch.letterSpacing ?? null,
       minContrast: patch.minContrast ?? null,
-      claudeClassicRenderer: patch.claudeClassicRenderer ?? null
+      claudeClassicRenderer: patch.claudeClassicRenderer ?? null,
+      killBackgroundOnClose: patch.killBackgroundOnClose ?? null
     }),
 
     // 설치된 셸 자동 감지 목록 — [{ label, value }] (설정 드롭다운용, 빈 value = OS 기본)
@@ -156,7 +157,23 @@
     setDrafts: (key, drafts) => invoke('set_drafts', { key, drafts }),
 
     checkUpdate: () => invoke('check_update'),
+    // 설치 파일만 미리 받아 둔다 ('작업 끝나면 설치') — 진행률은 onUpdateProgress
+    downloadUpdate: () => invoke('download_update'),
+    // 설치 + 재시작. 실행 중인 에이전트는 재시작 뒤 이어 실행되도록 기록해 둔다
     installUpdate: () => invoke('install_update'),
+    // 업데이트 재시작 직후 1회 — [{ sessionId, command }] (30분 지난 기록은 빈 목록)
+    takePendingResume: () => invoke('take_pending_resume'),
+    // 셸에서 실행한 claude/codex 명령 줄 (재개 시 플래그 출처)
+    noteAgentCommand: (sessionId, line) => invoke('note_agent_command', { sessionId, line }),
+    // 작업 중 종료 확인 모달의 [종료] — 레이아웃 저장 후 확인 없이 종료
+    confirmQuit: () => invoke('confirm_quit'),
+    // 남은 백그라운드 프로세스 [{ pgid, pids, command, cwd, projectId, startedAt, ports, fromApp }] (Windows 는 빈 목록)
+    listOrphans: () => invoke('list_orphans'),
+    killOrphan: (pgid) => invoke('kill_orphan', { pgid }),
+    // 한 번의 재스캔으로 여러 개 종료 → [{ pgid, ok, error }]
+    killOrphans: (pgids) => invoke('kill_orphans', { pgids }),
+    // 에이전트(claude/codex)가 실행·허가 대기 중인 탭 id — 업데이트 대기의 작업 중 판정
+    busyAgentSessions: () => invoke('busy_agent_sessions'),
     openUrl: (url) => invoke('open_url', { url }),
 
     clipboardImage: () => invoke('clipboard_image'),
@@ -194,6 +211,10 @@
     onData: (cb) => listen('ta:data', (e) => cb(e.payload)),
     onStatus: (cb) => listen('ta:status', (e) => cb(e.payload)),
     onExit: (cb) => listen('ta:exit', (e) => cb(e.payload)),
+    // 업데이트 다운로드 진행 { done, total|null }
+    onUpdateProgress: (cb) => listen('ta:update-progress', (e) => cb(e.payload)),
+    // 작업 중 세션이 있는데 창 닫기·종료 요청이 왔다 { sessions: [{ id, title }] }
+    onConfirmQuit: (cb) => listen('ta:confirm-quit', (e) => cb(e.payload)),
     // 원격(모바일)에서 만든 세션 — payload 는 createSession 반환값과 같은 모양
     onSessionCreated: (cb) => listen('ta:session-created', (e) => cb(e.payload)),
     // 원격 제어권 변화 { id, holder: deviceId|null, deviceName, cols, rows }

@@ -55,6 +55,8 @@ Object.assign(App, {
     // 세션마다 기록 조회가 필요하므로 경로 단위로 묶어 중복 호출을 없앤다
     const byCwd = new Map();
     for (const id of App._restoredSessions) {
+      // 업데이트 후 자동으로 이어 실행되는 탭은 배너가 필요 없다
+      if (App._autoResumed && App._autoResumed.has(id)) continue;
       const s = App.state.sessions.find((x) => x.id === id);
       if (!s || !s.cwd) continue;
       if (!byCwd.has(s.cwd)) byCwd.set(s.cwd, []);

@@ -4,14 +4,17 @@
 mod claude;
 mod claude_usage;
 mod codex;
+mod crash;
 mod explorer;
 mod hooks;
 mod images;
 #[cfg(target_os = "macos")]
 mod notify_macos;
+mod orphans;
 mod plans;
 mod pty;
 mod remote;
+mod resume;
 mod store;
 mod util;
 mod worktree;
@@ -384,6 +387,7 @@ fn update_settings(
     letter_spacing: Option<f32>,
     min_contrast: Option<f32>,
     claude_classic_renderer: Option<bool>,
+    kill_background_on_close: Option<bool>,
 ) -> Result<store::Settings, String> {
     let mut s = plock(&store);
     if let Some(v) = font_size {
@@ -412,6 +416,9 @@ fn update_settings(
     }
     if let Some(v) = claude_classic_renderer {
         s.data.settings.claude_classic_renderer = v;
+    }
+    if let Some(v) = kill_background_on_close {
+        s.data.settings.kill_background_on_close = v;
     }
     if let Some(v) = min_contrast {
         s.data.settings.min_contrast = v.clamp(1.0, 21.0);
@@ -455,6 +462,8 @@ fn save_session_layout(store: &Mutex<Store>, ptys: &PtyManager) {
     }
     s.data.session_layout = saved;
     let _ = s.save(); // 배치 저장 실패는 사용자 조작을 막을 이유가 아니다 (다음 변경 때 재시도)
+    drop(s);
+    crash::poke(); // 탭 구성이 바뀌었다 — 비정상 종료 대비 스냅샷도 곧 갱신
 }
 
 /// 지난 실행에서 열려 있던 세션을 되살린다. 프론트가 부팅 중 한 번 호출한다.
@@ -602,7 +611,8 @@ fn resize_session(ptys: State<PtyManager>, id: String, cols: u16, rows: u16) {
 
 #[tauri::command]
 fn close_session(store: StoreState, ptys: State<PtyManager>, id: String) {
-    ptys.close(&id);
+    let reap = plock(&store).data.settings.kill_background_on_close;
+    ptys.close(&id, reap);
     save_session_layout(&store, &ptys);
 }
 
@@ -708,6 +718,12 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 // ── 자동 업데이트 ──
 // 태그 릴리즈의 latest.json 을 확인 → 새 버전이 있으면 버전·노트를 반환하고 Update 객체를 보관
 type PendingUpdate = Mutex<Option<tauri_plugin_updater::Update>>;
+// 미리 받아 둔 설치 파일 (버전, 바이트) — '작업 끝나면 설치'가 다운로드와 설치 시점을 나눈다.
+// 6시간 재확인으로 더 새 Update 가 들어올 수 있어 버전으로 짝을 확인한다
+type DownloadedUpdate = Mutex<Option<(String, Vec<u8>)>>;
+
+// 업데이트 재시작·종료 확인 후 종료는 '작업 중 종료 확인'을 다시 띄우지 않는다
+static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(serde::Serialize)]
 struct UpdateInfo {
@@ -735,17 +751,284 @@ async fn check_update(
     }
 }
 
-#[tauri::command]
-async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Result<(), String> {
-    let update = plock(&pending).take();
-    let Some(update) = update else {
-        return Err("보류 중인 업데이트가 없습니다".into());
-    };
+/// 설치 파일만 내려받아 보관한다. 진행률은 `ta:update-progress {done,total}` 으로 알린다
+async fn download_bytes(app: &AppHandle, update: &tauri_plugin_updater::Update) -> Result<Vec<u8>, String> {
+    let mut done: u64 = 0;
+    let mut last_emit: u64 = 0;
     update
-        .download_and_install(|_, _| {}, || {})
+        .download(
+            |chunk, total| {
+                done += chunk as u64;
+                // 청크마다 보내면 IPC 가 넘친다 — 256KB 단위로만 알린다
+                if done - last_emit >= 256 * 1024 || total == Some(done) {
+                    last_emit = done;
+                    let _ = app.emit("ta:update-progress", json!({ "done": done, "total": total }));
+                }
+            },
+            || {},
+        )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn download_update(
+    app: AppHandle,
+    pending: State<'_, PendingUpdate>,
+    downloaded: State<'_, DownloadedUpdate>,
+) -> Result<(), String> {
+    // Update 는 Clone — 락을 await 너머로 쥐지 않고, 원본은 재시도·나중 설치를 위해 남긴다
+    let update = plock(&pending).clone().ok_or("보류 중인 업데이트가 없습니다")?;
+    if plock(&downloaded).as_ref().is_some_and(|(v, _)| *v == update.version) {
+        return Ok(());
+    }
+    let bytes = download_bytes(&app, &update).await?;
+    *plock(&downloaded) = Some((update.version.clone(), bytes));
+    Ok(())
+}
+
+fn clear_pending_resume(store: &Mutex<Store>) {
+    let mut s = plock(store);
+    if s.data.pending_resume.take().is_some() {
+        let _ = s.save();
+    }
+}
+
+/// 설치 → 재시작. 재시작 직후 이어 실행할 에이전트 명령을 먼저 디스크에 남긴다
+/// (Windows 설치는 install() 안에서 프로세스를 바로 끝내므로 그 전에 기록돼 있어야 한다)
+#[tauri::command]
+async fn install_update(
+    app: AppHandle,
+    pending: State<'_, PendingUpdate>,
+    downloaded: State<'_, DownloadedUpdate>,
+    store: StoreState<'_>,
+    ptys: State<'_, PtyManager>,
+) -> Result<(), String> {
+    if let Err(e) = prepare_and_install(&app, &pending, &downloaded, &store, &ptys).await {
+        // 어떤 단계에서 실패하든 다음 실행에서 엉뚱하게 자동 실행되지 않게 지운다
+        clear_pending_resume(&store);
+        return Err(e);
+    }
+    QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
     app.restart();
+}
+
+async fn prepare_and_install(
+    app: &AppHandle,
+    pending: &PendingUpdate,
+    downloaded: &DownloadedUpdate,
+    store: &Mutex<Store>,
+    ptys: &PtyManager,
+) -> Result<(), String> {
+    let update = plock(pending).clone().ok_or("보류 중인 업데이트가 없습니다")?;
+    let ready = plock(downloaded)
+        .take()
+        .filter(|(v, _)| *v == update.version)
+        .map(|(_, b)| b);
+    let bytes = match ready {
+        Some(b) => b,
+        None => download_bytes(app, &update).await?,
+    };
+    save_session_layout(store, ptys);
+    // 판별이 늦어져도 설치를 붙잡지 않는다 — 상한을 넘기면 이어하기 없이 설치한다
+    let entries = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        resume::collect_resume_entries(ptys.resume_targets()),
+    )
+    .await
+    .unwrap_or_default();
+    let result = write_resume_and_install(store, &update, &bytes, entries);
+    if result.is_err() {
+        // 받은 파일은 되돌려 놓아 재시도 때 다시 내려받지 않게 한다
+        *plock(downloaded) = Some((update.version.clone(), bytes));
+    }
+    result
+}
+
+fn write_resume_and_install(
+    store: &Mutex<Store>,
+    update: &tauri_plugin_updater::Update,
+    bytes: &[u8],
+    entries: Vec<store::ResumeEntry>,
+) -> Result<(), String> {
+    {
+        let mut s = plock(store);
+        s.data.pending_resume = if entries.is_empty() {
+            None
+        } else {
+            Some(store::PendingResume { created_ms: now_ms(), entries })
+        };
+        s.save()?;
+    }
+    #[cfg(windows)]
+    QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Windows 설치는 install() 안에서 프로세스를 바로 끝내 종료 처리기가 돌지 않는다 — 표식을 먼저 지운다
+    crash::clear_marker();
+    let r = update.install(bytes).map_err(|e| e.to_string());
+    if r.is_err() {
+        crash::restore_marker();
+        #[cfg(windows)]
+        QUIT_CONFIRMED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    r
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 복원 직후 1회 → { kind: "update"|"crash"|null, entries, crashed }.
+/// 업데이트 기록(30분 이내)이 우선이고, 없으면 비정상 종료 스냅샷(24시간 이내)을 쓴다.
+/// 어느 쪽이든 한 번 가져가면 지운다 — 이어하기 도중 또 죽어도 같은 명령을 반복 실행하지 않게
+#[tauri::command]
+fn take_pending_resume(store: StoreState, crash: State<crash::CrashRecovery>) -> serde_json::Value {
+    let update = {
+        let mut s = plock(&store);
+        let p = s.data.pending_resume.take();
+        if p.is_some() {
+            let _ = s.save();
+        }
+        p
+    };
+    let crash_entries = plock(&crash.entries).take();
+    let (kind, entries) = match update.filter(|p| store::pending_resume_valid(p.created_ms, now_ms())) {
+        Some(p) => (Some("update"), p.entries),
+        None => match crash_entries {
+            Some(p) => (Some("crash"), p.entries),
+            None => (None, Vec::new()),
+        },
+    };
+    json!({ "kind": kind, "entries": entries, "crashed": crash.crashed })
+}
+
+// ── 작업 중 종료 확인 ──
+/// 작업 중 세션이 있으면 종료를 막고 프론트에 확인을 요청한다. true = 막았음
+fn intercept_quit(app: &AppHandle) -> bool {
+    use std::sync::atomic::Ordering;
+    if QUIT_CONFIRMED.load(Ordering::SeqCst) {
+        return false;
+    }
+    #[cfg(windows)]
+    if CRASH_RECREATING.load(Ordering::SeqCst) {
+        return false;
+    }
+    let busy = resume::agent_busy(app.state::<PtyManager>().busy_candidates());
+    if busy.is_empty() {
+        return false;
+    }
+    // 웹뷰가 죽었거나 부팅 중이라 모달을 못 띄우면 영영 종료할 수 없게 된다 —
+    // 확인 요청 직후 다시 종료를 요청하면 그대로 종료한다
+    let now = now_ms();
+    if quit_retry_within(LAST_QUIT_PROMPT_MS.load(Ordering::SeqCst), now) {
+        save_session_layout(&app.state::<Mutex<Store>>(), &app.state::<PtyManager>());
+        QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+        return false;
+    }
+    LAST_QUIT_PROMPT_MS.store(now, Ordering::SeqCst);
+    // 모달이 이미 떠 있으면 프론트가 중복 요청을 무시한다
+    let list: Vec<_> = busy.iter().map(|(id, title)| json!({ "id": id, "title": title })).collect();
+    let _ = app.emit("ta:confirm-quit", json!({ "sessions": list }));
+    true
+}
+
+static LAST_QUIT_PROMPT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const QUIT_RETRY_WINDOW_MS: u64 = 5000;
+
+/// 직전 종료 확인 요청 후 5초 안의 재요청인가
+fn quit_retry_within(last_ms: u64, now_ms: u64) -> bool {
+    last_ms != 0 && now_ms >= last_ms && now_ms - last_ms <= QUIT_RETRY_WINDOW_MS
+}
+
+/// 에이전트가 실행·허가 대기 중인 탭 id — '작업 끝나면 설치'와 업데이트 안내의 작업 중 판정
+#[tauri::command]
+async fn busy_agent_sessions(ptys: State<'_, PtyManager>) -> Result<Vec<String>, String> {
+    let cands = ptys.busy_candidates();
+    tauri::async_runtime::spawn_blocking(move || resume::agent_busy(cands).into_iter().map(|(id, _)| id).collect())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 레이아웃 저장 후 확인 없이 종료
+fn quit_now(app: &AppHandle) {
+    save_session_layout(&app.state::<Mutex<Store>>(), &app.state::<PtyManager>());
+    QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.exit(0);
+}
+
+/// 종료 확인 모달의 [종료]
+#[tauri::command]
+fn confirm_quit(app: AppHandle) {
+    quit_now(&app);
+}
+
+// macOS 의 기본 Quit 메뉴(Cmd+Q)는 NSApp terminate: 로 바로 끝나 ExitRequested 를 거치지 않는다
+// (tao 에 applicationShouldTerminate 가 없음) — 직접 만든 항목으로 바꿔 종료 확인을 거치게 한다
+#[cfg(target_os = "macos")]
+const QUIT_MENU_ID: &str = "ta-quit";
+
+/// 기본 macOS 메뉴와 같은 구성에서 Quit 만 교체한다. 편집 메뉴의 복사·붙여넣기 등은
+/// 웹뷰 터미널의 Cmd+C/V 가 이 항목들(NSResponder 셀렉터)로 동작하므로 반드시 유지한다
+#[cfg(target_os = "macos")]
+fn build_macos_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
+    let pkg = app.package_info();
+    let about = AboutMetadata {
+        name: Some(pkg.name.clone()),
+        version: Some(pkg.version.to_string()),
+        copyright: app.config().bundle.copyright.clone(),
+        authors: app.config().bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+    let quit = MenuItem::with_id(app, QUIT_MENU_ID, "Terminal Assistance 종료", true, Some("CmdOrCtrl+Q"))?;
+    let app_menu = Submenu::with_items(
+        app,
+        pkg.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let file_menu = Submenu::with_items(app, "File", true, &[&PredefinedMenuItem::close_window(app, None)?])?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let view_menu = Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?;
+    let window_menu = Submenu::with_id_and_items(
+        app,
+        WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+    let help_menu = Submenu::with_id_and_items(app, HELP_SUBMENU_ID, "Help", true, &[])?;
+    Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &help_menu])
 }
 
 // ── 데스크톱 알림 — 종류별(완료/허가 대기) 게이트는 프론트가 각 설정으로 판단한다 ──
@@ -983,6 +1266,13 @@ fn main() {
             let _ = win.set_focus();
         }
     }));
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(build_macos_menu).on_menu_event(|app, event| {
+        // 작업 중이면 확인 모달, 아니면 바로 종료 (업데이트 재시작 중이면 QUIT_CONFIRMED 로 통과)
+        if event.id().as_ref() == QUIT_MENU_ID && !intercept_quit(app) {
+            quit_now(app);
+        }
+    });
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -991,13 +1281,22 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PtyManager::new())
         .manage(PendingUpdate::default())
+        .manage(DownloadedUpdate::default())
         .manage(MemState::new(sysinfo::System::new()))
         .manage(remote::RemoteHub::new())
+        .on_window_event(|win, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if intercept_quit(win.app_handle()) {
+                    api.prevent_close();
+                }
+            }
+        })
         .setup(|app| {
             #[cfg(target_os = "macos")]
             notify_macos::init(app.handle(), &app.config().identifier);
             let config_dir = app.path().app_config_dir()?;
             app.manage(Mutex::new(Store::load(config_dir)));
+            crash::init(app.handle(), app.path().app_data_dir()?);
             let ptys = app.state::<PtyManager>();
             ptys.start_status_thread(app.handle().clone());
             let title = versioned_title(app.handle());
@@ -1053,7 +1352,15 @@ fn main() {
             reveal_path,
             open_url,
             check_update,
+            download_update,
             install_update,
+            take_pending_resume,
+            confirm_quit,
+            busy_agent_sessions,
+            orphans::kill_orphans,
+            resume::note_agent_command,
+            orphans::list_orphans,
+            orphans::kill_orphan,
             notify,
             git_branch,
             claude::list_claude_sessions,
@@ -1113,15 +1420,42 @@ fn main() {
         .run(|_app, _event| {
             // 우리가 건 tailscale serve 매핑을 남기지 않는다 (best-effort)
             if let tauri::RunEvent::Exit = _event {
+                crash::clear_marker(); // 정상 종료 — 다음 실행이 비정상 종료로 보지 않게
                 remote::shutdown(_app);
+                // 셸은 프로세스가 끝나며 SIGHUP 으로 죽지만 nohup·setsid 로 띄운 서버는 남는다 —
+                // 셸이 아직 살아 있는 지금 트리를 떠서 정리한다 (최대 약 2초 대기 후 종료 진행)
+                let reap = _app
+                    .try_state::<Mutex<Store>>()
+                    .is_some_and(|s| plock(&s).data.settings.kill_background_on_close);
+                if reap {
+                    orphans::reap_sessions(&_app.state::<PtyManager>().shell_pids(), std::time::Duration::from_secs(2));
+                }
             }
-            // 크래시 복구 중(창 재생성 사이, 창 0개)의 자동 종료 요청만 무시 —
-            // 사용자 종료(X 버튼, app.exit)는 그대로 진행된다.
-            #[cfg(windows)]
             if let tauri::RunEvent::ExitRequested { code, api, .. } = &_event {
+                // 크래시 복구 중(창 재생성 사이, 창 0개)의 자동 종료 요청만 무시 —
+                // 사용자 종료(X 버튼, app.exit)는 그대로 진행된다.
+                #[cfg(windows)]
                 if code.is_none() && CRASH_RECREATING.load(std::sync::atomic::Ordering::SeqCst) {
+                    api.prevent_exit();
+                    return;
+                }
+                // 코드가 있는 종료(app.exit·재시작)는 앱이 스스로 결정한 것이라 묻지 않는다
+                if code.is_none() && intercept_quit(_app) {
                     api.prevent_exit();
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quit_retry_window() {
+        assert!(!quit_retry_within(0, 10_000), "첫 요청");
+        assert!(quit_retry_within(10_000, 10_000 + QUIT_RETRY_WINDOW_MS));
+        assert!(!quit_retry_within(10_000, 10_001 + QUIT_RETRY_WINDOW_MS));
+        assert!(!quit_retry_within(10_000, 9_000), "시계 역행");
+    }
 }

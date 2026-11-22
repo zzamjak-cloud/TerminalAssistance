@@ -1,0 +1,142 @@
+// 남은 백그라운드 프로세스 — 탭이 닫히거나 앱이 재시작된 뒤에도 살아 있는 서버·감시 루프를
+// 사이드바 배지로 알리고 목록에서 종료할 수 있게 한다. 판별은 백엔드(orphans.rs), Windows 는 늘 빈 목록.
+const ORPHAN_FIRST_SCAN_MS = 5000;
+const ORPHAN_RESCAN_MS = 5 * 60 * 1000;
+
+function orphanMemKb(list) {
+  return (list || []).reduce((sum, o) => sum + (o.rssKb || 0), 0);
+}
+
+// KB → 사람이 읽는 크기 (340MB, 1.2GB)
+function formatMemKb(kb) {
+  const mb = (kb || 0) / 1024;
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)}GB`;
+  return `${Math.max(0, Math.round(mb))}MB`;
+}
+
+Object.assign(App, {
+  _orphans: [],
+
+  initOrphans() {
+    const badge = document.getElementById('orphan-badge');
+    if (badge) badge.onclick = () => App.showOrphansModal();
+    // 비정상 종료 뒤에는 지난 실행의 서버가 그대로 남아 있을 가능성이 커 바로 확인한다
+    setTimeout(async () => {
+      await App.scanOrphans();
+      const left = App._leftoverOrphans();
+      if (left.length) {
+        App.showToastWhenFree(`이전 작업에서 남은 백그라운드 프로세스 ${left.length}개 · 약 ${formatMemKb(orphanMemKb(left))} 사용 중 — 사이드바 아래 '백그라운드'에서 확인할 수 있습니다`, 9000);
+      }
+    }, App._crashed ? 0 : ORPHAN_FIRST_SCAN_MS);
+    setInterval(() => { void App.scanOrphans(); }, ORPHAN_RESCAN_MS);
+  },
+
+  async scanOrphans() {
+    try { App._orphans = (await ta.listOrphans()) || []; }
+    catch (_) { App._orphans = []; }
+    App.renderOrphanBadge();
+    return App._orphans;
+  },
+
+  // 닫힌 탭·이전 실행이 남긴 것만 '남은 프로세스' — 열린 탭이 띄운 백그라운드 작업은 따로 보여 준다
+  _leftoverOrphans() {
+    return App._orphans.filter((o) => !o.liveTab);
+  },
+
+  renderOrphanBadge() {
+    const el = document.getElementById('orphan-badge');
+    if (!el) return;
+    const n = App._leftoverOrphans().length;
+    el.classList.toggle('hidden', n === 0);
+    el.textContent = `백그라운드 ${n}`;
+    el.title = `닫힌 탭·이전 실행에서 남은 백그라운드 프로세스 ${n}개 · 약 ${formatMemKb(orphanMemKb(App._leftoverOrphans()))} 사용 중 — 클릭해 확인·종료`;
+  },
+
+  // 실행 경과(초)로 시작 시각을 계산한다 — ps 의 lstart 문자열은 웹뷰마다 해석이 다르다
+  _orphanStarted(o) {
+    if (Number.isFinite(o.elapsedSec)) return formatRelativeTime(Date.now() - o.elapsedSec * 1000);
+    return String(o.startedAt || '');
+  },
+
+  _orphanRowHtml(o) {
+    const p = App.state.projects.find((x) => x.id === o.projectId);
+    const where = o.projectId ? (p ? p.name : '프로젝트 밖') : (o.cwd || '경로 모름');
+    const tab = o.liveTab ? App.state.sessions.find((x) => x.id === o.sessionId) : null;
+    return `
+      <div class="orphan-row" data-pgid="${o.pgid}">
+        <div class="orphan-main">
+          <div class="orphan-cmd" title="${escapeHtml(o.command)}">${escapeHtml(o.command)}</div>
+          <div class="orphan-meta">
+            ${escapeHtml(where)}
+            · CPU ${escapeHtml(String(Math.round(o.cpu || 0)))}% · ${escapeHtml(formatMemKb(o.rssKb || 0))}
+            · ${escapeHtml(App._orphanStarted(o))} 시작
+            ${o.ports.length ? ` · 포트 ${o.ports.map((x) => escapeHtml(String(x))).join(', ')}` : ''}
+            ${o.pids.length > 1 ? ` · 프로세스 ${o.pids.length}개` : ''}
+            ${tab ? ` · 탭 ${escapeHtml(tab.title)}` : (o.fromApp ? ' · 앱 세션에서 실행' : '')}
+          </div>
+        </div>
+        <button class="orphan-kill danger">종료</button>
+      </div>`;
+  },
+
+  async showOrphansModal() {
+    await App.scanOrphans();
+    const leftovers = App._leftoverOrphans();
+    const liveOnes = App._orphans.filter((o) => o.liveTab);
+    const liveSection = liveOnes.length
+      ? `<div class="orphan-group">열린 탭 소속 (${liveOnes.length}) — 탭에서 띄운 백그라운드 작업입니다</div>${liveOnes.map((o) => App._orphanRowHtml(o)).join('')}`
+      : '';
+    App.modal(`
+      <h3>남은 백그라운드 프로세스</h3>
+      <p style="color:var(--fg-dim);line-height:1.6">닫힌 탭이나 이전 실행에서 에이전트가 띄운 뒤 남은 프로세스입니다.</p>
+      <div class="orphan-list">
+        ${leftovers.map((o) => App._orphanRowHtml(o)).join('') || '<div class="prompt-empty">남은 백그라운드 프로세스가 없습니다.</div>'}
+        ${liveSection}
+      </div>
+      <div class="modal-actions">
+        <button id="m-cancel">닫기</button>
+        ${leftovers.length > 1 ? '<button id="m-kill-all" class="danger">남은 프로세스 모두 종료</button>' : ''}
+      </div>`,
+      (m, close) => {
+        m.querySelector('#m-cancel').onclick = close;
+        for (const row of m.querySelectorAll('.orphan-row')) {
+          const btn = row.querySelector('.orphan-kill');
+          btn.onclick = async () => {
+            btn.disabled = true;
+            btn.textContent = '종료 중…';
+            try {
+              await ta.killOrphan(Number(row.dataset.pgid));
+              row.remove();
+            } catch (e) {
+              btn.disabled = false;
+              btn.textContent = '종료';
+              App.showToast('종료하지 못했습니다: ' + e);
+            }
+            await App.scanOrphans();
+          };
+        }
+        const all = m.querySelector('#m-kill-all');
+        if (all) all.onclick = async () => {
+          all.disabled = true;
+          all.textContent = '종료 중…';
+          let results = [];
+          try { results = await ta.killOrphans(leftovers.map((o) => o.pgid)); }
+          catch (e) { App.showToast('종료하지 못했습니다: ' + e); }
+          // 실제로 종료된 항목만 목록에서 걷는다
+          const failed = [];
+          for (const r of results) {
+            const row = m.querySelector(`.orphan-row[data-pgid="${Number(r.pgid)}"]`);
+            if (r.ok) { if (row) row.remove(); } else failed.push(r.error || String(r.pgid));
+          }
+          await App.scanOrphans();
+          if (failed.length) {
+            all.disabled = false;
+            all.textContent = '남은 프로세스 모두 종료';
+            App.showToast(`${failed.length}개를 종료하지 못했습니다 — ${failed[0]}`, 9000);
+          } else {
+            close();
+          }
+        };
+      }, { wide: true });
+  }
+});

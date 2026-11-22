@@ -303,6 +303,12 @@ Object.assign(App, {
 
   // 큐 진행은 PromptQueue 가 맡는다 — 전달을 확인한 뒤에만 큐에서 지운다(유실 0).
   handleQueuedDone(sessionId) {
+    // 업데이트 후 자동 이어하기를 기다리는 빈 셸에 예약 프롬프트가 먼저 들어가지 않게 한다
+    // 붙잡는 동안 끝난 턴은 기록해 두었다가 해제할 때 한 번 처리한다 (update-resume.js)
+    if (App._autoResumeHold && App._autoResumeHold.has(sessionId)) {
+      if (App._autoResumeMissedDone) App._autoResumeMissedDone.add(sessionId);
+      return;
+    }
     void PromptQueue.onSessionDone(sessionId);
   },
 
@@ -336,6 +342,7 @@ Object.assign(App, {
     // - Codex/Claude TUI 는 붙여넣기 직후 도착한 Enter 를 붙여넣기의 일부로 삼키므로 한 틱 늦춘다.
     setTimeout(() => {
       if (!TerminalView.views.has(sessionId)) return;
+      TerminalView.noteSubmittedLine(sessionId, submitText);
       ta.write(sessionId, '\r');
       TerminalView.resetTypedLine(sessionId);
     }, App.SUBMIT_ENTER_DELAY_MS);

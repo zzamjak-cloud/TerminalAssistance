@@ -85,6 +85,7 @@ pub struct SessionMeta {
     pub hook_done: bool,    // 마지막 훅 이벤트가 Stop(완료) 인가
     pub hook_done_ts: u64,  // 그 Stop 신호의 시각
     pub hook_done_used_ts: u64, // 이미 완료로 소비한 Stop 신호 — 같은 신호로 두 번 알리지 않는다
+    pub agent_cmd: Option<String>, // 마지막으로 셸에서 실행한 claude/codex 명령 줄 — 업데이트 후 이어하기의 플래그 출처
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -756,6 +757,7 @@ impl PtyManager {
             cmd.env("LC_ALL", "ko_KR.UTF-8");
         }
 
+        crate::hooks::clear_state_file(&id);
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -781,6 +783,7 @@ impl PtyManager {
             hook_done: false,
             hook_done_ts: 0,
             hook_done_used_ts: 0,
+            agent_cmd: None,
         };
         let info = meta.info();
 
@@ -1010,7 +1013,8 @@ impl PtyManager {
         let _ = self.events.send(PtyEvent::Resize { id: id.to_string(), cols, rows });
     }
 
-    pub fn close(&self, id: &str) {
+    /// reap = 그 탭이 띄운 백그라운드 프로세스도 함께 끝낸다 (설정 killBackgroundOnClose)
+    pub fn close(&self, id: &str, reap: bool) {
         // 맵 락은 remove 즉시 놓는다 (가드를 문장 스코프로 떨어뜨림) —
         // 락을 쥔 채 chan 통지·kill·파일 삭제를 하면 다른 세션의 생성/닫기가 그 뒤에서 대기한다
         let chan = plock(&self.chans).remove(id);
@@ -1022,7 +1026,17 @@ impl PtyManager {
         // kill 은 세션 io 락과 무관하게 수행 — write 가 블록된 세션도 즉시 해제된다
         let child = plock(&self.children).remove(id);
         if let Some(mut child) = child {
-            let _ = child.kill();
+            if reap {
+                // ps 조회가 있어 UI 스레드를 막지 않게 별도 스레드에서 한다
+                let sessions = vec![(id.to_string(), child.process_id())];
+                std::thread::spawn(move || {
+                    crate::orphans::reap_around(&sessions, Duration::from_secs(2), move || {
+                        let _ = child.kill();
+                    });
+                });
+            } else {
+                let _ = child.kill();
+            }
         }
         plock(&self.ios).remove(id);
         plock(&self.metas).remove(id);
@@ -1155,6 +1169,90 @@ impl PtyManager {
                 emit_status(app, &self.events, id, Status::Idle, 0);
             }
         }
+    }
+
+    /// PTY 전경 프로세스 그룹 (unix). 셸 pid 와 같으면 셸이 프롬프트에 있다
+    fn fg_pgid(&self, id: &str) -> Option<i32> {
+        #[cfg(unix)]
+        {
+            let io = plock(&self.ios).get(id).cloned()?;
+            let pgid = plock(&io.master).process_group_leader();
+            pgid
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = id;
+            None
+        }
+    }
+
+    fn shell_pid(&self, id: &str) -> Option<u32> {
+        plock(&self.children).get(id).and_then(|c| c.process_id())
+    }
+
+    /// 셸에서 낸 줄로 에이전트 실행 명령을 갱신한다 — 에이전트 줄이면 기억, 그 밖의 줄이면 지운다.
+    /// (↑ 기록·별칭으로 다시 띄운 에이전트에 이전 실행의 권한 우회 플래그가 따라붙지 않게)
+    /// 셸이 전경일 때만 받는다 — 에이전트 입력창에 친 프롬프트를 셸 명령으로 오인하지 않게.
+    /// 전경 판정이 불가능한 Windows 는 호출부(resume::note_agent_command)가 거른다.
+    pub fn note_agent_command(&self, id: &str, line: Option<&str>) {
+        if let (Some(fg), Some(shell)) = (self.fg_pgid(id), self.shell_pid(id)) {
+            if fg != shell as i32 {
+                return;
+            }
+        }
+        if let Some(m) = plock(&self.metas).get_mut(id) {
+            m.agent_cmd = line.map(str::to_string);
+        }
+    }
+
+    /// 업데이트 이어하기 판별 대상 — 살아 있는 세션 전부
+    pub fn resume_targets(&self) -> Vec<crate::resume::ResumeTarget> {
+        let base: Vec<(String, String, Option<String>, u64)> = plock(&self.metas)
+            .values()
+            .filter(|m| !m.exited)
+            .map(|m| (m.id.clone(), m.cwd.clone(), m.agent_cmd.clone(), m.created_at_ms))
+            .collect();
+        base.into_iter().map(|b| self.target_of(b)).collect()
+    }
+
+    fn target_of(&self, (id, cwd, agent_cmd, created_at_ms): (String, String, Option<String>, u64)) -> crate::resume::ResumeTarget {
+        crate::resume::ResumeTarget {
+            shell_pid: self.shell_pid(&id),
+            fg_pgid: self.fg_pgid(&id),
+            id,
+            cwd,
+            agent_cmd,
+            created_at_ms,
+        }
+    }
+
+    /// 실행·허가 대기 중인 탭 — 에이전트 탭인지는 resume::agent_busy 가 가린다
+    pub fn busy_candidates(&self) -> Vec<crate::resume::BusyCandidate> {
+        let base: Vec<(String, bool, (String, String, Option<String>, u64))> = {
+            let map = plock(&self.metas);
+            let mut v: Vec<&SessionMeta> = map
+                .values()
+                .filter(|m| !m.exited && matches!(m.status, Status::Running | Status::Waiting))
+                .collect();
+            v.sort_by_key(|m| m.created_at_ms);
+            v.into_iter()
+                .map(|m| (m.title.clone(), m.hook_seen, (m.id.clone(), m.cwd.clone(), m.agent_cmd.clone(), m.created_at_ms)))
+                .collect()
+        };
+        base.into_iter()
+            .map(|(title, hook_seen, t)| crate::resume::BusyCandidate { title, hook_seen, target: self.target_of(t) })
+            .collect()
+    }
+
+    /// [(탭 id, 셸 pid)] — 앱 종료 시 백그라운드 정리 대상
+    pub fn shell_pids(&self) -> Vec<(String, Option<u32>)> {
+        let ids: Vec<String> = plock(&self.metas).values().filter(|m| !m.exited).map(|m| m.id.clone()).collect();
+        ids.into_iter().map(|id| { let p = self.shell_pid(&id); (id, p) }).collect()
+    }
+
+    /// 살아 있는 탭 id — 남은 프로세스 목록에서 '열린 탭 소속'을 가르는 기준
+    pub fn live_ids(&self) -> std::collections::HashSet<String> {
+        plock(&self.metas).values().filter(|m| !m.exited).map(|m| m.id.clone()).collect()
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
@@ -1402,8 +1500,14 @@ mod tests {
                 hook_done: false,
                 hook_done_ts: 0,
                 hook_done_used_ts: 0,
+                agent_cmd: None,
             },
         );
+        // 에이전트 실행 줄은 기억하고, 다른 줄(↑ 재실행 등 추적 불가 포함)이 오면 지운다
+        m.note_agent_command("s", Some("claude --dangerously-skip-permissions"));
+        assert_eq!(m.resume_targets()[0].agent_cmd.as_deref(), Some("claude --dangerously-skip-permissions"));
+        m.note_agent_command("s", None);
+        assert!(m.resume_targets()[0].agent_cmd.is_none());
         m.resize("s", 120, 40);
         let i = &m.list()[0];
         assert_eq!((i.cols, i.rows, i.control_holder.is_none(), i.control_device_name.is_none()), (120, 40, true, true));
@@ -1429,7 +1533,7 @@ mod tests {
         let m = manager_with_session("s");
         m.take_control("s", "a", "A", 1, 60, 20).unwrap();
         let mut rx = m.subscribe_events();
-        m.close("s");
+        m.close("s", false);
         assert!(m.control_of("s").is_none());
         assert_eq!(controls_seen(&mut rx), vec![(None, 100, 30)]);
     }

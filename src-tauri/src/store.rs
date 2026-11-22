@@ -89,6 +89,9 @@ pub struct Settings {
     /// 끄면 Claude Code 기본(전체 화면 모드) — 깜빡임 없는 그리기·마우스 클릭 기능 대신 스크롤백이 없다.
     #[serde(rename = "claudeClassicRenderer", default = "default_true")]
     pub claude_classic_renderer: bool,
+    /// 탭·앱을 닫을 때 그 세션이 띄운 백그라운드 프로세스(서버 등)도 함께 끝낸다 — 남아서 자원을 쓰지 않게
+    #[serde(rename = "killBackgroundOnClose", default = "default_true")]
+    pub kill_background_on_close: bool,
 }
 
 fn default_font_size() -> u32 {
@@ -117,6 +120,7 @@ impl Default for Settings {
             letter_spacing: 0.0,
             min_contrast: 1.0,
             claude_classic_renderer: true,
+            kill_background_on_close: true,
         }
     }
 }
@@ -142,6 +146,30 @@ pub struct SavedSession {
     pub cwd: String,
     #[serde(rename = "createdAtMs", default)]
     pub created_at_ms: u64,
+}
+
+/// 업데이트 재시작 직후 자동으로 이어 실행할 에이전트 명령 — 재시작 전에 기록하고 복원 후 1회 소비한다
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ResumeEntry {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub command: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PendingResume {
+    #[serde(rename = "createdMs")]
+    pub created_ms: u64,
+    pub entries: Vec<ResumeEntry>,
+}
+
+/// 기록 후 이 시간이 지나면 버린다 — 업데이트 설치가 실패해 한참 뒤 수동 재시작했을 때
+/// 엉뚱한 시점에 에이전트가 자동 실행되지 않게
+pub const PENDING_RESUME_TTL_MS: u64 = 30 * 60 * 1000;
+
+/// 기록 시각이 미래(시계 역행)이거나 TTL 을 넘겼으면 무효
+pub fn pending_resume_valid(created_ms: u64, now_ms: u64) -> bool {
+    now_ms >= created_ms && now_ms - created_ms <= PENDING_RESUME_TTL_MS
 }
 
 /// 저장된 세션을 되살릴 수 있는지 판정한다. 되살릴 수 없으면 사유를 돌려준다.
@@ -281,6 +309,11 @@ pub struct StoreData {
     pub session_layout: Vec<SavedSession>,
     #[serde(default)]
     pub remote: RemoteConfig,
+    #[serde(rename = "pendingResume", default, skip_serializing_if = "Option::is_none")]
+    pub pending_resume: Option<PendingResume>,
+    /// 비정상 종료 대비 — 실행 중인 에이전트의 재개 명령 스냅샷 (crash.rs 가 주기적으로 갱신)
+    #[serde(rename = "crashResume", default, skip_serializing_if = "Option::is_none")]
+    pub crash_resume: Option<PendingResume>,
 }
 
 pub struct Store {
@@ -381,6 +414,29 @@ mod tests {
         .unwrap();
         assert_eq!(older.projects.len(), 1);
         assert!(older.projects[0].parent_id.is_none());
+    }
+
+    #[test]
+    fn pending_resume_expires_after_ttl_and_tolerates_old_config() {
+        let t0 = 1_000_000;
+        assert!(pending_resume_valid(t0, t0));
+        assert!(pending_resume_valid(t0, t0 + PENDING_RESUME_TTL_MS));
+        assert!(!pending_resume_valid(t0, t0 + PENDING_RESUME_TTL_MS + 1));
+        assert!(!pending_resume_valid(t0, t0 - 1), "시계가 거꾸로 가면 무효");
+
+        let old: StoreData = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
+        assert!(old.pending_resume.is_none());
+        assert!(!serde_json::to_string(&old).unwrap().contains("pendingResume"));
+
+        let mut d = StoreData::default();
+        d.pending_resume = Some(PendingResume {
+            created_ms: 5,
+            entries: vec![ResumeEntry { session_id: "s1".into(), command: "claude --resume x".into() }],
+        });
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains("\"sessionId\":\"s1\""), "{json}");
+        let back: StoreData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.pending_resume, d.pending_resume);
     }
 
     #[test]

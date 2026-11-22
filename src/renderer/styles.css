@@ -1284,6 +1284,49 @@ button:disabled:hover { border-color: var(--border); }
 }
 #app-toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+/* 버튼 달린 토스트 (업데이트 설치 카운트다운) — 일반 토스트 위에 뜬다 */
+#action-toast {
+  position: fixed; left: 50%; bottom: 72px; transform: translate(-50%, 8px);
+  max-width: min(560px, 84vw);
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 12px 9px 16px;
+  background: var(--bg-panel); color: var(--fg);
+  border: 1px solid var(--accent-strong); border-radius: 8px;
+  box-shadow: var(--shadow);
+  font-size: 12px; font-weight: 600;
+  opacity: 0; pointer-events: none;
+  transition: opacity .25s, transform .25s;
+  z-index: 201;
+}
+#action-toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+#action-toast button { flex: none; }
+
+.update-busy { color: var(--waiting); line-height: 1.6; margin-bottom: 6px; }
+.quit-list { margin: 8px 0 10px 18px; line-height: 1.7; }
+
+/* 남은 백그라운드 프로세스 */
+#orphan-badge {
+  margin: 6px; padding: 5px 10px;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: transparent; color: var(--waiting);
+  font-size: 11px; font-weight: 600; text-align: left; cursor: pointer;
+}
+#orphan-badge:hover { border-color: var(--waiting); }
+#orphan-badge.hidden { display: none; }
+.orphan-list { max-height: 50vh; overflow-y: auto; margin: 8px 0; }
+.orphan-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 4px; border-bottom: 1px solid var(--border);
+}
+.orphan-main { flex: 1; min-width: 0; }
+.orphan-cmd {
+  font-family: var(--mono, monospace); font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.orphan-meta { color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
+.orphan-kill { flex: none; }
+.orphan-group { margin: 14px 0 4px; color: var(--fg-dim); font-size: 11px; font-weight: 600; }
+
 .mini-dots { display: flex; gap: 3px; align-items: center; }
 .mini-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-dim); }
 .mini-dot.running { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }

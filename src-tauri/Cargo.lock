@@ -4583,12 +4583,13 @@ dependencies = [
 
 [[package]]
 name = "terminal-assistance"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "axum",
  "futures-util",
  "getrandom 0.2.17",
  "image",
+ "libc",
  "mac-notification-sys",
  "objc2",
  "objc2-foundation",

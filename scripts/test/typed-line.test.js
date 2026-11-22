@@ -14,7 +14,8 @@ function loadTerminalView() {
   const sandbox = {
     document: { getElementById: () => null, createElement: () => ({}) },
     window: { addEventListener() {} },
-    ta: { write: (id, data) => writes.push([id, data]) },
+    // Enter 마다 셸 줄을 백엔드에 알린다 (업데이트 이어하기용) — 이 테스트의 관심사가 아니라 비워 둔다
+    ta: { write: (id, data) => writes.push([id, data]), noteAgentCommand: () => Promise.resolve() },
     App: { state: { platform: 'windows' }, isSplit: () => false },
     SPLIT_MAX_PANES: 6,
     // 구현이 불일치 진단을 console.warn 으로 남기므로 테스트 출력에서 가린다

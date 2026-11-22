@@ -151,6 +151,7 @@ Object.assign(App, {
       }
       const cmd = it.source === 'codex' ? 'codex resume ' : 'claude --resume ';
       if (info) setTimeout(() => {
+        TerminalView.noteSubmittedLine(info.id, cmd + it.id);
         ta.write(info.id, cmd + it.id + '\r');
         TerminalView.resetTypedLine(info.id);
       }, 600);

@@ -224,7 +224,13 @@ const TerminalView = {
     // 브래킷 붙여넣기는 감싼 시퀀스를 벗기고 본문만 본다 (붙여넣은 텍스트도 입력 라인의 일부)
     const bracketed = /^\x1b\[200~([\s\S]*)\x1b\[201~$/.exec(data);
     const text = bracketed ? bracketed[1] : data;
-    if (text === '\r' || text === '\n' || text === '\r\n') { this.resetTypedLine(id); return; }
+    if (text === '\r' || text === '\n' || text === '\r\n') {
+      // 추적이 깨진 줄(↑ 기록·Tab 완성)은 무엇을 실행했는지 모르므로 '에이전트 아님'으로 알린다
+      if (!v.typedValid) this.noteSubmittedLine(id, '');
+      else if (v.typedText.trim()) this.noteSubmittedLine(id, v.typedText);
+      this.resetTypedLine(id);
+      return;
+    }
     if (text === '\x7f' || text === '\b') { // 한 글자 지우기
       if (!v.typedValid) return;
       const chars = Array.from(v.typedText);
@@ -237,6 +243,16 @@ const TerminalView = {
     if (!v.typedValid) return;
     v.typedText += text;
     if (v.typedText.length > this.TYPED_LINE_LIMIT) this.invalidateTypedLine(id);
+  },
+
+  // 셸에서 낸 줄을 백엔드에 알린다 — 에이전트 실행 줄이면 기억(업데이트 재시작 후 같은 플래그로 이어 실행),
+  // 그 밖의 줄이면 지운다. Enter 를 PTY 로 보내기 전에 불러야 한다: 백엔드는 셸이 전경일 때만 받는데,
+  // 늦으면 에이전트가 이미 전경이다.
+  AGENT_LINE_RE: /^\s*(claude|codex)(\s|$)/,
+  noteSubmittedLine(id, line) {
+    const text = String(line || '');
+    const agentLine = this.AGENT_LINE_RE.test(text) ? text.trim() : '';
+    Promise.resolve(ta.noteAgentCommand(id, agentLine)).catch(() => {});
   },
 
   // 라인이 비워졌다(전송·Ctrl+U 등) — 빈 상태에서 다시 정확히 추적할 수 있다

@@ -62,6 +62,8 @@ const App = {
       projects: st.projects, presets: st.presets, recipes: st.recipes || [], settings: st.settings, sessions: st.sessions,
       drafts: st.drafts || {}, platform: st.platform || ''
     });
+    // 업데이트 재시작이면 이어 실행할 에이전트 목록 — 예약 프롬프트 큐보다 먼저 붙잡아 둔다
+    const autoResumePlan = await App.takeAutoResume(restoreResult);
     await App.cleanupDeadQueuedPrompts();
     App.restoreComposerTexts(); // 리로드·재시작 전 작성 중이던 프롬프트 복원
     // 리로드·종료 직전 작성 중 텍스트를 즉시 저장 (스로틀 대기분 포함)
@@ -75,7 +77,10 @@ const App = {
       TerminalView.applySessionControl(s);
     }
 
-    ta.onData((p) => TerminalView.feed(p));
+    ta.onData((p) => {
+      TerminalView.feed(p);
+      App.noteOutput(p.sessionId); // 자동 이어하기가 셸 프롬프트를 기다리는 근거
+    });
     ta.onStatus(({ sessionId, status, busyMs }) => {
       const s = App.state.sessions.find((x) => x.id === sessionId);
       if (!s) return;
@@ -181,6 +186,7 @@ const App = {
     await Promise.all(restoring.map(async (s) => {
       try {
         const snap = await ta.getScrollback(s.id);
+        if (snap && snap.data) App.noteOutput(s.id);
         TerminalView.restore(s.id, snap);
       } catch (_) {
         TerminalView.restore(s.id, null); // 스냅샷 실패해도 라이브 출력은 살린다
@@ -203,11 +209,13 @@ const App = {
     App.renderAll();
     // 복원 결과 알림 + '이어서 하기' 배너 (기록 조회가 있으므로 UI 를 막지 않게 뒤에서 돈다)
     App.afterSessionRestore(restoreResult);
+    void App.runAutoResume(autoResumePlan);
     if (recovered) App.noteRecovery(); // UI 가 그려진 뒤 복구 사실을 알린다
     App.refreshVisibleGitRemote({ fetch: true }); // 복원 뒤 실제로 보이는 cwd만 fetch
 
-    // 자동 업데이트 확인 (백그라운드 — 실패는 조용히 무시)
-    setTimeout(() => App.checkUpdate(), 2500);
+    // 자동 업데이트 확인 (백그라운드 — 실패는 조용히 무시, 6시간마다 재확인) + 종료 확인 수신
+    App.initUpdateUI();
+    App.initOrphans();
 
     booted = true;
     for (const info of createdDuringBoot.splice(0)) void App.adoptRemoteSession(info);
@@ -243,6 +251,20 @@ const App = {
     el.classList.add('show');
     clearTimeout(App._toastTimer);
     App._toastTimer = setTimeout(() => el.classList.remove('show'), ms || 7000);
+  },
+
+  // 다른 토스트가 떠 있으면 사라진 뒤에 띄운다 — 부팅 직후 복원·업데이트·백그라운드 알림이 서로 덮지 않게
+  showToastWhenFree(message, ms) {
+    const deadline = Date.now() + 30000;
+    const tryShow = () => {
+      const el = document.getElementById('app-toast');
+      if (el && el.classList.contains('show') && Date.now() < deadline) {
+        setTimeout(tryShow, 1000);
+        return;
+      }
+      App.showToast(message, ms);
+    };
+    tryShow();
   },
 
   // 테마 변경 후 — JS 로 직접 칠한 색(프로젝트 이름 등)을 새 테마 기준으로 다시 계산
@@ -1154,6 +1176,7 @@ const App = {
     TerminalView.activate(id, { noFocus: true });
     TerminalView.focusTerminal(id);
     if (execute) {
+      TerminalView.noteSubmittedLine(id, command);
       // 명령과 Enter 는 따로, 간격을 두고 쓴다. 한 덩어리로 쓰면 TUI 가 빠른 입력 묶음을 붙여넣기로 보고
       // 끝의 Enter 를 줄바꿈으로 넣는다 — 긴 '! cmd //c start ...' 프리셋이 실행되지 않던 원인(실측).
       // Claude Code 는 30ms 간격이면 충분하지만 Codex 는 붙여넣기 직후 약 120ms 안의 Enter 를 줄바꿈으로 처리한다.
@@ -1184,6 +1207,7 @@ const App = {
       if (command === null) return;
       setTimeout(() => {
         TerminalView.paste(info.id, command);
+        TerminalView.noteSubmittedLine(info.id, command);
         ta.write(info.id, '\r');
         TerminalView.resetTypedLine(info.id);
       }, 600);
