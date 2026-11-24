@@ -520,6 +520,10 @@ Object.assign(App, {
       <div class="form-help">켜면 PC 의 스크롤바·드래그 선택과 폰의 스와이프 스크롤이 터미널 자체 스크롤백으로 매끄럽게 동작합니다. 끄면 Claude Code 기본인 전체 화면 모드(깜빡임 없는 그리기·마우스 클릭)로 실행되지만 스크롤백이 없어 폰에서는 휠 이벤트 단위로만 스크롤됩니다. 새로 만드는 세션부터 적용됩니다.</div>
       <div class="check"><input type="checkbox" id="m-kill-bg" ${st.killBackgroundOnClose !== false ? 'checked' : ''}><label for="m-kill-bg" style="margin:0">탭·앱을 닫을 때 그 세션이 띄운 백그라운드 프로세스(서버·백그라운드 작업)도 함께 종료</label></div>
       <div class="form-help">끄면 닫은 뒤에도 남아 메모리·CPU 를 계속 쓸 수 있습니다. 남은 것은 사이드바 아래 '백그라운드'에서 볼 수 있습니다. (macOS·Linux)</div>
+      <label>컨텍스트 경고</label>
+      <div class="form-help">에이전트가 응답을 마쳤을 때 대화가 길면 터미널 하단에 알립니다. 입력은 자동으로 보내지 않습니다.</div>
+      <label>Claude Code 경고 기준 (K 토큰, 0=끔)</label><input type="number" id="m-ctx-claude" min="0" max="10000" value="${Number(st.contextWarnClaudeK ?? 200)}">
+      <label>Codex 경고 기준 (컨텍스트 창 대비 %, 0=끔)</label><input type="number" id="m-ctx-codex" min="0" max="100" value="${Number(st.contextWarnCodexPct ?? 60)}">
       <label>AI 도구 연동 — 허가 대기(🟡) 감지</label>
       <div class="check"><input type="checkbox" id="m-hook-claude" ${hooks.claude ? 'checked' : ''}><label for="m-hook-claude" style="margin:0">Claude Code 훅 (~/.claude/settings.json 병합, 백업 생성)</label></div>
       <div class="check"><input type="checkbox" id="m-hook-codex" ${hooks.codex ? 'checked' : ''}><label for="m-hook-codex" style="margin:0">Codex 알림 (~/.codex/config.toml 병합, 백업 생성)</label></div>
@@ -623,6 +627,8 @@ Object.assign(App, {
             showPromptInput: m.querySelector('#m-show-prompt-input').checked,
             claudeClassicRenderer: m.querySelector('#m-claude-classic').checked,
             killBackgroundOnClose: m.querySelector('#m-kill-bg').checked,
+            contextWarnClaudeK: Math.max(0, Math.round(Number(m.querySelector('#m-ctx-claude').value) || 0)),
+            contextWarnCodexPct: Math.max(0, Math.min(100, Math.round(Number(m.querySelector('#m-ctx-codex').value) || 0))),
             lineHeight: Number(m.querySelector('#m-line-height').value),
             letterSpacing: Number(m.querySelector('#m-letter-spacing').value),
             minContrast: Number(m.querySelector('#m-min-contrast').value)

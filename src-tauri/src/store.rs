@@ -92,6 +92,12 @@ pub struct Settings {
     /// 탭·앱을 닫을 때 그 세션이 띄운 백그라운드 프로세스(서버 등)도 함께 끝낸다 — 남아서 자원을 쓰지 않게
     #[serde(rename = "killBackgroundOnClose", default = "default_true")]
     pub kill_background_on_close: bool,
+    /// 에이전트 응답 완료 시 Claude 컨텍스트가 이 값(K 토큰) 이상이면 경고 배너 (0 = 끔)
+    #[serde(rename = "contextWarnClaudeK", default = "default_context_warn_claude_k")]
+    pub context_warn_claude_k: u32,
+    /// Codex 컨텍스트가 창 대비 이 비율(%) 이상이면 경고 배너 (0 = 끔)
+    #[serde(rename = "contextWarnCodexPct", default = "default_context_warn_codex_pct")]
+    pub context_warn_codex_pct: u32,
 }
 
 fn default_font_size() -> u32 {
@@ -102,6 +108,12 @@ fn default_line_height() -> f32 {
 }
 fn default_min_contrast() -> f32 {
     1.0
+}
+fn default_context_warn_claude_k() -> u32 {
+    200
+}
+fn default_context_warn_codex_pct() -> u32 {
+    60
 }
 fn default_true() -> bool {
     true
@@ -121,6 +133,8 @@ impl Default for Settings {
             min_contrast: 1.0,
             claude_classic_renderer: true,
             kill_background_on_close: true,
+            context_warn_claude_k: 200,
+            context_warn_codex_pct: 60,
         }
     }
 }

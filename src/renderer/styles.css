@@ -480,6 +480,14 @@ button:disabled:hover { border-color: var(--border); }
   background: var(--accent-tint); border: 1px solid var(--accent-strong);
   border-radius: 6px;
 }
+.resume-banner.ctx-warn {
+  /* 반투명 틴트만 쓰면 뒤의 터미널 글자가 비쳐 읽기 어렵다 — 불투명 패널 위에 깐다 */
+  background: linear-gradient(var(--caution-tint), var(--caution-tint)), var(--bg-panel);
+  border-color: var(--caution);
+}
+.resume-banner.ctx-warn .rb-last { -webkit-line-clamp: 3; }
+/* 복원 배너와 같은 하단 자리를 쓰므로 그 위로 올린다 */
+.term-holder:has(.resume-banner:not(.ctx-warn)) .resume-banner.ctx-warn { bottom: 84px; }
 .resume-banner .rb-body { flex: 1; min-width: 0; }
 .resume-banner .rb-meta {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

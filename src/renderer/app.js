@@ -15,7 +15,8 @@ const App = {
     recipes: [],
     settings: {
       fontSize: 13, fontFamily: '', shell: '', notifyOnDone: true, notifyOnWaiting: true,
-      lineHeight: 1, letterSpacing: 0, minContrast: 1, showPromptInput: false
+      lineHeight: 1, letterSpacing: 0, minContrast: 1, showPromptInput: false,
+      contextWarnClaudeK: 200, contextWarnCodexPct: 60
     },
     sessions: [],   // { id, projectId, title, status, cwd }
     activeId: null,
@@ -96,6 +97,9 @@ const App = {
         App.clearDoneTimers(sessionId); // 새 작업 시작/입력 등으로 done 이탈 → 확인 추적 취소
       }
       if (status === 'waiting') App.onWaiting(s);
+      // done→idle(열람·키 입력 확인)에는 배너를 유지한다 — 새 턴(running)·허가 대기에서만 걷는다
+      if (status === 'done') void App.checkContextWarn(sessionId);
+      else if (status !== 'idle') App.hideContextBanner(sessionId);
       App.noteStatusForDashboard(sessionId, status); // 진행 시작 시각 기록 + 열려 있으면 즉시 갱신
       updateSessionStatus(s); // 전체 재구축 대신 해당 행만 갱신 (호버·드래그 유지)
       App.refreshPickerStatus(s); // 피커·패널 헤더의 상태 태그만 최신화 (단일 화면 헤더 포함)
@@ -922,6 +926,7 @@ const App = {
     await ta.closeSession(id);
     await App.clearQueuedPrompts(id);
     App._composerTexts.delete(id);
+    App.disposeContextWarn(id);
     App.dropComposerPersist(id); // 저장분·예약 타이머 정리
     App.state.sessions = App.state.sessions.filter((s) => s.id !== id);
     delete App.state.branches[id];

@@ -4,6 +4,7 @@
 mod claude;
 mod claude_usage;
 mod codex;
+mod context;
 mod crash;
 mod explorer;
 mod hooks;
@@ -388,6 +389,8 @@ fn update_settings(
     min_contrast: Option<f32>,
     claude_classic_renderer: Option<bool>,
     kill_background_on_close: Option<bool>,
+    context_warn_claude_k: Option<u32>,
+    context_warn_codex_pct: Option<u32>,
 ) -> Result<store::Settings, String> {
     let mut s = plock(&store);
     if let Some(v) = font_size {
@@ -419,6 +422,12 @@ fn update_settings(
     }
     if let Some(v) = kill_background_on_close {
         s.data.settings.kill_background_on_close = v;
+    }
+    if let Some(v) = context_warn_claude_k {
+        s.data.settings.context_warn_claude_k = v.min(10_000);
+    }
+    if let Some(v) = context_warn_codex_pct {
+        s.data.settings.context_warn_codex_pct = v.min(100);
     }
     if let Some(v) = min_contrast {
         s.data.settings.min_contrast = v.clamp(1.0, 21.0);
@@ -1335,6 +1344,7 @@ fn main() {
             update_recipe,
             remove_recipe,
             update_settings,
+            context::context_usage,
             create_session,
             restore_sessions,
             write_session,

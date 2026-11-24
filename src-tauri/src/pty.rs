@@ -1215,6 +1215,15 @@ impl PtyManager {
         base.into_iter().map(|b| self.target_of(b)).collect()
     }
 
+    /// 살아 있는 세션 하나의 판별 스냅샷
+    pub fn target(&self, id: &str) -> Option<crate::resume::ResumeTarget> {
+        let base = plock(&self.metas)
+            .get(id)
+            .filter(|m| !m.exited)
+            .map(|m| (m.id.clone(), m.cwd.clone(), m.agent_cmd.clone(), m.created_at_ms))?;
+        Some(self.target_of(base))
+    }
+
     fn target_of(&self, (id, cwd, agent_cmd, created_at_ms): (String, String, Option<String>, u64)) -> crate::resume::ResumeTarget {
         crate::resume::ResumeTarget {
             shell_pid: self.shell_pid(&id),

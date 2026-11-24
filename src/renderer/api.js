@@ -65,7 +65,9 @@
       letterSpacing: patch.letterSpacing ?? null,
       minContrast: patch.minContrast ?? null,
       claudeClassicRenderer: patch.claudeClassicRenderer ?? null,
-      killBackgroundOnClose: patch.killBackgroundOnClose ?? null
+      killBackgroundOnClose: patch.killBackgroundOnClose ?? null,
+      contextWarnClaudeK: patch.contextWarnClaudeK ?? null,
+      contextWarnCodexPct: patch.contextWarnCodexPct ?? null
     }),
 
     // 설치된 셸 자동 감지 목록 — [{ label, value }] (설정 드롭다운용, 빈 value = OS 기본)
@@ -85,6 +87,7 @@
     // Claude Code 가 저장해 둔 세션 목록 (cwd 기준) — [{ id, mtimeMs, preview }]
     listClaudeSessions: (cwd) => invoke('list_claude_sessions', { cwd }),
     // 터미널 세션에서 마지막으로 돌던 Claude 세션 UUID (훅 기록, 없으면 null)
+    contextUsage: (sessionId) => invoke('context_usage', { sessionId }),
     lastClaudeSession: (sessionId) => invoke('last_claude_session', { sessionId }),
     // 세션 열람 팝업용: 저장된 세션 기록 → 대화 메시지 [{ role, kind, text }]
     claudeSessionMessages: (cwd, id) => invoke('claude_session_messages', { cwd, id }),

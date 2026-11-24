@@ -85,7 +85,7 @@ fn subdirs_desc(dir: &PathBuf) -> Vec<PathBuf> {
     v
 }
 
-fn recent_rollouts(scan_days: usize) -> Vec<(PathBuf, u64)> {
+pub(crate) fn recent_rollouts(scan_days: usize) -> Vec<(PathBuf, u64)> {
     let Some(home) = crate::claude::home_dir() else {
         return Vec::new();
     };
@@ -331,7 +331,7 @@ fn local_usage() -> Option<CodexUsage> {
     })
 }
 
-fn same_cwd(a: &str, b: &str) -> bool {
+pub(crate) fn same_cwd(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
@@ -365,7 +365,7 @@ fn is_exec_meta(p: &serde_json::Value) -> bool {
 
 /// rollout 파일의 session_meta 에서 (세션 id, cwd) 를 읽는다.
 /// 서브에이전트·exec rollout 은 대화 세션이 아니므로 None 을 돌려 목록에서 제외한다.
-fn codex_meta(path: &Path) -> Option<(String, String)> {
+pub(crate) fn codex_meta(path: &Path) -> Option<(String, String)> {
     let f = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(f.take(SESSION_SCAN_CAP));
     let mut line = String::new();
