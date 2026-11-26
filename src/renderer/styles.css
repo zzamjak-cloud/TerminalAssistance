@@ -429,6 +429,11 @@ button:disabled:hover { border-color: var(--border); }
 }
 .pm-title button { padding: 2px 8px; font-size: 11px; }
 .pm-list { max-height: 260px; overflow-y: auto; }
+/* 프리셋 관리: 전역(왼쪽) · 프로젝트 전용(오른쪽) 2단, 목록은 화면 높이를 최대한 쓴다 */
+.pm-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.pm-col { display: flex; flex-direction: column; min-width: 0; }
+.pm-col .pm-title { margin-top: 10px; }
+.pm-col .pm-list { height: calc(100vh - 230px); max-height: none; padding-right: 2px; }
 .pm-row {
   display: flex; gap: 8px; align-items: center;
   padding: 5px 8px;
@@ -1377,7 +1382,7 @@ body.sorting * { cursor: grabbing !important; }
   height: 0;
   border-top: 2px dashed var(--accent);
   pointer-events: none;
-  z-index: 300;
+  z-index: 500; /* 모달(400) 위 — 프리셋 관리 팝업 안에서 끌 때도 보이게 */
 }
 .drop-indicator.vert {
   width: 0;

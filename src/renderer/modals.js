@@ -103,10 +103,16 @@ Object.assign(App, {
     App.modal(`
       <h3>프리셋 관리</h3>
       <div class="form-help">⠿ 를 끌거나 ▲▼ 로 순서를 바꾸고, 색 버튼으로 드롭다운 항목 색을 바꿉니다.</div>
-      <div class="pm-title">◆ 전역 프리셋 <button id="pm-add-g">+ 추가</button></div>
-      <div class="pm-list" id="pm-globals"></div>
-      <div class="pm-title">▸ ${proj ? escapeHtml(proj.name) + ' 전용' : '프로젝트 전용'} <button id="pm-add-p" ${proj ? '' : 'disabled'}>+ 추가</button></div>
-      <div class="pm-list" id="pm-projs"></div>
+      <div class="pm-cols">
+        <div class="pm-col">
+          <div class="pm-title">◆ 전역 프리셋 <button id="pm-add-g">+ 추가</button></div>
+          <div class="pm-list" id="pm-globals"></div>
+        </div>
+        <div class="pm-col">
+          <div class="pm-title">▸ ${proj ? escapeHtml(proj.name) + ' 전용' : '프로젝트 전용'} <button id="pm-add-p" ${proj ? '' : 'disabled'}>+ 추가</button></div>
+          <div class="pm-list" id="pm-projs"></div>
+        </div>
+      </div>
       <div class="modal-actions"><button id="m-close">닫기</button></div>`,
       (m, close) => {
         const back = () => App.showPresetManager(projectId); // 추가/수정 후 관리 팝업으로 복귀
@@ -231,7 +237,7 @@ Object.assign(App, {
         m.querySelector('#pm-add-g').onclick = () => App.showPresetModal(null, { scope: '', back });
         if (proj) m.querySelector('#pm-add-p').onclick = () => App.showPresetModal(null, { scope: proj.id, back });
         m.querySelector('#m-close').onclick = close;
-      }, { wide: true });
+      }, { xl: true });
   },
 
   // ── 빈 분할 패널의 '+ 세션 추가': 프로젝트를 골라 그 패널에 새 세션을 연다 ──
