@@ -1,5 +1,6 @@
 // Tailscale CLI 연동 — IP 탐지, `status --json` 파싱(HTTPS 가능 여부·기기 온라인), `serve` 매핑.
 // 모든 CLI 호출은 블로킹이므로 spawn_blocking 안에서 부른다
+use crate::i18n::tr;
 use super::auth;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -292,7 +293,7 @@ pub fn serve_off_args() -> Vec<String> {
 pub fn serve_on(local_port: u16) -> Result<(), String> {
     run_cli(&serve_on_args(local_port), SERVE_TIMEOUT, true)
         .map(|_| ())
-        .ok_or_else(|| "tailscale serve 설정 실패 — Tailscale 관리 페이지에서 HTTPS 가 켜져 있는지 확인하세요".into())
+        .ok_or_else(|| tr("tailscale serve 설정 실패 — Tailscale 관리 페이지에서 HTTPS 가 켜져 있는지 확인하세요").into())
 }
 
 pub fn serve_off() {

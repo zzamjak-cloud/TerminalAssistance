@@ -1,6 +1,7 @@
 // Claude Code 세션 열람 — Claude Code 가 ~/.claude/projects/<경로 변환>/ 에 저장하는
 // 세션 기록(jsonl)을 읽기 전용으로 나열한다. 재개는 앱이 파일을 건드리지 않고
 // 터미널에서 `claude --resume <id>` 를 실행하는 방식이라 Claude Code 저장소와 충돌하지 않는다.
+use crate::i18n::tr;
 use serde::Serialize;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
@@ -148,7 +149,7 @@ fn extract_preview(path: &Path) -> Option<String> {
         return Some(t);
     }
     // 상한까지 다 읽었다 = 대화가 쌓인 큰 세션. 미리보기만 못 찾았을 뿐 재개 대상이다
-    (saw_reply || read >= SCAN_CAP).then(|| "대화 내용 미리보기 없음".to_string())
+    (saw_reply || read >= SCAN_CAP).then(|| tr("대화 내용 미리보기 없음").to_string())
 }
 
 /// cwd 에 해당하는 Claude Code 세션 목록 (최근 활동 순).
@@ -296,7 +297,7 @@ pub(crate) fn line_msgs(v: &serde_json::Value, out: &mut Vec<ChatMsg>) {
                         }
                     }
                     Some("tool_use") => {
-                        let name = b.get("name").and_then(|x| x.as_str()).unwrap_or("도구");
+                        let name = b.get("name").and_then(|x| x.as_str()).unwrap_or(tr("도구"));
                         let hint = b.get("input").map(tool_hint).unwrap_or_default();
                         let text = if hint.is_empty() { name.to_string() } else { format!("{}: {}", name, hint) };
                         out.push(ChatMsg { role: "assistant".into(), kind: "tool".into(), text });

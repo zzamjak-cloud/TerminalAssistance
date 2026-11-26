@@ -32,29 +32,29 @@ Object.assign(App, {
       ? left.toLowerCase() === right.toLowerCase()
       : left === right;
     if (!cwd || !root || !sameRoot) {
-      App.showPlanDropFeedback('활성 세션과 탐색기 프로젝트가 일치하지 않습니다.', 'error');
+      App.showPlanDropFeedback(tr('활성 세션과 탐색기 프로젝트가 일치하지 않습니다.'), 'error');
       return;
     }
     const key = normalize(path);
     if (App._planFileDrops.has(key)) {
-      App.showPlanDropFeedback('이미 이 파일을 등록하고 있습니다.', 'info');
+      App.showPlanDropFeedback(tr('이미 이 파일을 등록하고 있습니다.'), 'info');
       return;
     }
     App._planFileDrops.add(key);
     const panel = document.getElementById('plan-panel');
     if (panel) panel.classList.add('drop-busy');
-    App.showPlanDropFeedback('계획 파일 등록 중…', 'info', 0);
+    App.showPlanDropFeedback(tr('계획 파일 등록 중…'), 'info', 0);
     try {
       const saved = await ta.registerPlanFile(cwd, path);
       const existing = App._planCache[cwd] ? App._planCache[cwd].items : [];
       const items = [saved, ...existing.filter((item) => item.id !== saved.id)];
       items.sort((a, b) => (b.updatedMs || b.createdMs) - (a.updatedMs || a.createdMs));
       App._planCache[cwd] = { at: Date.now(), items };
-      App.showPlanDropFeedback(`계획 파일 등록됨: ${saved.title}`, 'success');
+      App.showPlanDropFeedback(tr('계획 파일 등록됨: {title}', { title: saved.title }), 'success');
       await App.renderPlanList(true);
     } catch (error) {
       console.warn('계획 파일 등록 실패:', error);
-      App.showPlanDropFeedback('계획 파일 등록 실패: ' + error, 'error', 4200);
+      App.showPlanDropFeedback(tr('계획 파일 등록 실패: {error}', { error }), 'error', 4200);
     } finally {
       App._planFileDrops.delete(key);
       if (panel) panel.classList.remove('drop-busy');
@@ -65,20 +65,20 @@ Object.assign(App, {
   async removeDocument(cwd, doc, options) {
     const opts = options || {};
     const isMemo = doc.kind === 'memo';
-    const action = isMemo ? '삭제' : '목록에서 제거';
+    const action = isMemo ? tr('삭제') : tr('목록에서 제거');
     const key = `${cwd}\n${doc.id}`;
     if (App._documentRemovals.has(key)) {
-      App.showPlanDropFeedback('이미 이 문서를 제거하고 있습니다.', 'info');
+      App.showPlanDropFeedback(tr('이미 이 문서를 제거하고 있습니다.'), 'info');
       return false;
     }
     const planSourceNotice = doc.path
-      ? `목록에서만 제거하며 원본 파일 "${doc.path}"은 삭제하지 않습니다.`
+      ? tr('목록에서만 제거하며 원본 파일 "{path}"은 삭제하지 않습니다.', { path: doc.path })
       : (doc.id && doc.id.startsWith('m')
-          ? '목록에서만 제거하며 터미널과 세션 기록은 삭제하지 않습니다.'
-          : '목록에서만 제거하며 원본 세션 기록은 삭제하지 않습니다.');
+          ? tr('목록에서만 제거하며 터미널과 세션 기록은 삭제하지 않습니다.')
+          : tr('목록에서만 제거하며 원본 세션 기록은 삭제하지 않습니다.'));
     const question = isMemo
-      ? `메모 "${doc.title}"을 삭제할까요?\n프로젝트의 .md 파일도 영구 삭제됩니다.`
-      : `계획 "${doc.title}"을 목록에서 제거할까요?\n${planSourceNotice}`;
+      ? tr('메모 "{title}"을 삭제할까요?\n프로젝트의 .md 파일도 영구 삭제됩니다.', { title: doc.title })
+      : `${tr('계획 "{title}"을 목록에서 제거할까요?', { title: doc.title })}\n${planSourceNotice}`;
     if (!confirm(question)) return false;
 
     const button = opts.button || null;
@@ -86,7 +86,7 @@ Object.assign(App, {
     App._documentRemovals.add(key);
     if (button) {
       button.disabled = true;
-      button.textContent = '제거 중…';
+      button.textContent = tr('제거 중…');
     }
     try {
       if (isMemo) await ta.deleteMemoDoc(cwd, doc.id);
@@ -96,14 +96,14 @@ Object.assign(App, {
       if (cached) cached.items = cached.items.filter((item) => item.id !== doc.id);
       if (typeof opts.close === 'function') opts.close();
       App.showPlanDropFeedback(
-        isMemo ? `메모 삭제됨: ${doc.title}` : `계획 목록에서 제거됨: ${doc.title}`,
+        isMemo ? tr('메모 삭제됨: {title}', { title: doc.title }) : tr('계획 목록에서 제거됨: {title}', { title: doc.title }),
         'success'
       );
       if (App.claudeCwd() === cwd) await App.renderPlanList(true);
       return true;
     } catch (error) {
       console.warn(`문서 ${action} 실패:`, error);
-      App.showPlanDropFeedback(`문서 ${action} 실패: ${error}`, 'error', 4200);
+      App.showPlanDropFeedback((isMemo ? tr('문서 삭제 실패: {error}', { error }) : tr('문서 목록에서 제거 실패: {error}', { error })), 'error', 4200);
       if (button) {
         button.disabled = false;
         button.textContent = previousText;
@@ -176,7 +176,7 @@ Object.assign(App, {
     if (selected) return selected;
     if (!TerminalView.hasRecentSelectionActivity(sessionId, 60000)) return '';
     const clip = await App.withPlanTimeout(
-      ta.clipboardText(), 1000, '클립보드 읽기 시간 초과'
+      ta.clipboardText(), 1000, tr('클립보드 읽기 시간 초과')
     ).catch(() => '');
     return App.normalizePlanSelection(clip);
   },
@@ -184,23 +184,23 @@ Object.assign(App, {
   async captureSelectionAsPlan() {
     const s = App.state.sessions.find((x) => x.id === App.state.activeId);
     if (!s || !s.cwd) {
-      alert('계획으로 저장할 활성 세션이 없습니다.');
+      alert(tr('계획으로 저장할 활성 세션이 없습니다.'));
       return;
     }
     const buttons = App.planCaptureButtons();
     const prev = new Map(buttons.map((btn) => [btn, btn.textContent]));
-    App.setPlanCaptureButtons(buttons, '확인 중', true);
+    App.setPlanCaptureButtons(buttons, tr('확인 중'), true);
     try {
       const text = await App.readPlanSelectionText(s.id);
       if (!text) {
-        App.setPlanCaptureButtons(buttons, '선택 없음', false);
+        App.setPlanCaptureButtons(buttons, tr('선택 없음'), false);
         setTimeout(() => App.restorePlanCaptureButtons(buttons, prev), 1200);
         TerminalView.activate(s.id);
         return;
       }
-      App.setPlanCaptureButtons(buttons, '저장 중', true);
+      App.setPlanCaptureButtons(buttons, tr('저장 중'), true);
       const saved = await App.withPlanTimeout(
-        ta.addPlanDoc(s.cwd, s.id, text), 5000, '계획 저장 응답 시간이 초과됐습니다.'
+        ta.addPlanDoc(s.cwd, s.id, text), 5000, tr('계획 저장 응답 시간이 초과됐습니다.')
       );
       const existing = App._planCache[s.cwd] ? App._planCache[s.cwd].items : [];
       App._planCache[s.cwd] = {
@@ -212,13 +212,13 @@ Object.assign(App, {
       void App.renderPlanList(true).catch(() => {});
       TerminalView.clearSelection(s.id);
       for (const btn of buttons) {
-        btn.textContent = '저장됨';
+        btn.textContent = tr('저장됨');
         setTimeout(() => {
-          if (btn.textContent === '저장됨') btn.textContent = prev.get(btn);
+          if (btn.textContent === tr('저장됨')) btn.textContent = prev.get(btn);
         }, 1200);
       }
     } catch (e) {
-      alert('계획 저장 실패: ' + e);
+      alert(tr('계획 저장 실패: {e}', { e }));
       App.restorePlanCaptureButtons(buttons, prev);
     } finally {
       for (const btn of buttons) btn.disabled = false;
@@ -234,7 +234,7 @@ Object.assign(App, {
       el.textContent = '';
       const e = document.createElement('div');
       e.className = 'prompt-empty';
-      e.textContent = '세션을 열면 해당 프로젝트의 계획과 메모가 표시됩니다.';
+      e.textContent = tr('세션을 열면 해당 프로젝트의 계획과 메모가 표시됩니다.');
       el.appendChild(e);
       return;
     }
@@ -254,7 +254,7 @@ Object.assign(App, {
     if (!cached.items.length) {
       const e = document.createElement('div');
       e.className = 'prompt-empty';
-      e.textContent = '아직 문서가 없습니다. + 메모로 작성하거나 계획 파일을 생성하면 여기에 표시됩니다.';
+      e.textContent = tr('아직 문서가 없습니다. + 메모로 작성하거나 계획 파일을 생성하면 여기에 표시됩니다.');
       el.appendChild(e);
       return;
     }
@@ -266,7 +266,7 @@ Object.assign(App, {
       meta.className = 'doc-meta';
       const badge = document.createElement('span');
       badge.className = `doc-kind ${isMemo ? 'memo' : 'plan'}`;
-      badge.textContent = isMemo ? '메모' : '계획';
+      badge.textContent = isMemo ? tr('메모') : tr('계획');
       const time = document.createElement('div');
       time.className = 'cs-time';
       time.textContent = formatRelativeTime(it.updatedMs || it.createdMs);
@@ -278,17 +278,17 @@ Object.assign(App, {
       source.className = 'doc-source';
       const src = isMemo
         ? (it.path || '.terminal-assistance/memos')
-        : (it.path ? '파일: ' + it.path : (it.id && it.id.startsWith('m') ? '선택 저장' : '세션 추출'));
+        : (it.path ? tr('파일: {path}', { path: it.path }) : (it.id && it.id.startsWith('m') ? tr('선택 저장') : tr('세션 추출')));
       source.textContent = src;
       row.title = it.title + '\n' + src + '\n' + new Date(it.updatedMs || it.createdMs).toLocaleString()
-        + (isMemo ? '\n클릭하면 메모를 수정할 수 있습니다.' : '\n클릭하면 문서 내용을 보여줍니다.');
+        + '\n' + (isMemo ? tr('클릭하면 메모를 수정할 수 있습니다.') : tr('클릭하면 문서 내용을 보여줍니다.'));
       row.onclick = () => App.showPlanDoc(cwd, it);
       const remove = document.createElement('button');
       remove.className = 'doc-remove';
       remove.type = 'button';
       remove.textContent = '×';
-      remove.title = isMemo ? '메모 삭제' : '계획을 목록에서 제거';
-      remove.setAttribute('aria-label', `${it.title} ${isMemo ? '삭제' : '목록에서 제거'}`);
+      remove.title = isMemo ? tr('메모 삭제') : tr('계획을 목록에서 제거');
+      remove.setAttribute('aria-label', `${it.title} ${isMemo ? tr('삭제') : tr('목록에서 제거')}`);
       remove.onclick = async (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -304,7 +304,7 @@ Object.assign(App, {
   async showPlanDoc(cwd, it) {
     let doc = null;
     try { doc = await ta.getPlanDoc(cwd, it.id); } catch (_) {}
-    if (!doc) { alert('계획 문서를 불러오지 못했습니다.'); return; }
+    if (!doc) { alert(tr('계획 문서를 불러오지 못했습니다.')); return; }
     if (doc.kind === 'memo') {
       App.showMemoEditModal(cwd, doc);
       return;
@@ -315,17 +315,17 @@ Object.assign(App, {
       <div class="doc-view"></div>
       <div class="modal-actions">
         <button id="m-delete" class="danger"></button>
-        <button id="m-close">닫기</button>
+        <button id="m-close">${tr('닫기')}</button>
       </div>`,
       (m, close) => {
         const isMemo = doc.kind === 'memo';
         m.querySelector('h3').textContent = doc.title;
         m.querySelector('.modal-sub').textContent =
-          (isMemo ? '메모 · ' : '계획 · ') + new Date(doc.updatedMs || doc.createdMs).toLocaleString() +
-          (doc.path ? ' · ' + doc.path : (doc.id && doc.id.startsWith('m') ? ' · 선택 저장' : ' · 세션 ' + doc.sessionId.slice(0, 8)));
+          (isMemo ? tr('메모') : tr('계획')) + ' · ' + new Date(doc.updatedMs || doc.createdMs).toLocaleString() +
+          (doc.path ? ' · ' + doc.path : (doc.id && doc.id.startsWith('m') ? ' · ' + tr('선택 저장') : ' · ' + tr('세션 {id}', { id: doc.sessionId.slice(0, 8) })));
         m.querySelector('.doc-view').textContent = doc.text;
         const remove = m.querySelector('#m-delete');
-        remove.textContent = isMemo ? '삭제' : '목록에서 제거';
+        remove.textContent = isMemo ? tr('삭제') : tr('목록에서 제거');
         remove.onclick = () => App.removeDocument(cwd, doc, { button: remove, close });
         m.querySelector('#m-close').onclick = close;
       }, { wide: true });

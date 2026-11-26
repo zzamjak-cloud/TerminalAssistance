@@ -51,13 +51,13 @@ Object.assign(App, {
   showClearSessionsModal() {
     const { sessions, projects } = App.state;
     if (!sessions.length) {
-      App.showToast('닫을 세션이 없습니다');
+      App.showToast(tr('닫을 세션이 없습니다'));
       return;
     }
     // 프로젝트가 없거나 사라진 세션은 사이드바와 동일하게 ‘일반 터미널’로 묶어 보인다
     const projectName = (s) => {
       const p = projects.find((x) => x.id === s.projectId);
-      return p ? p.name : '일반 터미널';
+      return p ? p.name : tr('일반 터미널');
     };
     const rows = sessions.map((s) => `
       <li>
@@ -65,26 +65,26 @@ Object.assign(App, {
         <span class="clear-session-title">${escapeHtml(s.title)}</span>
       </li>`).join('');
     App.modal(`
-      <h3>세션 모두 초기화</h3>
+      <h3>${tr('세션 모두 초기화')}</h3>
       <p style="color:var(--fg-dim);line-height:1.6;margin-bottom:8px">
-        아래 ${sessions.length}개 세션이 모두 닫힙니다. 실행 중인 명령과 예약된 프롬프트도 함께 종료되며, 되돌릴 수 없습니다.
+        ${tr('아래 {n}개 세션이 모두 닫힙니다. 실행 중인 명령과 예약된 프롬프트도 함께 종료되며, 되돌릴 수 없습니다.', { n: sessions.length })}
       </p>
       <ul id="m-clear-list">${rows}</ul>
-      <p style="margin-top:12px;font-weight:700">정말로 초기화하시겠습니까?</p>
+      <p style="margin-top:12px;font-weight:700">${tr('정말로 초기화하시겠습니까?')}</p>
       <div class="modal-actions">
-        <button id="m-cancel">취소</button>
-        <button id="m-clear" class="confirm">모두 초기화</button>
+        <button id="m-cancel">${tr('취소')}</button>
+        <button id="m-clear" class="confirm">${tr('모두 초기화')}</button>
       </div>`,
       (m, close) => {
         m.querySelector('#m-cancel').onclick = close;
         m.querySelector('#m-clear').onclick = async () => {
           const btn = m.querySelector('#m-clear');
           btn.disabled = true;
-          btn.textContent = '초기화 중…';
+          btn.textContent = tr('초기화 중…');
           try {
             await App.closeAllSessions();
           } catch (error) {
-            App.showToast('세션 초기화 중 오류가 발생했습니다: ' + String(error));
+            App.showToast(tr('세션 초기화 중 오류가 발생했습니다: ') + String(error));
           }
           close();
         };
@@ -101,19 +101,19 @@ Object.assign(App, {
     const proj = App.state.projects.find((p) => p.id === projectId);
 
     App.modal(`
-      <h3>프리셋 관리</h3>
-      <div class="form-help">⠿ 를 끌거나 ▲▼ 로 순서를 바꾸고, 색 버튼으로 드롭다운 항목 색을 바꿉니다.</div>
+      <h3>${tr('프리셋 관리')}</h3>
+      <div class="form-help">${tr('⠿ 를 끌거나 ▲▼ 로 순서를 바꾸고, 색 버튼으로 드롭다운 항목 색을 바꿉니다.')}</div>
       <div class="pm-cols">
         <div class="pm-col">
-          <div class="pm-title">◆ 전역 프리셋 <button id="pm-add-g">+ 추가</button></div>
+          <div class="pm-title">${tr('◆ 전역 프리셋')} <button id="pm-add-g">${tr('+ 추가')}</button></div>
           <div class="pm-list" id="pm-globals"></div>
         </div>
         <div class="pm-col">
-          <div class="pm-title">▸ ${proj ? escapeHtml(proj.name) + ' 전용' : '프로젝트 전용'} <button id="pm-add-p" ${proj ? '' : 'disabled'}>+ 추가</button></div>
+          <div class="pm-title">▸ ${proj ? escapeHtml(tr('{name} 전용', { name: proj.name })) : tr('프로젝트 전용')} <button id="pm-add-p" ${proj ? '' : 'disabled'}>${tr('+ 추가')}</button></div>
           <div class="pm-list" id="pm-projs"></div>
         </div>
       </div>
-      <div class="modal-actions"><button id="m-close">닫기</button></div>`,
+      <div class="modal-actions"><button id="m-close">${tr('닫기')}</button></div>`,
       (m, close) => {
         const back = () => App.showPresetManager(projectId); // 추가/수정 후 관리 팝업으로 복귀
         const gl = m.querySelector('#pm-globals');
@@ -138,7 +138,7 @@ Object.assign(App, {
         // p.color 는 선택 즉시 바꾸고(다시 그리기·수정 팝업이 새 색을 보게) 저장 실패 시 되돌린다
         const saveColor = async (p, color, prev) => {
           try { await ta.updatePreset(p.id, { color: color || '' }); }
-          catch (e) { alert('색상 저장 실패: ' + e); p.color = prev; render(); }
+          catch (e) { alert(tr('색상 저장 실패: ') + e); p.color = prev; render(); }
           App.renderPanePresets();
         };
 
@@ -151,7 +151,7 @@ Object.assign(App, {
           const grip = document.createElement('span');
           grip.className = 'pm-grip';
           grip.textContent = '⠿';
-          grip.title = '끌어서 순서 변경';
+          grip.title = tr('끌어서 순서 변경');
           const lb = document.createElement('b');
           lb.className = 'pm-label';
           lb.textContent = p.label;
@@ -161,28 +161,28 @@ Object.assign(App, {
           cmd.textContent = p.command;
           cmd.title = p.command;
           const up = document.createElement('button');
-          up.textContent = '▲'; up.title = '위로'; up.disabled = idx === 0;
+          up.textContent = '▲'; up.title = tr('위로'); up.disabled = idx === 0;
           up.onclick = () => move(p, -1);
           const down = document.createElement('button');
-          down.textContent = '▼'; down.title = '아래로'; down.disabled = idx === count - 1;
+          down.textContent = '▼'; down.title = tr('아래로'); down.disabled = idx === count - 1;
           down.onclick = () => move(p, 1);
           const col = document.createElement('button');
           col.className = 'pm-color';
-          col.title = '드롭다운 항목 색상';
+          col.title = tr('드롭다운 항목 색상');
           col.innerHTML = '<i></i>';
           col.firstChild.style.background = p.color || 'transparent';
           col.firstChild.classList.toggle('none', !p.color);
           col.onclick = () => { openColorId = openColorId === p.id ? null : p.id; render(); };
           const edit = document.createElement('button');
-          edit.textContent = '수정';
+          edit.textContent = tr('수정');
           edit.onclick = () => App.showPresetModal(p, { back });
           const del = document.createElement('button');
-          del.textContent = '삭제';
+          del.textContent = tr('삭제');
           del.className = 'pm-del';
           del.onclick = async () => {
-            if (!confirm(`프리셋 "${p.label}" 을 삭제할까요?`)) return;
+            if (!confirm(tr('프리셋 "{label}" 을 삭제할까요?', { label: p.label }))) return;
             try { await ta.removePreset(p.id); }
-            catch (e) { alert('삭제 실패: ' + e); return; }
+            catch (e) { alert(tr('삭제 실패: ') + e); return; }
             App.state.presets = App.state.presets.filter((x) => x.id !== p.id);
             App.renderPanePresets();
             render();
@@ -217,10 +217,10 @@ Object.assign(App, {
         };
         const render = () => {
           fill(gl, App.state.presets.filter((p) => !p.projectId),
-            '<div class="pm-empty">등록된 전역 프리셋이 없습니다.</div>');
-          if (!proj) pl.innerHTML = '<div class="pm-empty">프로젝트 세션을 열면 전용 프리셋을 관리할 수 있습니다.</div>';
+            '<div class="pm-empty">' + tr('등록된 전역 프리셋이 없습니다.') + '</div>');
+          if (!proj) pl.innerHTML = '<div class="pm-empty">' + tr('프로젝트 세션을 열면 전용 프리셋을 관리할 수 있습니다.') + '</div>';
           else fill(pl, App.state.presets.filter((p) => p.projectId === projectId),
-            '<div class="pm-empty">이 프로젝트 전용 프리셋이 없습니다.</div>');
+            '<div class="pm-empty">' + tr('이 프로젝트 전용 프리셋이 없습니다.') + '</div>');
         };
         // 목록 컨테이너는 다시 그려도 유지되므로 정렬 리스너는 한 번만 붙인다
         for (const el of [gl, pl]) {
@@ -244,13 +244,13 @@ Object.assign(App, {
   showSessionAddModal(paneIdx) {
     const projs = App.state.projects;
     App.modal(`
-      <h3>새 세션 시작</h3>
-      <p style="color:var(--fg-dim);line-height:1.6;margin-bottom:6px">세션을 추가할 프로젝트를 선택하세요.</p>
+      <h3>${tr('새 세션 시작')}</h3>
+      <p style="color:var(--fg-dim);line-height:1.6;margin-bottom:6px">${tr('세션을 추가할 프로젝트를 선택하세요.')}</p>
       <div class="pm-list" id="sa-list"></div>
       <div class="modal-actions">
-        <button id="sa-home">홈 디렉토리 터미널</button>
-        <button id="sa-new-proj">+ 프로젝트 등록</button>
-        <button id="m-cancel">취소</button>
+        <button id="sa-home">${tr('홈 디렉토리 터미널')}</button>
+        <button id="sa-new-proj">${tr('+ 프로젝트 등록')}</button>
+        <button id="m-cancel">${tr('취소')}</button>
       </div>`,
       (m, close) => {
         const start = (projectId) => {
@@ -259,7 +259,7 @@ Object.assign(App, {
         };
         const list = m.querySelector('#sa-list');
         if (!projs.length) {
-          list.innerHTML = '<div class="pm-empty">등록된 프로젝트가 없습니다. 프로젝트를 먼저 등록하거나 홈 디렉토리 터미널로 시작하세요.</div>';
+          list.innerHTML = '<div class="pm-empty">' + tr('등록된 프로젝트가 없습니다. 프로젝트를 먼저 등록하거나 홈 디렉토리 터미널로 시작하세요.') + '</div>';
         }
         for (const p of projs) {
           const btn = document.createElement('button');
@@ -283,12 +283,12 @@ Object.assign(App, {
     const proj = App.state.projects.find((p) => p.id === projectId);
 
     App.modal(`
-      <h3>런치 레시피 관리</h3>
-      <div class="pm-title">◆ 전역 레시피 <button id="rc-add-g">+ 추가</button></div>
+      <h3>${tr('런치 레시피 관리')}</h3>
+      <div class="pm-title">${tr('◆ 전역 레시피')} <button id="rc-add-g">${tr('+ 추가')}</button></div>
       <div class="pm-list" id="rc-globals"></div>
-      <div class="pm-title">▸ ${proj ? escapeHtml(proj.name) + ' 전용' : '프로젝트 전용'} <button id="rc-add-p" ${proj ? '' : 'disabled'}>+ 추가</button></div>
+      <div class="pm-title">▸ ${proj ? escapeHtml(tr('{name} 전용', { name: proj.name })) : tr('프로젝트 전용')} <button id="rc-add-p" ${proj ? '' : 'disabled'}>${tr('+ 추가')}</button></div>
       <div class="pm-list" id="rc-projs"></div>
-      <div class="modal-actions"><button id="m-close">닫기</button></div>`,
+      <div class="modal-actions"><button id="m-close">${tr('닫기')}</button></div>`,
       (m, close) => {
         const back = () => App.showRecipeManager();
         const row = (r) => {
@@ -299,21 +299,21 @@ Object.assign(App, {
           const lb = document.createElement('b');
           lb.textContent = r.label;
           const cmd = document.createElement('span');
-          cmd.textContent = `${commands.length}개 세션` + (first ? ' · ' + first : '');
+          cmd.textContent = tr('{n}개 세션', { n: commands.length }) + (first ? ' · ' + first : '');
           cmd.title = commands.join('\n');
           const run = document.createElement('button');
-          run.textContent = '실행';
+          run.textContent = tr('실행');
           run.onclick = () => { close(); App.runRecipe(r); };
           const edit = document.createElement('button');
-          edit.textContent = '수정';
+          edit.textContent = tr('수정');
           edit.onclick = () => App.showRecipeModal(r, { back });
           const del = document.createElement('button');
-          del.textContent = '삭제';
+          del.textContent = tr('삭제');
           del.className = 'pm-del';
           del.onclick = async () => {
-            if (!confirm(`레시피 "${r.label}" 을 삭제할까요?`)) return;
+            if (!confirm(tr('레시피 "{label}" 을 삭제할까요?', { label: r.label }))) return;
             try { await ta.removeRecipe(r.id); }
-            catch (e) { alert('삭제 실패: ' + e); return; }
+            catch (e) { alert(tr('삭제 실패: ') + e); return; }
             App.state.recipes = App.state.recipes.filter((x) => x.id !== r.id);
             back();
           };
@@ -324,10 +324,10 @@ Object.assign(App, {
         const pl = m.querySelector('#rc-projs');
         const globals = (App.state.recipes || []).filter((r) => !r.projectId);
         const projs = (App.state.recipes || []).filter((r) => r.projectId === projectId && projectId);
-        if (!globals.length) gl.innerHTML = '<div class="pm-empty">등록된 전역 레시피가 없습니다.</div>';
+        if (!globals.length) gl.innerHTML = '<div class="pm-empty">' + tr('등록된 전역 레시피가 없습니다.') + '</div>';
         else for (const r of globals) gl.appendChild(row(r));
-        if (!proj) pl.innerHTML = '<div class="pm-empty">프로젝트 세션을 열면 전용 레시피를 관리할 수 있습니다.</div>';
-        else if (!projs.length) pl.innerHTML = '<div class="pm-empty">이 프로젝트 전용 레시피가 없습니다.</div>';
+        if (!proj) pl.innerHTML = '<div class="pm-empty">' + tr('프로젝트 세션을 열면 전용 레시피를 관리할 수 있습니다.') + '</div>';
+        else if (!projs.length) pl.innerHTML = '<div class="pm-empty">' + tr('이 프로젝트 전용 레시피가 없습니다.') + '</div>';
         else for (const r of projs) pl.appendChild(row(r));
 
         m.querySelector('#rc-add-g').onclick = () => App.showRecipeModal(null, { scope: '', back });
@@ -338,16 +338,16 @@ Object.assign(App, {
 
   showRecipeModal(existing, mgrOpts) {
     const opts = App.state.projects
-      .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} 전용</option>`).join('');
+      .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(tr('{name} 전용', { name: p.name }))}</option>`).join('');
     App.modal(`
-      <h3>${existing ? '런치 레시피 수정' : '런치 레시피 추가'}</h3>
-      <label>이름</label><input type="text" id="m-label" placeholder="예: 개발 서버 + AI">
-      <label>명령 (한 줄 = 새 세션 하나)</label><textarea id="m-commands" placeholder="npm run dev&#10;claude&#10;cargo test"></textarea>
-      <div class="form-help">각 줄마다 새 터미널 세션을 만들고 즉시 실행합니다. 변수: {branch}, {projectPath}, {projectName}, {session}, {clipboard}, {input:작업명}</div>
-      <label>범위</label><select id="m-scope"><option value="">전역 (현재 프로젝트에서 실행)</option>${opts}</select>
+      <h3>${existing ? tr('런치 레시피 수정') : tr('런치 레시피 추가')}</h3>
+      <label>${tr('이름')}</label><input type="text" id="m-label" placeholder="${tr('예: 개발 서버 + AI')}">
+      <label>${tr('명령 (한 줄 = 새 세션 하나)')}</label><textarea id="m-commands" placeholder="npm run dev&#10;claude&#10;cargo test"></textarea>
+      <div class="form-help">${tr('각 줄마다 새 터미널 세션을 만들고 즉시 실행합니다. 변수: {branch}, {projectPath}, {projectName}, {session}, {clipboard}, {input:작업명}')}</div>
+      <label>${tr('범위')}</label><select id="m-scope"><option value="">${tr('전역 (현재 프로젝트에서 실행)')}</option>${opts}</select>
       <div class="modal-actions">
-        ${existing ? '<button id="m-del" class="danger">삭제</button>' : ''}
-        <button id="m-cancel">취소</button><button id="m-save">저장</button>
+        ${existing ? '<button id="m-del" class="danger">' + tr('삭제') + '</button>' : ''}
+        <button id="m-cancel">${tr('취소')}</button><button id="m-save">${tr('저장')}</button>
       </div>`,
       (m, close) => {
         const finish = () => { close(); if (mgrOpts && mgrOpts.back) mgrOpts.back(); };
@@ -367,13 +367,13 @@ Object.assign(App, {
         m.querySelector('#m-cancel').onclick = finish;
         if (existing) m.querySelector('#m-del').onclick = async () => {
           try { await ta.removeRecipe(existing.id); }
-          catch (e) { alert('삭제 실패: ' + e); return; }
+          catch (e) { alert(tr('삭제 실패: ') + e); return; }
           App.state.recipes = App.state.recipes.filter((r) => r.id !== existing.id);
           finish();
         };
         m.querySelector('#m-save').onclick = async () => {
           const list = commands.value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-          if (!label.value.trim() || !list.length) return alert('이름과 하나 이상의 명령을 입력하세요.');
+          if (!label.value.trim() || !list.length) return alert(tr('이름과 하나 이상의 명령을 입력하세요.'));
           try {
             if (existing) {
               const patch = { label: label.value.trim(), commands: list };
@@ -384,7 +384,7 @@ Object.assign(App, {
               const r = await ta.addRecipe({ label: label.value.trim(), commands: list, projectId: scope.value || null });
               App.state.recipes.push(r);
             }
-          } catch (e) { alert('저장 실패: ' + e); return; }
+          } catch (e) { alert(tr('저장 실패: ') + e); return; }
           finish();
         };
         label.focus();
@@ -411,8 +411,8 @@ Object.assign(App, {
     if (allowNone) {
       const none = document.createElement('div');
       none.className = 'color-chip none';
-      none.title = '기본 색상';
-      none.textContent = '기본';
+      none.title = tr('기본 색상');
+      none.textContent = tr('기본');
       none.onclick = () => { value = null; sync(); };
       chips.push({ el: none, get: () => null });
       container.appendChild(none);
@@ -429,7 +429,7 @@ Object.assign(App, {
     // 커스텀 칩: 클릭 시 네이티브 색상 선택기(input[type=color]) 열림
     const custom = document.createElement('div');
     custom.className = 'color-chip custom';
-    custom.title = '커스텀 색상';
+    custom.title = tr('커스텀 색상');
     const inp = document.createElement('input');
     inp.type = 'color';
     let customColor = null;
@@ -455,14 +455,14 @@ Object.assign(App, {
 
   showProjectModal(existing) {
     App.modal(`
-      <h3>${existing ? '프로젝트 수정' : '프로젝트 등록'}</h3>
-      <label>이름</label><input type="text" id="m-name" placeholder="예: 내 게임 서버">
-      <label>경로</label>
-      <div class="row"><input type="text" id="m-path" placeholder="/Users/me/dev/project"><button id="m-browse" style="flex:0 0 auto">찾아보기…</button></div>
-      <label>색상</label><div class="color-chips" id="m-chips"></div>
+      <h3>${existing ? tr('프로젝트 수정') : tr('프로젝트 등록')}</h3>
+      <label>${tr('이름')}</label><input type="text" id="m-name" placeholder="${tr('예: 내 게임 서버')}">
+      <label>${tr('경로')}</label>
+      <div class="row"><input type="text" id="m-path" placeholder="/Users/me/dev/project"><button id="m-browse" style="flex:0 0 auto">${tr('찾아보기…')}</button></div>
+      <label>${tr('색상')}</label><div class="color-chips" id="m-chips"></div>
       <div class="modal-actions">
-        ${existing ? '<button id="m-del" class="danger">삭제</button>' : ''}
-        <button id="m-cancel">취소</button><button id="m-save">저장</button>
+        ${existing ? '<button id="m-del" class="danger">' + tr('삭제') + '</button>' : ''}
+        <button id="m-cancel">${tr('취소')}</button><button id="m-save">${tr('저장')}</button>
       </div>`,
       (m, close) => {
         const name = m.querySelector('#m-name'), path = m.querySelector('#m-path');
@@ -474,16 +474,16 @@ Object.assign(App, {
         };
         m.querySelector('#m-cancel').onclick = close;
         if (existing) m.querySelector('#m-del').onclick = async () => {
-          if (!confirm('프로젝트와 해당 프리셋을 삭제할까요? (열린 세션은 유지됩니다)')) return;
+          if (!confirm(tr('프로젝트와 해당 프리셋을 삭제할까요? (열린 세션은 유지됩니다)'))) return;
           try { await ta.removeProject(existing.id); }
-          catch (e) { alert('삭제 실패: ' + e); return; }
+          catch (e) { alert(tr('삭제 실패: ') + e); return; }
           App.state.projects = App.state.projects.filter((p) => p.id !== existing.id);
           App.state.presets = App.state.presets.filter((p) => p.projectId !== existing.id);
           App.state.recipes = App.state.recipes.filter((r) => r.projectId !== existing.id);
           close(); App.renderAll();
         };
         m.querySelector('#m-save').onclick = async () => {
-          if (!name.value.trim() || !path.value.trim()) return alert('이름과 경로를 입력하세요.');
+          if (!name.value.trim() || !path.value.trim()) return alert(tr('이름과 경로를 입력하세요.'));
           const chosen = getColor() || '#4f8cc9';
           try {
             if (existing) {
@@ -494,7 +494,7 @@ Object.assign(App, {
               const p = await ta.addProject({ name: name.value.trim(), path: path.value.trim(), color: chosen });
               App.state.projects.unshift(p); // 백엔드와 같은 규칙 — 새 프로젝트는 목록 맨 앞
             }
-          } catch (e) { alert('저장 실패: ' + e); return; }
+          } catch (e) { alert(tr('저장 실패: ') + e); return; }
           close(); App.renderAll();
         };
         name.focus();
@@ -503,17 +503,17 @@ Object.assign(App, {
 
   showPresetModal(existing, mgrOpts) {
     const opts = App.state.projects
-      .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} 전용</option>`).join('');
+      .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(tr('{name} 전용', { name: p.name }))}</option>`).join('');
     App.modal(`
-      <h3>${existing ? '프리셋 수정' : '명령 프리셋 추가'}</h3>
-      <label>이름(메뉴에 표시)</label><input type="text" id="m-label" placeholder="예: 빌드 & 테스트">
-      <label>명령</label><input type="text" id="m-cmd" placeholder="예: npm run build && npm test">
-      <div class="form-help">변수: {branch}, {projectPath}, {projectName}, {session}, {clipboard}, {input:작업명}</div>
-      <label>범위</label><select id="m-scope"><option value="">전역 (모든 세션)</option>${opts}</select>
-      <label>색상 (드롭다운 항목 배경)</label><div class="color-chips" id="m-chips"></div>
+      <h3>${existing ? tr('프리셋 수정') : tr('명령 프리셋 추가')}</h3>
+      <label>${tr('이름(메뉴에 표시)')}</label><input type="text" id="m-label" placeholder="${tr('예: 빌드 & 테스트')}">
+      <label>${tr('명령')}</label><input type="text" id="m-cmd" placeholder="${tr('예: npm run build && npm test')}">
+      <div class="form-help">${tr('변수: {branch}, {projectPath}, {projectName}, {session}, {clipboard}, {input:작업명}')}</div>
+      <label>${tr('범위')}</label><select id="m-scope"><option value="">${tr('전역 (모든 세션)')}</option>${opts}</select>
+      <label>${tr('색상 (드롭다운 항목 배경)')}</label><div class="color-chips" id="m-chips"></div>
       <div class="modal-actions">
-        ${existing ? '<button id="m-del" class="danger">삭제</button>' : ''}
-        <button id="m-cancel">취소</button><button id="m-save">저장</button>
+        ${existing ? '<button id="m-del" class="danger">' + tr('삭제') + '</button>' : ''}
+        <button id="m-cancel">${tr('취소')}</button><button id="m-save">${tr('저장')}</button>
       </div>`,
       (m, close) => {
         const finish = () => { close(); App.renderPanePresets(); if (mgrOpts && mgrOpts.back) mgrOpts.back(); };
@@ -530,12 +530,12 @@ Object.assign(App, {
         m.querySelector('#m-cancel').onclick = finish;
         if (existing) m.querySelector('#m-del').onclick = async () => {
           try { await ta.removePreset(existing.id); }
-          catch (e) { alert('삭제 실패: ' + e); return; }
+          catch (e) { alert(tr('삭제 실패: ') + e); return; }
           App.state.presets = App.state.presets.filter((p) => p.id !== existing.id);
           finish();
         };
         m.querySelector('#m-save').onclick = async () => {
-          if (!label.value.trim() || !cmd.value.trim()) return alert('이름과 명령을 입력하세요.');
+          if (!label.value.trim() || !cmd.value.trim()) return alert(tr('이름과 명령을 입력하세요.'));
           try {
             if (existing) {
               const patch = { label: label.value.trim(), command: cmd.value.trim(), color: getColor() || '' };
@@ -546,7 +546,7 @@ Object.assign(App, {
               const p = await ta.addPreset({ label: label.value.trim(), command: cmd.value.trim(), projectId: scope.value || null, color: getColor() || null });
               App.state.presets.push(p);
             }
-          } catch (e) { alert('저장 실패: ' + e); return; }
+          } catch (e) { alert(tr('저장 실패: ') + e); return; }
           finish();
         };
         label.focus();
@@ -559,7 +559,7 @@ Object.assign(App, {
     const curFont = st.fontFamily || '';
     const fonts = detectInstalledFonts(FONT_CANDIDATES);
     if (curFont && !fonts.includes(curFont)) fonts.unshift(curFont);
-    const fontOptions = [`<option value="">기본 (Menlo · Consolas · D2Coding)</option>`]
+    const fontOptions = [`<option value="">${tr('기본 (Menlo · Consolas · D2Coding)')}</option>`]
       .concat(fonts.map((f) =>
         `<option value="${escapeHtml(f)}" style="font-family:'${escapeHtml(f)}'"${f === curFont ? ' selected' : ''}>${escapeHtml(f)}</option>`))
       .join('');
@@ -567,11 +567,11 @@ Object.assign(App, {
     let hooks = { claude: false, codex: false };
     try { hooks = await ta.hooksStatus(); } catch (_) {}
     // 설치된 셸 자동 감지 — 수동 입력 대신 드롭다운에서 선택
-    let shells = [{ label: 'OS 기본', value: '' }];
+    let shells = [{ label: tr('OS 기본'), value: '' }];
     try { shells = await ta.listShells(); } catch (_) {}
     // 과거 버전에서 직접 입력해 둔 값이 감지 목록에 없으면 보존용 항목으로 노출
     if (st.shell && !shells.some((s) => s.value === st.shell)) {
-      shells.push({ label: `사용자 지정 (${st.shell})`, value: st.shell });
+      shells.push({ label: tr('사용자 지정 ({shell})', { shell: st.shell }), value: st.shell });
     }
     const shellOptions = shells.map((s) =>
       `<option value="${escapeHtml(s.value)}"${s.value === (st.shell || '') ? ' selected' : ''}>${escapeHtml(s.label)}</option>`).join('');
@@ -581,52 +581,58 @@ Object.assign(App, {
         <span class="theme-chip-name">${escapeHtml(p.name)}</span>
       </button>`).join('');
     App.modal(`
-      <h3>설정</h3>
-      <label>테마</label>
+      <h3>${tr('설정')}</h3>
+      <label>언어 / Language</label>
+      <select id="m-lang">
+        <option value="ko"${I18N.lang === 'ko' ? ' selected' : ''}>한국어</option>
+        <option value="en"${I18N.lang === 'en' ? ' selected' : ''}>English</option>
+      </select>
+      <div class="form-help">${tr('변경하면 화면을 다시 불러옵니다. 열린 터미널은 유지됩니다.')}</div>
+      <label>${tr('테마')}</label>
       <div class="theme-grid" id="m-theme-grid">${themeChips}</div>
-      <label>직접 지정 (배경 / 강조색)</label>
+      <label>${tr('직접 지정 (배경 / 강조색)')}</label>
       <div class="theme-custom">
-        <input type="color" id="m-theme-bg-pick" value="${Theme.state.bg}" title="배경색">
+        <input type="color" id="m-theme-bg-pick" value="${Theme.state.bg}" title="${tr('배경색')}">
         <input type="text" id="m-theme-bg" class="hex" value="${Theme.state.bg}" placeholder="#14161c" spellcheck="false">
-        <input type="color" id="m-theme-accent-pick" value="${Theme.state.accent}" title="강조색">
+        <input type="color" id="m-theme-accent-pick" value="${Theme.state.accent}" title="${tr('강조색')}">
         <input type="text" id="m-theme-accent" class="hex" value="${Theme.state.accent}" placeholder="#2e6cd6" spellcheck="false">
-        <button id="m-theme-apply">적용</button>
+        <button id="m-theme-apply">${tr('적용')}</button>
       </div>
-      <div class="form-help">배경 밝기로 라이트/다크를 판별해 글자·상태·프로젝트 색을 자동 보정합니다. 테마는 즉시 적용되며 저장 버튼과 무관하게 유지됩니다.</div>
-      <label>글꼴 (선택하면 터미널에 즉시 반영)</label>
+      <div class="form-help">${tr('배경 밝기로 라이트/다크를 판별해 글자·상태·프로젝트 색을 자동 보정합니다. 테마는 즉시 적용되며 저장 버튼과 무관하게 유지됩니다.')}</div>
+      <label>${tr('글꼴 (선택하면 터미널에 즉시 반영)')}</label>
       <div class="font-row">
         <select id="m-font-family">${fontOptions}</select>
-        <button type="button" id="m-font-pick" title="시스템 글꼴 폴더에서 파일 선택">파일에서 선택…</button>
+        <button type="button" id="m-font-pick" title="${tr('시스템 글꼴 폴더에서 파일 선택')}">${tr('파일에서 선택…')}</button>
       </div>
-      <div class="form-help">목록은 자동 감지된 코딩 글꼴입니다. 다른 글꼴은 '파일에서 선택'으로 시스템 글꼴 폴더에서 고르세요. 지정 글꼴이 못 그리는 문자는 기본 글꼴로 대체됩니다.</div>
-      <label>글꼴 크기</label><input type="number" id="m-font" min="9" max="24" value="${st.fontSize}">
-      <label>가독성 (조절하면 터미널에 즉시 반영)</label>
-      <div class="range-row"><span>줄 간격</span><input type="range" id="m-line-height" min="1" max="2" step="0.05" value="${Number(st.lineHeight) || 1}"><span id="m-line-height-v"></span></div>
-      <div class="range-row"><span>자간</span><input type="range" id="m-letter-spacing" min="0" max="4" step="0.5" value="${Number(st.letterSpacing) || 0}"><span id="m-letter-spacing-v"></span></div>
-      <div class="range-row"><span>최소 대비</span><input type="range" id="m-min-contrast" min="1" max="7" step="0.5" value="${Number(st.minContrast) || 1}"><span id="m-min-contrast-v"></span></div>
-      <div class="form-help">최소 대비는 Claude/Codex 가 즐겨 쓰는 흐린 회색·dim 출력이 배경에 묻힐 때 글자색만 배경 대비 기준까지 자동으로 끌어올립니다 (1 = 끔, 4.5 = WCAG AA).</div>
-      <label>셸</label><select id="m-shell">${shellOptions}</select>
-      <div class="form-help">설치된 셸만 표시됩니다. 새로 만드는 세션부터 적용됩니다.</div>
-      <div class="check"><input type="checkbox" id="m-notify" ${st.notifyOnDone ? 'checked' : ''}><label for="m-notify" style="margin:0">비활성 세션 작업 완료 시 알림</label></div>
-      <div class="check"><input type="checkbox" id="m-notify-wait" ${st.notifyOnWaiting ? 'checked' : ''}><label for="m-notify-wait" style="margin:0">비활성 세션 허가 대기 시 알림</label></div>
-      <div class="check"><input type="checkbox" id="m-show-prompt-input" ${st.showPromptInput === true ? 'checked' : ''}><label for="m-show-prompt-input" style="margin:0">하단 프롬프트 입력창 사용</label></div>
-      <div class="form-help">기본적으로 숨깁니다. 사용하지 않으면 Cmd/Ctrl+J 커서 전환도 비활성화됩니다.</div>
-      <div class="check"><input type="checkbox" id="m-claude-classic" ${st.claudeClassicRenderer !== false ? 'checked' : ''}><label for="m-claude-classic" style="margin:0">Claude Code 를 클래식 렌더러로 실행 (대화를 터미널 스크롤백에 남김)</label></div>
-      <div class="form-help">켜면 PC 의 스크롤바·드래그 선택과 폰의 스와이프 스크롤이 터미널 자체 스크롤백으로 매끄럽게 동작합니다. 끄면 Claude Code 기본인 전체 화면 모드(깜빡임 없는 그리기·마우스 클릭)로 실행되지만 스크롤백이 없어 폰에서는 휠 이벤트 단위로만 스크롤됩니다. 새로 만드는 세션부터 적용됩니다.</div>
-      <div class="check"><input type="checkbox" id="m-kill-bg" ${st.killBackgroundOnClose !== false ? 'checked' : ''}><label for="m-kill-bg" style="margin:0">탭·앱을 닫을 때 그 세션이 띄운 백그라운드 프로세스(서버·백그라운드 작업)도 함께 종료</label></div>
-      <div class="form-help">끄면 닫은 뒤에도 남아 메모리·CPU 를 계속 쓸 수 있습니다. 남은 것은 사이드바 아래 '백그라운드'에서 볼 수 있습니다. (macOS·Linux)</div>
-      <label>컨텍스트 경고</label>
-      <div class="form-help">에이전트가 응답을 마쳤을 때 대화가 길면 터미널 하단에 알립니다. 입력은 자동으로 보내지 않습니다.</div>
-      <label>Claude Code 경고 기준 (K 토큰, 0=끔)</label><input type="number" id="m-ctx-claude" min="0" max="10000" value="${Number(st.contextWarnClaudeK ?? 200)}">
-      <label>Codex 경고 기준 (컨텍스트 창 대비 %, 0=끔)</label><input type="number" id="m-ctx-codex" min="0" max="100" value="${Number(st.contextWarnCodexPct ?? 60)}">
-      <label>AI 도구 연동 — 허가 대기(🟡) 감지</label>
-      <div class="check"><input type="checkbox" id="m-hook-claude" ${hooks.claude ? 'checked' : ''}><label for="m-hook-claude" style="margin:0">Claude Code 훅 (~/.claude/settings.json 병합, 백업 생성)</label></div>
-      <div class="check"><input type="checkbox" id="m-hook-codex" ${hooks.codex ? 'checked' : ''}><label for="m-hook-codex" style="margin:0">Codex 알림 (~/.codex/config.toml 병합, 백업 생성)</label></div>
+      <div class="form-help">${tr("목록은 자동 감지된 코딩 글꼴입니다. 다른 글꼴은 '파일에서 선택'으로 시스템 글꼴 폴더에서 고르세요. 지정 글꼴이 못 그리는 문자는 기본 글꼴로 대체됩니다.")}</div>
+      <label>${tr('글꼴 크기')}</label><input type="number" id="m-font" min="9" max="24" value="${st.fontSize}">
+      <label>${tr('가독성 (조절하면 터미널에 즉시 반영)')}</label>
+      <div class="range-row"><span>${tr('줄 간격')}</span><input type="range" id="m-line-height" min="1" max="2" step="0.05" value="${Number(st.lineHeight) || 1}"><span id="m-line-height-v"></span></div>
+      <div class="range-row"><span>${tr('자간')}</span><input type="range" id="m-letter-spacing" min="0" max="4" step="0.5" value="${Number(st.letterSpacing) || 0}"><span id="m-letter-spacing-v"></span></div>
+      <div class="range-row"><span>${tr('최소 대비')}</span><input type="range" id="m-min-contrast" min="1" max="7" step="0.5" value="${Number(st.minContrast) || 1}"><span id="m-min-contrast-v"></span></div>
+      <div class="form-help">${tr('최소 대비는 Claude/Codex 가 즐겨 쓰는 흐린 회색·dim 출력이 배경에 묻힐 때 글자색만 배경 대비 기준까지 자동으로 끌어올립니다 (1 = 끔, 4.5 = WCAG AA).')}</div>
+      <label>${tr('셸')}</label><select id="m-shell">${shellOptions}</select>
+      <div class="form-help">${tr('설치된 셸만 표시됩니다. 새로 만드는 세션부터 적용됩니다.')}</div>
+      <div class="check"><input type="checkbox" id="m-notify" ${st.notifyOnDone ? 'checked' : ''}><label for="m-notify" style="margin:0">${tr('비활성 세션 작업 완료 시 알림')}</label></div>
+      <div class="check"><input type="checkbox" id="m-notify-wait" ${st.notifyOnWaiting ? 'checked' : ''}><label for="m-notify-wait" style="margin:0">${tr('비활성 세션 허가 대기 시 알림')}</label></div>
+      <div class="check"><input type="checkbox" id="m-show-prompt-input" ${st.showPromptInput === true ? 'checked' : ''}><label for="m-show-prompt-input" style="margin:0">${tr('하단 프롬프트 입력창 사용')}</label></div>
+      <div class="form-help">${tr('기본적으로 숨깁니다. 사용하지 않으면 Cmd/Ctrl+J 커서 전환도 비활성화됩니다.')}</div>
+      <div class="check"><input type="checkbox" id="m-claude-classic" ${st.claudeClassicRenderer !== false ? 'checked' : ''}><label for="m-claude-classic" style="margin:0">${tr('Claude Code 를 클래식 렌더러로 실행 (대화를 터미널 스크롤백에 남김)')}</label></div>
+      <div class="form-help">${tr('켜면 PC 의 스크롤바·드래그 선택과 폰의 스와이프 스크롤이 터미널 자체 스크롤백으로 매끄럽게 동작합니다. 끄면 Claude Code 기본인 전체 화면 모드(깜빡임 없는 그리기·마우스 클릭)로 실행되지만 스크롤백이 없어 폰에서는 휠 이벤트 단위로만 스크롤됩니다. 새로 만드는 세션부터 적용됩니다.')}</div>
+      <div class="check"><input type="checkbox" id="m-kill-bg" ${st.killBackgroundOnClose !== false ? 'checked' : ''}><label for="m-kill-bg" style="margin:0">${tr('탭·앱을 닫을 때 그 세션이 띄운 백그라운드 프로세스(서버·백그라운드 작업)도 함께 종료')}</label></div>
+      <div class="form-help">${tr("끄면 닫은 뒤에도 남아 메모리·CPU 를 계속 쓸 수 있습니다. 남은 것은 사이드바 아래 '백그라운드'에서 볼 수 있습니다. (macOS·Linux)")}</div>
+      <label>${tr('컨텍스트 경고')}</label>
+      <div class="form-help">${tr('에이전트가 응답을 마쳤을 때 대화가 길면 터미널 하단에 알립니다. 입력은 자동으로 보내지 않습니다.')}</div>
+      <label>${tr('Claude Code 경고 기준 (K 토큰, 0=끔)')}</label><input type="number" id="m-ctx-claude" min="0" max="10000" value="${Number(st.contextWarnClaudeK ?? 200)}">
+      <label>${tr('Codex 경고 기준 (컨텍스트 창 대비 %, 0=끔)')}</label><input type="number" id="m-ctx-codex" min="0" max="100" value="${Number(st.contextWarnCodexPct ?? 60)}">
+      <label>${tr('AI 도구 연동 — 허가 대기(🟡) 감지')}</label>
+      <div class="check"><input type="checkbox" id="m-hook-claude" ${hooks.claude ? 'checked' : ''}><label for="m-hook-claude" style="margin:0">${tr('Claude Code 훅 (~/.claude/settings.json 병합, 백업 생성)')}</label></div>
+      <div class="check"><input type="checkbox" id="m-hook-codex" ${hooks.codex ? 'checked' : ''}><label for="m-hook-codex" style="margin:0">${tr('Codex 알림 (~/.codex/config.toml 병합, 백업 생성)')}</label></div>
       <details class="remote-section" id="m-remote">
-        <summary>모바일 원격 제어</summary>
-        <div id="m-remote-body"><div class="form-help">불러오는 중…</div></div>
+        <summary>${tr('모바일 원격 제어')}</summary>
+        <div id="m-remote-body"><div class="form-help">${tr('불러오는 중…')}</div></div>
       </details>
-      <div class="modal-actions"><button id="m-cancel">취소</button><button id="m-save">저장</button></div>`,
+      <div class="modal-actions"><button id="m-cancel">${tr('취소')}</button><button id="m-save">${tr('저장')}</button></div>`,
       (m, close) => {
         App.initRemoteSettings(m.querySelector('#m-remote-body'));
         // ── 테마: 즉시 적용 (렌더러 로컬 설정이라 저장 버튼과 별도로 유지된다) ──
@@ -649,7 +655,7 @@ Object.assign(App, {
         bgPick.oninput = () => { bgHex.value = bgPick.value; };
         accentPick.oninput = () => { accentHex.value = accentPick.value; };
         m.querySelector('#m-theme-apply').onclick = () => {
-          if (!Theme.set('custom', bgHex.value, accentHex.value)) { alert('색상은 #RRGGBB 형식으로 입력하세요.'); return; }
+          if (!Theme.set('custom', bgHex.value, accentHex.value)) { alert(tr('색상은 #RRGGBB 형식으로 입력하세요.')); return; }
           syncThemeInputs();
         };
 
@@ -665,7 +671,7 @@ Object.assign(App, {
         // 시스템 글꼴 폴더에서 파일을 고르면 그 파일의 패밀리 이름을 목록에 넣고 즉시 미리보기
         m.querySelector('#m-font-pick').onclick = async () => {
           let name = null;
-          try { name = await ta.pickFont(); } catch (e) { alert('글꼴 읽기 실패: ' + e); return; }
+          try { name = await ta.pickFont(); } catch (e) { alert(tr('글꼴 읽기 실패: ') + e); return; }
           if (!name) return;
           if (![...fontSel.options].some((o) => o.value === name)) {
             const opt = document.createElement('option');
@@ -682,7 +688,7 @@ Object.assign(App, {
         const readKeys = [
           ['#m-line-height', 'lineHeight', (n) => n.toFixed(2)],
           ['#m-letter-spacing', 'letterSpacing', (n) => n.toFixed(1) + 'px'],
-          ['#m-min-contrast', 'minContrast', (n) => (n <= 1 ? '끔' : n.toFixed(1))]
+          ['#m-min-contrast', 'minContrast', (n) => (n <= 1 ? tr('끔') : n.toFixed(1))]
         ];
         const readBefore = {};
         for (const [, key] of readKeys) readBefore[key] = App.state.settings[key];
@@ -713,6 +719,7 @@ Object.assign(App, {
         m.querySelector('#m-cancel').onclick = () => { dropEscRestore(); restoreRead(); close(); };
         m.querySelector('#m-save').onclick = async () => {
           dropEscRestore();
+          const nextLang = m.querySelector('#m-lang').value;
           const patch = {
             fontSize: Math.max(9, Math.min(24, Number(m.querySelector('#m-font').value) || 13)),
             fontFamily: selectedFont(),
@@ -729,19 +736,24 @@ Object.assign(App, {
             minContrast: Number(m.querySelector('#m-min-contrast').value)
           };
           try { App.state.settings = await ta.updateSettings(patch); }
-          catch (e) { restoreRead(); alert('저장 실패: ' + e); return; }
+          catch (e) { restoreRead(); alert(tr('저장 실패: ') + e); return; }
           // 연동 토글은 변경된 것만 반영 — 실패해도 설정 저장은 유지되므로 개별 보고
           const wantClaude = m.querySelector('#m-hook-claude').checked;
           const wantCodex = m.querySelector('#m-hook-codex').checked;
           try { if (wantClaude !== hooks.claude) await ta.setClaudeHooks(wantClaude); }
-          catch (e) { alert('Claude Code 연동 실패: ' + e); }
+          catch (e) { alert(tr('Claude Code 연동 실패: ') + e); }
           try { if (wantCodex !== hooks.codex) await ta.setCodexHooks(wantCodex); }
-          catch (e) { alert('Codex 연동 실패: ' + e); }
+          catch (e) { alert(tr('Codex 연동 실패: ') + e); }
           TerminalView.setFontSize(App.state.settings.fontSize);
           TerminalView.setFontFamily();
           TerminalView.applyReadability();
           close();
           TerminalView.syncComposerStates();
+          // 위 저장(await)이 모두 끝난 뒤에 리로드해야 설정이 유실되지 않는다
+          if (nextLang !== I18N.lang && I18N.setLang(nextLang)) {
+            sessionStorage.setItem('ta-lang-reload', '1'); // boot 가 이 리로드를 복구로 보지 않게
+            location.reload();
+          }
         };
       });
   }
@@ -757,7 +769,7 @@ Object.assign(App, {
     try { view = await ta.remoteGetConfig(); }
     catch (e) {
       body.innerHTML = '<div class="form-help warn"></div>';
-      body.firstChild.textContent = '원격 설정을 불러오지 못했습니다: ' + e;
+      body.firstChild.textContent = tr('원격 설정을 불러오지 못했습니다: ') + e;
       return;
     }
     App.renderRemoteSettings(body, view);
@@ -768,44 +780,44 @@ Object.assign(App, {
     clearInterval(App._remotePairTimer);
     const push = view.push || {};
     const autoNote = String(view.bind || '').toLowerCase() === 'auto' && view.resolvedBind ? ` (auto → ${view.resolvedBind})` : '';
-    const statusText = (view.running ? '실행 중' : view.enabled ? '중지됨 (오류)' : '꺼짐') + autoNote;
+    const statusText = (view.running ? tr('실행 중') : view.enabled ? tr('중지됨 (오류)') : tr('꺼짐')) + autoNote;
     body.innerHTML = `
-      <div class="check"><input type="checkbox" id="m-rm-enabled" ${view.enabled ? 'checked' : ''}><label for="m-rm-enabled" style="margin:0">원격 서버 사용</label>
+      <div class="check"><input type="checkbox" id="m-rm-enabled" ${view.enabled ? 'checked' : ''}><label for="m-rm-enabled" style="margin:0">${tr('원격 서버 사용')}</label>
         <span class="remote-state${view.running ? ' on' : ''}" id="m-rm-state"></span></div>
       <div class="remote-row">
-        <div><label>바인드 주소</label><input type="text" id="m-rm-bind" spellcheck="false" placeholder="auto 또는 127.0.0.1"></div>
-        <div class="remote-port"><label>포트</label><input type="number" id="m-rm-port" min="1" max="65535"></div>
+        <div><label>${tr('바인드 주소')}</label><input type="text" id="m-rm-bind" spellcheck="false" placeholder="${tr('auto 또는 127.0.0.1')}"></div>
+        <div class="remote-port"><label>${tr('포트')}</label><input type="number" id="m-rm-port" min="1" max="65535"></div>
       </div>
-      <div class="form-help"><b>auto</b> 는 이 컴퓨터의 Tailscale IP(100.x)를 찾아 바인드하고, IP 가 바뀌면 자동으로 다시 엽니다 (권장 — 상단 📱 버튼이 이 값으로 설정). 0.0.0.0·사설망 주소는 같은 네트워크의 누구나 접속을 시도할 수 있습니다 (HTTP 평문).</div>
+      <div class="form-help">${tr('<b>auto</b> 는 이 컴퓨터의 Tailscale IP(100.x)를 찾아 바인드하고, IP 가 바뀌면 자동으로 다시 엽니다 (권장 — 상단 📱 버튼이 이 값으로 설정). 0.0.0.0·사설망 주소는 같은 네트워크의 누구나 접속을 시도할 수 있습니다 (HTTP 평문).')}</div>
       <div class="form-help warn hidden" id="m-rm-warn"></div>
       <div class="form-help warn hidden" id="m-rm-error"></div>
       <div class="remote-urls hidden" id="m-rm-urls"></div>
-      <label>푸시 알림 (ntfy)</label>
-      <div class="check"><input type="checkbox" id="m-rm-push" ${push.kind === 'ntfy' ? 'checked' : ''}><label for="m-rm-push" style="margin:0">ntfy 로 알림 보내기</label></div>
+      <label>${tr('푸시 알림 (ntfy)')}</label>
+      <div class="check"><input type="checkbox" id="m-rm-push" ${push.kind === 'ntfy' ? 'checked' : ''}><label for="m-rm-push" style="margin:0">${tr('ntfy 로 알림 보내기')}</label></div>
       <div class="remote-row">
-        <div><label>서버</label><input type="text" id="m-rm-ntfy-url" spellcheck="false" placeholder="https://ntfy.sh"></div>
-        <div><label>토픽</label><input type="text" id="m-rm-ntfy-topic" spellcheck="false"></div>
+        <div><label>${tr('서버')}</label><input type="text" id="m-rm-ntfy-url" spellcheck="false" placeholder="https://ntfy.sh"></div>
+        <div><label>${tr('토픽')}</label><input type="text" id="m-rm-ntfy-topic" spellcheck="false"></div>
       </div>
-      <div class="check"><input type="checkbox" id="m-rm-on-done" ${push.onDone ? 'checked' : ''}><label for="m-rm-on-done" style="margin:0">작업 완료 시</label></div>
-      <div class="check"><input type="checkbox" id="m-rm-on-waiting" ${push.onWaiting ? 'checked' : ''}><label for="m-rm-on-waiting" style="margin:0">허가 대기 시</label></div>
-      <div class="check"><input type="checkbox" id="m-rm-include-project" ${push.includeProject ? 'checked' : ''}><label for="m-rm-include-project" style="margin:0">알림에 프로젝트 이름 포함</label></div>
-      <div class="form-help">기본은 세션 제목과 상태만 보냅니다. 공개 ntfy.sh 는 토픽을 아는 누구나 구독할 수 있으니 추측하기 어려운 토픽을 쓰세요.</div>
+      <div class="check"><input type="checkbox" id="m-rm-on-done" ${push.onDone ? 'checked' : ''}><label for="m-rm-on-done" style="margin:0">${tr('작업 완료 시')}</label></div>
+      <div class="check"><input type="checkbox" id="m-rm-on-waiting" ${push.onWaiting ? 'checked' : ''}><label for="m-rm-on-waiting" style="margin:0">${tr('허가 대기 시')}</label></div>
+      <div class="check"><input type="checkbox" id="m-rm-include-project" ${push.includeProject ? 'checked' : ''}><label for="m-rm-include-project" style="margin:0">${tr('알림에 프로젝트 이름 포함')}</label></div>
+      <div class="form-help">${tr('기본은 세션 제목과 상태만 보냅니다. 공개 ntfy.sh 는 토픽을 아는 누구나 구독할 수 있으니 추측하기 어려운 토픽을 쓰세요.')}</div>
       <div class="form-help warn hidden" id="m-rm-push-warn"></div>
       <div class="remote-actions">
-        <button type="button" id="m-rm-test">테스트 발송</button>
-        <button type="button" id="m-rm-apply">원격 설정 적용</button>
+        <button type="button" id="m-rm-test">${tr('테스트 발송')}</button>
+        <button type="button" id="m-rm-apply">${tr('원격 설정 적용')}</button>
       </div>
-      <label>기기 페어링</label>
-      <div class="remote-actions"><button type="button" id="m-rm-pair" ${view.running ? '' : 'disabled'}>페어링 시작</button></div>
+      <label>${tr('기기 페어링')}</label>
+      <div class="remote-actions"><button type="button" id="m-rm-pair" ${view.running ? '' : 'disabled'}>${tr('페어링 시작')}</button></div>
       <div class="remote-pair hidden" id="m-rm-pairbox">
-        <img id="m-rm-qr" alt="페어링 QR">
+        <img id="m-rm-qr" alt="${tr('페어링 QR')}">
         <div class="remote-pair-info">
           <div class="remote-code" id="m-rm-code"></div>
           <div class="form-help" id="m-rm-expire"></div>
           <div class="remote-url" id="m-rm-pair-url"></div>
         </div>
       </div>
-      <label>연결된 기기</label>
+      <label>${tr('연결된 기기')}</label>
       <div class="remote-devices" id="m-rm-devices"></div>`;
 
     // 사용자·백엔드 값은 전부 textContent/value 로 넣는다 (템플릿 문자열에 끼우지 않는다)
@@ -817,14 +829,14 @@ Object.assign(App, {
     $('#m-rm-ntfy-topic').value = push.topic || '';
     if (view.bindWarning) { $('#m-rm-warn').textContent = '⚠ ' + view.bindWarning; $('#m-rm-warn').classList.remove('hidden'); }
     if (view.pushWarning) { $('#m-rm-push-warn').textContent = '⚠ ' + view.pushWarning; $('#m-rm-push-warn').classList.remove('hidden'); }
-    if (view.error) { $('#m-rm-error').textContent = '서버 오류: ' + view.error; $('#m-rm-error').classList.remove('hidden'); }
+    if (view.error) { $('#m-rm-error').textContent = tr('서버 오류: ') + view.error; $('#m-rm-error').classList.remove('hidden'); }
     const urls = view.running ? (view.urls || []) : [];
     if (urls.length) {
       const box = $('#m-rm-urls');
       box.classList.remove('hidden');
       const head = document.createElement('div');
       head.className = 'form-help';
-      head.textContent = '접속 주소';
+      head.textContent = tr('접속 주소');
       box.appendChild(head);
       for (const u of urls) {
         const row = document.createElement('div');
@@ -850,13 +862,13 @@ Object.assign(App, {
     });
     const apply = async () => {
       const cfg = readCfg();
-      if (cfg.push.kind === 'ntfy' && !cfg.push.topic) { alert('ntfy 토픽을 입력하세요.'); return null; }
+      if (cfg.push.kind === 'ntfy' && !cfg.push.topic) { alert(tr('ntfy 토픽을 입력하세요.')); return null; }
       if (needsRemoteBindConfirm(view, cfg) && !confirm(remoteBindConfirmText(remoteBindLevel(cfg.bind)))) return null;
       try {
         const next = await ta.remoteSetConfig(cfg);
         App.renderRemoteSettings(body, next);
         return next;
-      } catch (e) { alert('원격 설정 적용 실패: ' + e); return null; }
+      } catch (e) { alert(tr('원격 설정 적용 실패: ') + e); return null; }
     };
     $('#m-rm-apply').onclick = () => { void apply(); };
     // 테스트는 저장된 설정으로 보낸다 — 화면 값이 다르면 먼저 적용한다
@@ -869,9 +881,9 @@ Object.assign(App, {
         return void body.querySelector('#m-rm-test').onclick();
       }
       btn.disabled = true;
-      try { await ta.remoteTestPush(); btn.textContent = '발송됨 ✓'; }
-      catch (e) { alert('테스트 발송 실패: ' + e); }
-      finally { btn.disabled = false; setTimeout(() => { btn.textContent = '테스트 발송'; }, 2000); }
+      try { await ta.remoteTestPush(); btn.textContent = tr('발송됨 ✓'); }
+      catch (e) { alert(tr('테스트 발송 실패: ') + e); }
+      finally { btn.disabled = false; setTimeout(() => { btn.textContent = tr('테스트 발송'); }, 2000); }
     };
     $('#m-rm-pair').onclick = () => { void App.startRemotePairing(body); };
   },
@@ -882,7 +894,7 @@ Object.assign(App, {
     if (!devices.length) {
       const empty = document.createElement('div');
       empty.className = 'form-help';
-      empty.textContent = '페어링된 기기가 없습니다.';
+      empty.textContent = tr('페어링된 기기가 없습니다.');
       box.appendChild(empty);
       return;
     }
@@ -897,43 +909,43 @@ Object.assign(App, {
       name.textContent = d.name || d.id;
       const meta = document.createElement('div');
       meta.className = 'form-help';
-      meta.textContent = '등록 ' + fmt(d.createdMs) + ' · 마지막 접속 ' + fmt(d.lastSeenMs);
+      meta.textContent = tr('등록 {created} · 마지막 접속 {seen}', { created: fmt(d.createdMs), seen: fmt(d.lastSeenMs) });
       // Tailscale 상 온라인 여부 — 폰이 VPN 을 끊으면 PC 에 닿을 수 없다
       const st = remoteDeviceStatus(d);
       const dot = document.createElement('span');
       dot.className = 'remote-dot ' + st;
-      dot.title = st === 'online' ? 'Tailscale 온라인' : st === 'offline' ? 'Tailscale 오프라인' : 'Tailscale 상태 알 수 없음';
+      dot.title = st === 'online' ? tr('Tailscale 온라인') : st === 'offline' ? tr('Tailscale 오프라인') : tr('Tailscale 상태 알 수 없음');
       name.prepend(dot);
       main.append(name, meta);
       if (d.needsRepair) {
         const re = document.createElement('div');
         re.className = 'form-help warn';
-        re.textContent = '재페어링 필요 — HTTPS 로 바뀌기 전에 연결한 기기입니다. 새 QR 로 다시 페어링하세요.';
+        re.textContent = tr('재페어링 필요 — HTTPS 로 바뀌기 전에 연결한 기기입니다. 새 QR 로 다시 페어링하세요.');
         main.appendChild(re);
       }
       if (st === 'offline') {
         const help = document.createElement('div');
         help.className = 'form-help warn';
-        const seen = d.tailscaleLastSeen ? ' (마지막 ' + new Date(d.tailscaleLastSeen).toLocaleString() + ')' : '';
-        help.textContent = '폰의 Tailscale 이 꺼져 있습니다' + seen + '. ' + remoteOfflineHelp(d.platform);
+        const when = d.tailscaleLastSeen ? new Date(d.tailscaleLastSeen).toLocaleString() : '';
+        help.textContent = (when ? tr('폰의 Tailscale 이 꺼져 있습니다 (마지막 {when}).', { when }) : tr('폰의 Tailscale 이 꺼져 있습니다.')) + ' ' + remoteOfflineHelp(d.platform);
         main.appendChild(help);
       }
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.textContent = '폐기';
+      btn.textContent = tr('폐기');
       // 2단계 확인 — 폐기하면 그 기기는 다시 페어링해야 한다
       btn.onclick = async () => {
         if (!btn.classList.contains('armed')) {
           btn.classList.add('armed');
-          btn.textContent = '정말 폐기';
-          setTimeout(() => { if (btn.isConnected) { btn.classList.remove('armed'); btn.textContent = '폐기'; } }, 3000);
+          btn.textContent = tr('정말 폐기');
+          setTimeout(() => { if (btn.isConnected) { btn.classList.remove('armed'); btn.textContent = tr('폐기'); } }, 3000);
           return;
         }
         try {
           const next = await ta.remoteRevokeDevice(d.id);
           if (onRevoked) onRevoked(next); else App.renderRemoteSettings(body, next);
         }
-        catch (e) { alert('기기 폐기 실패: ' + e); }
+        catch (e) { alert(tr('기기 폐기 실패: ') + e); }
       };
       row.append(main, btn);
       box.appendChild(row);
@@ -943,7 +955,7 @@ Object.assign(App, {
   async startRemotePairing(body) {
     let p;
     try { p = await ta.remoteStartPairing(); }
-    catch (e) { alert('페어링 시작 실패: ' + e); return; }
+    catch (e) { alert(tr('페어링 시작 실패: ') + e); return; }
     if (!body.isConnected) return;
     const $ = (sel) => body.querySelector(sel);
     $('#m-rm-pairbox').classList.remove('hidden');
@@ -972,13 +984,13 @@ Object.assign(App, {
       }
       if (!left) {
         clearInterval(App._remotePairTimer);
-        expireEl.textContent = '코드가 만료되었습니다. 다시 시작하세요.';
+        expireEl.textContent = tr('코드가 만료되었습니다. 다시 시작하세요.');
         $('#m-rm-pairbox').classList.add('expired');
         // 만료 시점에 페어링이 끝났을 수 있으니 기기 목록을 새로 받는다
         ta.remoteGetConfig().then((v) => App.renderRemoteDevices($('#m-rm-devices'), v.devices || [], body)).catch(() => {});
         return;
       }
-      expireEl.textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') + ' 후 만료 · 1회용';
+      expireEl.textContent = tr('{time} 후 만료 · 1회용', { time: Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') });
     };
     $('#m-rm-pairbox').classList.remove('expired');
     tick();
@@ -996,7 +1008,7 @@ Object.assign(App, {
     if (btn) {
       const n = view.connectedDevices || 0;
       btn.classList.toggle('connected', n > 0);
-      btn.title = n > 0 ? `폰 연결 — ${n}대 연결됨` : '폰 연결 — QR 로 폰에서 이 앱의 세션을 보고 조작합니다';
+      btn.title = n > 0 ? `폰 연결 — ${n}대 연결됨` : tr('폰 연결 — QR 로 폰에서 이 앱의 세션을 보고 조작합니다');
     }
     const ph = App._phone;
     if (!ph || !ph.root.isConnected) return;
@@ -1011,9 +1023,9 @@ Object.assign(App, {
   // opts.wizard: 모두 끝난 사용자도 요약 대신 단계 화면을 본다 ('설정 다시 보기')
   showPhoneConnectModal(opts) {
     App.modal(`
-      <h3>📱 폰 연결</h3>
-      <div id="pc-root" class="phone-connect"><div class="form-help">상태 확인 중…</div></div>
-      <div class="modal-actions"><button id="pc-close">닫기</button></div>`,
+      <h3>${tr('📱 폰 연결')}</h3>
+      <div id="pc-root" class="phone-connect"><div class="form-help">${tr('상태 확인 중…')}</div></div>
+      <div class="modal-actions"><button id="pc-close">${tr('닫기')}</button></div>`,
     (m, close) => {
       m.querySelector('#pc-close').onclick = close;
       void App.startPhoneWizard(m.querySelector('#pc-root'), !!(opts && opts.wizard));
@@ -1056,7 +1068,7 @@ Object.assign(App, {
     if (!st) {
       if (wz.key !== 'error') {
         wz.key = 'error';
-        root.innerHTML = '<div class="form-help warn">Tailscale 상태를 확인하지 못했습니다. 잠시 후 다시 시도합니다.</div>';
+        root.innerHTML = '<div class="form-help warn">' + tr('Tailscale 상태를 확인하지 못했습니다. 잠시 후 다시 시도합니다.') + '</div>';
       }
       return;
     }
@@ -1141,29 +1153,29 @@ Object.assign(App, {
     const recheck = () => { wz.key = null; void wz.poll(); };
     if (id === 'mac') {
       if (st.macTailscale === 'missing') {
-        help('이 PC 에 Tailscale 이 없습니다. 설치하고 로그인하면 자동으로 다음 단계로 넘어갑니다.');
-        actions.append(btn('Tailscale 다운로드', () => { ta.openUrl(tailscaleDownloadUrl(st.hostOs)).catch(() => {}); }, true));
+        help(tr('이 PC 에 Tailscale 이 없습니다. 설치하고 로그인하면 자동으로 다음 단계로 넘어갑니다.'));
+        actions.append(btn(tr('Tailscale 다운로드'), () => { ta.openUrl(tailscaleDownloadUrl(st.hostOs)).catch(() => {}); }, true));
       } else {
         help(st.macTailscale === 'needs-login'
-          ? 'Tailscale 에 로그인이 필요합니다. 앱을 열어 로그인하세요 (폰과 같은 계정).'
-          : 'Tailscale 이 꺼져 있습니다. 앱을 열어 Connect 를 누르세요.');
-        actions.append(btn('Tailscale 열기', async () => {
+          ? tr('Tailscale 에 로그인이 필요합니다. 앱을 열어 로그인하세요 (폰과 같은 계정).')
+          : tr('Tailscale 이 꺼져 있습니다. 앱을 열어 Connect 를 누르세요.'));
+        actions.append(btn(tr('Tailscale 열기'), async () => {
           try { await ta.remoteOpenTailscale(); } catch (e) { alert(String(e)); }
         }, true));
       }
-      actions.append(btn('다시 확인', recheck));
+      actions.append(btn(tr('다시 확인'), recheck));
       body.appendChild(actions);
       return;
     }
     if (id === 'phone') {
-      help('폰에 Tailscale 앱을 설치하고 이 PC 와 같은 계정으로 로그인하세요. 폰이 tailnet 에 보이면 자동으로 넘어갑니다.');
+      help(tr('폰에 Tailscale 앱을 설치하고 이 PC 와 같은 계정으로 로그인하세요. 폰이 tailnet 에 보이면 자동으로 넘어갑니다.'));
       const note = document.createElement('div');
       note.className = 'form-help';
       note.innerHTML = SAMSUNG_WALLET_NOTE;
       body.appendChild(note);
       const qrs = document.createElement('div');
       qrs.className = 'pw-qrs';
-      for (const [label, url] of [['Android (Play 스토어)', STORE_URL_ANDROID], ['iPhone (App Store)', STORE_URL_IOS]]) {
+      for (const [label, url] of [[tr('Android (Play 스토어)'), STORE_URL_ANDROID], ['iPhone (App Store)', STORE_URL_IOS]]) {
         const cell = document.createElement('div');
         cell.className = 'pw-qr';
         const img = document.createElement('img');
@@ -1182,11 +1194,11 @@ Object.assign(App, {
       return;
     }
     if (id === 'https') {
-      help('Tailscale 관리 페이지 → DNS → HTTPS Certificates 에서 Enable 을 누르세요. 크롬 앱 설치·연결 안내·암호화가 좋아집니다.');
+      help(tr('Tailscale 관리 페이지 → DNS → HTTPS Certificates 에서 Enable 을 누르세요. 크롬 앱 설치·연결 안내·암호화가 좋아집니다.'));
       actions.append(
-        btn('Tailscale DNS 설정 열기', () => { ta.openUrl(TAILSCALE_DNS_ADMIN_URL).catch(() => {}); }, true),
-        btn('켰어요, 다시 확인', recheck),
-        btn('건너뛰기 (HTTP 로 진행)', () => { phoneWizardSetFlag(PHONE_HTTPS_SKIP_KEY); recheck(); })
+        btn(tr('Tailscale DNS 설정 열기'), () => { ta.openUrl(TAILSCALE_DNS_ADMIN_URL).catch(() => {}); }, true),
+        btn(tr('켰어요, 다시 확인'), recheck),
+        btn(tr('건너뛰기 (HTTP 로 진행)'), () => { phoneWizardSetFlag(PHONE_HTTPS_SKIP_KEY); recheck(); })
       );
       body.appendChild(actions);
       return;
@@ -1199,7 +1211,7 @@ Object.assign(App, {
       return;
     }
     // finish
-    help('폰에서 열린 페이지를 홈 화면에 추가하세요 — Android 크롬: 메뉴(⋮) → 앱 설치 / iPhone 사파리: 공유 → 홈 화면에 추가.');
+    help(tr('폰에서 열린 페이지를 홈 화면에 추가하세요 — Android 크롬: 메뉴(⋮) → 앱 설치 / iPhone 사파리: 공유 → 홈 화면에 추가.'));
     const push = document.createElement('div');
     body.appendChild(push);
     const ph = { root: body, baseline: null, timer: null, devKey: null };
@@ -1207,7 +1219,7 @@ Object.assign(App, {
     ta.remoteGetConfig().then((v) => {
       if (App._phone === ph && push.isConnected) App.renderPhonePush(ph, push, v, null);
     }).catch(() => {});
-    actions.append(btn('완료', () => { phoneWizardSetFlag(PHONE_FINISH_KEY); wz.forceWizard = false; recheck(); }, true));
+    actions.append(btn(tr('완료'), () => { phoneWizardSetFlag(PHONE_FINISH_KEY); wz.forceWizard = false; recheck(); }, true));
     body.appendChild(actions);
   },
 
@@ -1219,15 +1231,15 @@ Object.assign(App, {
     view = view || {};
     root.innerHTML = `
       <div class="pw-summary-line" id="pw-sum-line"></div>
-      <label>페어링된 기기</label>
+      <label>${tr('페어링된 기기')}</label>
       <div class="remote-devices" id="pc-devices"></div>
       <div class="remote-actions">
-        <button type="button" id="pw-open" class="primary">📱 폰에서 열기</button>
-        <button type="button" id="pw-add">새 기기 추가</button>
-        <button type="button" id="pw-again">설정 다시 보기</button>
+        <button type="button" id="pw-open" class="primary">${tr('📱 폰에서 열기')}</button>
+        <button type="button" id="pw-add">${tr('새 기기 추가')}</button>
+        <button type="button" id="pw-again">${tr('설정 다시 보기')}</button>
       </div>
       <div id="pw-add-box"></div>
-      <label>폰 알림</label>
+      <label>${tr('폰 알림')}</label>
       <div id="pc-push"></div>`;
     const $ = (sel) => root.querySelector(sel);
     $('#pw-sum-line').textContent = phoneSummaryLine(st, view);
@@ -1254,7 +1266,7 @@ Object.assign(App, {
     if (btns.length) {
       const busy = document.createElement('div');
       busy.className = 'form-help';
-      busy.textContent = '연결 준비 중…';
+      busy.textContent = tr('연결 준비 중…');
       root.prepend(busy);
     }
     let r;
@@ -1274,20 +1286,20 @@ Object.assign(App, {
         <div class="phone-fail-title"></div>
         <div class="form-help" id="pc-fail-detail"></div>
         <div class="remote-actions">
-          ${noTs ? '<button type="button" id="pc-ts-open">Tailscale 설치 페이지 열기</button>' : ''}
+          ${noTs ? '<button type="button" id="pc-ts-open">' + tr('Tailscale 설치 페이지 열기') + '</button>' : ''}
           <button type="button" id="pc-retry" class="primary"></button>
         </div>
       </div>`;
     root.querySelector('.phone-fail-title').textContent = noTs
-      ? '이 컴퓨터에 Tailscale 이 연결돼 있지 않습니다'
-      : '원격 서버를 시작하지 못했습니다';
+      ? tr('이 컴퓨터에 Tailscale 이 연결돼 있지 않습니다')
+      : tr('원격 서버를 시작하지 못했습니다');
     root.querySelector('#pc-fail-detail').textContent = noTs
-      ? '폰과 이 컴퓨터를 안전하게 잇기 위해 Tailscale(무료 VPN)을 씁니다. 이 컴퓨터에 설치하고 로그인한 뒤 다시 시도하세요.'
-      : (r.error || '알 수 없는 오류') + ' — 설정 → 모바일 원격 제어에서 포트를 바꿔 볼 수 있습니다.';
-    root.querySelector('#pc-retry').textContent = noTs ? '설치 후 다시 시도' : '다시 시도';
+      ? tr('폰과 이 컴퓨터를 안전하게 잇기 위해 Tailscale(무료 VPN)을 씁니다. 이 컴퓨터에 설치하고 로그인한 뒤 다시 시도하세요.')
+      : (r.error || tr('알 수 없는 오류')) + ' ' + tr('— 설정 → 모바일 원격 제어에서 포트를 바꿔 볼 수 있습니다.');
+    root.querySelector('#pc-retry').textContent = noTs ? tr('설치 후 다시 시도') : tr('다시 시도');
     root.querySelector('#pc-retry').onclick = () => { void App.runPhoneConnect(root); };
     const open = root.querySelector('#pc-ts-open');
-    if (open) open.onclick = () => { ta.openUrl(TAILSCALE_DOWNLOAD_URL).catch((e) => alert('링크 열기 실패: ' + e)); };
+    if (open) open.onclick = () => { ta.openUrl(TAILSCALE_DOWNLOAD_URL).catch((e) => alert(tr('링크 열기 실패: ') + e)); };
   },
 
   renderPhonePairing(ph, r) {
@@ -1298,27 +1310,27 @@ Object.assign(App, {
     root.innerHTML = `
       <div class="form-help warn hidden" id="pc-changed"></div>
       <div class="phone-pair">
-        <img id="pc-qr" class="phone-qr" alt="페어링 QR">
+        <img id="pc-qr" class="phone-qr" alt="${tr('페어링 QR')}">
         <div class="phone-code" id="pc-code"></div>
         <div class="form-help" id="pc-expire"></div>
-        <div class="phone-done hidden" id="pc-done">연결됨 ✓</div>
+        <div class="phone-done hidden" id="pc-done">${tr('연결됨 ✓')}</div>
       </div>
       <ol class="phone-steps">
-        <li>폰에 <a href="#" id="pc-ts">Tailscale</a> 을 설치하고 이 컴퓨터와 <b>같은 계정</b>으로 로그인 (VPN On Demand·상시 VPN 을 켜 두면 편합니다)
+        <li>${tr('폰에 {tailscale} 을 설치하고 이 컴퓨터와 {sameAccount}으로 로그인 (VPN On Demand·상시 VPN 을 켜 두면 편합니다)', { tailscale: '<a href="#" id="pc-ts">Tailscale</a>', sameAccount: '<b>' + tr('같은 계정') + '</b>' })}
           <div class="phone-steps-note">${SAMSUNG_WALLET_NOTE}</div></li>
-        <li>폰 카메라로 QR 스캔 — 또는 아래 주소를 열고 코드 입력</li>
-        <li>열린 페이지를 <b>홈 화면에 추가</b> — 다음부터 아이콘으로 바로 접속</li>
+        <li>${tr('폰 카메라로 QR 스캔 — 또는 아래 주소를 열고 코드 입력')}</li>
+        <li>${tr('열린 페이지를 {addHome} — 다음부터 아이콘으로 바로 접속', { addHome: '<b>' + tr('홈 화면에 추가') + '</b>' })}</li>
       </ol>
       <div class="remote-url" id="pc-url"></div>
       ${compact ? '' : `<div id="pc-https"></div>
-      <label>페어링된 기기</label>
+      <label>${tr('페어링된 기기')}</label>
       <div class="remote-devices" id="pc-devices"></div>`}
-      <div class="remote-actions"><button type="button" id="pc-new">새 코드</button></div>
-      ${compact ? '' : `<label>폰 알림 · 폰에서 열기</label>
+      <div class="remote-actions"><button type="button" id="pc-new">${tr('새 코드')}</button></div>
+      ${compact ? '' : `<label>${tr('폰 알림 · 폰에서 열기')}</label>
       <div id="pc-push"></div>`}`;
     const $ = (sel) => root.querySelector(sel);
     if (r.changedFrom) {
-      $('#pc-changed').textContent = `바인드 주소를 ${r.changedFrom} → auto(Tailscale) 로 바꿨습니다.`;
+      $('#pc-changed').textContent = tr('바인드 주소를 {from} → auto(Tailscale) 로 바꿨습니다.', { from: r.changedFrom });
       $('#pc-changed').classList.remove('hidden');
     }
     // SVG 는 img 의 data URL 로만 — img 로 렌더한 SVG 는 스크립트를 실행하지 않는다
@@ -1346,11 +1358,11 @@ Object.assign(App, {
       const left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
       if (!left) {
         clearInterval(timer);
-        $('#pc-expire').textContent = '코드가 만료되었습니다 — 새 코드를 누르세요.';
+        $('#pc-expire').textContent = tr('코드가 만료되었습니다 — 새 코드를 누르세요.');
         $('#pc-qr').classList.add('expired');
         return;
       }
-      $('#pc-expire').textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') + ' 후 만료 · 1회용';
+      $('#pc-expire').textContent = tr('{time} 후 만료 · 1회용', { time: Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') });
     };
     tick();
     timer = setInterval(tick, 1000);
@@ -1363,7 +1375,7 @@ Object.assign(App, {
     if (view.mode === 'https') {
       const ok = document.createElement('div');
       ok.className = 'form-help';
-      ok.textContent = '🔒 HTTPS 로 연결됩니다 (Tailscale 인증서)';
+      ok.textContent = tr('🔒 HTTPS 로 연결됩니다 (Tailscale 인증서)');
       box.appendChild(ok);
       return;
     }
@@ -1371,26 +1383,26 @@ Object.assign(App, {
     if (!advice) return;
     box.innerHTML = `
       <div class="phone-https">
-        <div class="phone-https-title">HTTPS 켜기 (권장)</div>
+        <div class="phone-https-title">${tr('HTTPS 켜기 (권장)')}</div>
         <ul class="phone-https-why">
-          <li>크롬에서 '앱 설치'(홈 화면 앱)가 제대로 동작합니다</li>
-          <li>PC 에 연결할 수 없을 때 앱이 안내 화면을 띄울 수 있습니다</li>
-          <li>Tailscale 위에서 한 번 더 TLS 로 암호화됩니다</li>
+          <li>${tr("크롬에서 '앱 설치'(홈 화면 앱)가 제대로 동작합니다")}</li>
+          <li>${tr('PC 에 연결할 수 없을 때 앱이 안내 화면을 띄울 수 있습니다')}</li>
+          <li>${tr('Tailscale 위에서 한 번 더 TLS 로 암호화됩니다')}</li>
         </ul>
         <div class="form-help warn hidden" id="pc-https-err"></div>
-        <div class="form-help">Tailscale 관리 페이지 → DNS → <b>HTTPS Certificates</b> 의 Enable 을 누르세요. 전환하면 기존 기기는 주소가 바뀌어 한 번 다시 페어링해야 합니다.</div>
+        <div class="form-help">${tr('Tailscale 관리 페이지 → DNS → {certs} 의 Enable 을 누르세요. 전환하면 기존 기기는 주소가 바뀌어 한 번 다시 페어링해야 합니다.', { certs: '<b>HTTPS Certificates</b>' })}</div>
         <div class="remote-actions">
-          <button type="button" id="pc-https-open">Tailscale DNS 설정 열기</button>
-          <button type="button" id="pc-https-recheck" class="primary">켰어요, 다시 확인</button>
+          <button type="button" id="pc-https-open">${tr('Tailscale DNS 설정 열기')}</button>
+          <button type="button" id="pc-https-recheck" class="primary">${tr('켰어요, 다시 확인')}</button>
         </div>
       </div>`;
     if (advice === 'error' && view.httpsError) {
       const e = box.querySelector('#pc-https-err');
-      e.textContent = 'HTTPS 전환 실패 — HTTP 로 동작 중: ' + view.httpsError;
+      e.textContent = tr('HTTPS 전환 실패 — HTTP 로 동작 중: ') + view.httpsError;
       e.classList.remove('hidden');
     }
     box.querySelector('#pc-https-open').onclick = () => {
-      ta.openUrl(TAILSCALE_DNS_ADMIN_URL).catch((e) => alert('링크 열기 실패: ' + e));
+      ta.openUrl(TAILSCALE_DNS_ADMIN_URL).catch((e) => alert(tr('링크 열기 실패: ') + e));
     };
     box.querySelector('#pc-https-recheck').onclick = () => { void App.runPhoneConnect(ph.root); };
   },
@@ -1404,12 +1416,11 @@ Object.assign(App, {
     const help = document.createElement('div');
     help.className = 'form-help';
     if (!on) {
-      help.textContent = '작업 완료·허가 대기 알림을 폰으로 받고, 알림을 누르면 그 세션이 바로 열립니다 (ntfy 앱). '
-        + '알림 링크에는 이 PC 의 접속 주소(Tailscale 이름·IP)가 포함됩니다.';
+      help.textContent = tr('작업 완료·허가 대기 알림을 폰으로 받고, 알림을 누르면 그 세션이 바로 열립니다 (ntfy 앱). 알림 링크에는 이 PC 의 접속 주소(Tailscale 이름·IP)가 포함됩니다.');
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'primary';
-      btn.textContent = '폰 알림 켜기';
+      btn.textContent = tr('폰 알림 켜기');
       btn.onclick = async () => {
         btn.disabled = true;
         try {
@@ -1417,7 +1428,7 @@ Object.assign(App, {
           if (App._phone !== ph || !box.isConnected) return;
           App.onRemoteStatus(r.view);
           App.renderPhonePush(ph, box, r.view, r);
-        } catch (e) { alert('알림 설정 실패: ' + e); btn.disabled = false; }
+        } catch (e) { alert(tr('알림 설정 실패: ') + e); btn.disabled = false; }
       };
       actions.appendChild(btn);
       box.append(help, actions);
@@ -1428,34 +1439,34 @@ Object.assign(App, {
       wrap.className = 'phone-pair';
       const img = document.createElement('img');
       img.className = 'phone-qr small';
-      img.alt = 'ntfy 구독 QR';
+      img.alt = tr('ntfy 구독 QR');
       img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(setup.qrSvg || '');
       const t = document.createElement('div');
       t.className = 'form-help';
-      t.textContent = '폰에 ntfy 앱을 설치하고 이 QR 을 찍어 구독하세요. 앱에서 직접 추가: ' + setup.deepLink;
+      t.textContent = tr('폰에 ntfy 앱을 설치하고 이 QR 을 찍어 구독하세요. 앱에서 직접 추가: {link}', { link: setup.deepLink });
       const u = document.createElement('div');
       u.className = 'remote-url';
       u.textContent = setup.subscribeUrl;
       wrap.append(img, t, u);
       box.appendChild(wrap);
     } else {
-      help.textContent = '폰 알림 켜짐 (ntfy). 알림을 누르면 해당 세션이 폰에서 열립니다. 알림 링크에는 이 PC 의 접속 주소가 포함됩니다.';
+      help.textContent = tr('폰 알림 켜짐 (ntfy). 알림을 누르면 해당 세션이 폰에서 열립니다. 알림 링크에는 이 PC 의 접속 주소가 포함됩니다.');
       box.appendChild(help);
       const qr = document.createElement('button');
       qr.type = 'button';
-      qr.textContent = '구독 QR 보기';
+      qr.textContent = tr('구독 QR 보기');
       qr.onclick = async () => {
         try {
           const r = await ta.remoteEnablePush();
           if (App._phone === ph && box.isConnected) App.renderPhonePush(ph, box, r.view, r);
-        } catch (e) { alert('알림 설정 실패: ' + e); }
+        } catch (e) { alert(tr('알림 설정 실패: ') + e); }
       };
       actions.appendChild(qr);
     }
     const open = document.createElement('button');
     open.type = 'button';
-    open.textContent = '📱 폰에서 열기';
-    open.title = '현재 세션을 폰에서 여는 알림을 보냅니다';
+    open.textContent = tr('📱 폰에서 열기');
+    open.title = tr('현재 세션을 폰에서 여는 알림을 보냅니다');
     open.onclick = () => { void App.openOnPhone(App.state && App.state.activeId); };
     actions.appendChild(open);
     box.appendChild(actions);
@@ -1465,11 +1476,11 @@ Object.assign(App, {
   async openOnPhone(sessionId) {
     try {
       await ta.remoteOpenOnPhone(sessionId || null);
-      App.showToast('폰으로 보냈습니다 — 알림을 누르면 열립니다');
+      App.showToast(tr('폰으로 보냈습니다 — 알림을 누르면 열립니다'));
     } catch (e) {
       const kind = remoteOpenOnPhoneError(e);
-      if (kind === 'other') { alert('폰에서 열기 실패: ' + e); return; }
-      App.showToast(kind === 'setup-push' ? '먼저 폰 알림을 켜세요' : '먼저 폰을 연결하세요');
+      if (kind === 'other') { alert(tr('폰에서 열기 실패: ') + e); return; }
+      App.showToast(kind === 'setup-push' ? tr('먼저 폰 알림을 켜세요') : tr('먼저 폰을 연결하세요'));
       App.showPhoneConnectModal();
     }
   },
@@ -1482,7 +1493,7 @@ Object.assign(App, {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'term-context-item';
-    btn.textContent = '📱 폰에서 열기';
+    btn.textContent = tr('📱 폰에서 열기');
     btn.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); };
     btn.onclick = (e) => {
       e.stopPropagation();
@@ -1553,17 +1564,17 @@ function phoneWizardPlan(st, flags) {
   const phones = st.phones || [];
   const offline = phones.length > 0 && !phones.some((p) => p.online);
   const steps = [
-    { id: 'mac', title: 'PC 에 Tailscale 켜기', done: st.macTailscale === 'running' },
+    { id: 'mac', title: tr('PC 에 Tailscale 켜기'), done: st.macTailscale === 'running' },
     {
-      id: 'phone', title: '폰에 Tailscale 설치·로그인', done: phones.length > 0,
-      note: offline ? '폰의 Tailscale 이 오프라인입니다. ' + remoteOfflineHelp(phoneOsPlatform(phones[0].os)) : null
+      id: 'phone', title: tr('폰에 Tailscale 설치·로그인'), done: phones.length > 0,
+      note: offline ? tr('폰의 Tailscale 이 오프라인입니다.') + ' ' + remoteOfflineHelp(phoneOsPlatform(phones[0].os)) : null
     },
-    { id: 'https', title: 'HTTPS 켜기 (권장)', done: !!st.httpsAvailable || !!f.httpsSkipped },
+    { id: 'https', title: tr('HTTPS 켜기 (권장)'), done: !!st.httpsAvailable || !!f.httpsSkipped },
     {
-      id: 'pair', title: '폰 페어링 (QR)', done: (st.pairedDevices || 0) > 0,
-      note: st.staleDevices ? `HTTPS 로 바뀌어 기존 기기 ${st.staleDevices}대는 다시 페어링해야 합니다.` : null
+      id: 'pair', title: tr('폰 페어링 (QR)'), done: (st.pairedDevices || 0) > 0,
+      note: st.staleDevices ? tr('HTTPS 로 바뀌어 기존 기기 {n}대는 다시 페어링해야 합니다.', { n: st.staleDevices }) : null
     },
-    { id: 'finish', title: '마무리 — 홈 화면 앱 · 알림', done: !!st.pushConfigured || !!f.finished }
+    { id: 'finish', title: tr('마무리 — 홈 화면 앱 · 알림'), done: !!st.pushConfigured || !!f.finished }
   ];
   const first = steps.find((s) => !s.done);
   return {
@@ -1588,8 +1599,8 @@ function phoneSummaryLine(st, view) {
   const phones = st.phones || [];
   const online = phones.filter((p) => p.online).length;
   const mode = view && view.mode === 'https' ? 'HTTPS' : 'HTTP';
-  const running = view && view.running ? '실행 중' : '꺼짐';
-  return `✓ PC Tailscale · 폰 ${phones.length}대 (온라인 ${online}) · 원격 서버 ${running} (${mode})`;
+  const running = view && view.running ? tr('실행 중') : tr('꺼짐');
+  return tr('✓ PC Tailscale · 폰 {n}대 (온라인 {online}) · 원격 서버 {running} ({mode})', { n: phones.length, online, running, mode });
 }
 
 // HTTPS 권장 안내 분기 — 이미 HTTPS 면 null, 인증서는 있는데 전환 실패면 'error', 아니면 'enable'
@@ -1604,22 +1615,22 @@ function remoteDeviceStatus(d) {
 }
 
 // 삼성 월렛(삼성페이)은 VPN 이 켜져 있으면 결제를 막는다 — Tailscale 분할 터널링으로 월렛만 제외하면 해결된다
-const SAMSUNG_WALLET_NOTE = '갤럭시에서 삼성 월렛(삼성페이)이 "VPN 해제" 를 요구하면: Tailscale 앱 → 프로필 아이콘 → <b>App-based split tunneling</b> 에서 삼성 월렛·삼성 패스를 체크해 제외하세요 (한글 앱은 목록 맨 아래, 검색은 spay).';
+const SAMSUNG_WALLET_NOTE = tr('갤럭시에서 삼성 월렛(삼성페이)이 "VPN 해제" 를 요구하면: Tailscale 앱 → 프로필 아이콘 → <b>App-based split tunneling</b> 에서 삼성 월렛·삼성 패스를 체크해 제외하세요 (한글 앱은 목록 맨 아래, 검색은 spay).');
 
 // 폰이 VPN 을 놓치지 않게 하는 설정 — 플랫폼별
 function remoteOfflineHelp(platform) {
   if (platform === 'android') {
-    return '폰 설정 → 연결 → 기타 연결 설정 → VPN → Tailscale ⚙ → 상시 VPN 을 켜고, 설정 → 애플리케이션 → Tailscale → 배터리 → 제한 없음으로 두세요.';
+    return tr('폰 설정 → 연결 → 기타 연결 설정 → VPN → Tailscale ⚙ → 상시 VPN 을 켜고, 설정 → 애플리케이션 → Tailscale → 배터리 → 제한 없음으로 두세요.');
   }
-  if (platform === 'ios') return 'Tailscale 앱 설정에서 VPN On Demand 를 켜 두세요.';
-  return '폰에서 Tailscale 을 켜고 이 PC 와 같은 계정으로 로그인했는지 확인하세요.';
+  if (platform === 'ios') return tr('Tailscale 앱 설정에서 VPN On Demand 를 켜 두세요.');
+  return tr('폰에서 Tailscale 을 켜고 이 PC 와 같은 계정으로 로그인했는지 확인하세요.');
 }
 
 // 폰에서 열기 실패 분기 — 백엔드 오류 문자열 기준
 function remoteOpenOnPhoneError(e) {
   const msg = String(e || '');
   if (msg.includes('no-push')) return 'setup-push';
-  if (msg.includes('실행 중이 아닙니다')) return 'start-server';
+  if (msg.includes('실행 중이 아닙니다') || msg.includes('is not running')) return 'start-server';
   return 'other';
 }
 
@@ -1674,10 +1685,10 @@ function needsRemoteBindConfirm(view, cfg) {
 }
 
 function remoteBindConfirmText(level) {
-  const where = level === 'lan' ? '같은 네트워크(LAN·공용 Wi-Fi)의 기기' : '인터넷의 누구나';
-  return `${where}가 이 원격 서버에 접속을 시도할 수 있습니다.\n\n`
-    + '통신은 암호화되지 않은 HTTP 라, 같은 망에서 엿보면 기기 인증 토큰과 터미널 내용이 노출될 수 있습니다.\n'
-    + 'Tailscale IP(100.x) 바인드를 권장합니다.\n\n그래도 적용할까요?';
+  const where = level === 'lan' ? tr('같은 네트워크(LAN·공용 Wi-Fi)의 기기') : tr('인터넷의 누구나');
+  return tr('{where}가 이 원격 서버에 접속을 시도할 수 있습니다.', { where }) + '\n\n'
+    + tr('통신은 암호화되지 않은 HTTP 라, 같은 망에서 엿보면 기기 인증 토큰과 터미널 내용이 노출될 수 있습니다.') + '\n'
+    + tr('Tailscale IP(100.x) 바인드를 권장합니다.') + '\n\n' + tr('그래도 적용할까요?');
 }
 
 // 설정 팝업 글꼴 드롭다운 후보 — 널리 쓰이는 코딩·모노스페이스 글꼴 (설치된 것만 표시)

@@ -1,5 +1,6 @@
 // 원격 푸시 (ntfy). 상태 전이 Done/Waiting 만, 세션별 간격 제한.
 // 본문에는 세션 라벨과 상태만 싣는다 — 터미널 내용은 외부 서버로 보내지 않는다
+use crate::i18n::trf;
 use crate::pty::{PtyEvent, PtyManager, Status};
 use crate::store::{PushConfig, Store};
 use crate::util::plock;
@@ -37,8 +38,8 @@ impl Limiter {
 /// 보낼 알림 (제목·본문·ntfy 우선순위·태그). 대상 상태가 아니거나 꺼져 있으면 None
 pub fn message(cfg: &PushConfig, label: &str, status: Status) -> Option<(String, &'static str, &'static str)> {
     match status {
-        Status::Done if cfg.on_done => Some((format!("{} — 작업 완료", label), "default", "white_check_mark")),
-        Status::Waiting if cfg.on_waiting => Some((format!("{} — 허가 대기 중", label), "high", "warning")),
+        Status::Done if cfg.on_done => Some((trf("{label} — 작업 완료", &[("label", &label)]), "default", "white_check_mark")),
+        Status::Waiting if cfg.on_waiting => Some((trf("{label} — 허가 대기 중", &[("label", &label)]), "high", "warning")),
         _ => None,
     }
 }
@@ -71,7 +72,7 @@ pub fn send_ntfy(url: &str, topic: &str, body: &str, priority: &str, tags: &str,
     }
     req.send_string(body)
         .map(|_| ())
-        .map_err(|e| format!("푸시 전송 실패: {}", e))
+        .map_err(|e| trf("푸시 전송 실패: {e}", &[("e", &e)]))
 }
 
 /// 기본은 세션 제목만. include_project 면 '프로젝트명 — S2' (데스크톱 표기와 같다)

@@ -18,6 +18,7 @@
 // 웹뷰가 크래시/리로드돼도 get_scrollback 으로 화면을 복원할 수 있다.
 // (디스크 영속화는 하지 않는다 — 세션은 앱 수명과 함께 끝나고,
 // 과거 작업 재개는 Claude Code 자체 세션 저장소를 통한다. claude.rs 참고)
+use crate::i18n::{tr, trf};
 use crate::util::plock;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -380,18 +381,18 @@ pub fn list_shells() -> Vec<serde_json::Value> {
     let mut push =
         |label: String, value: &str| out.push(serde_json::json!({ "label": label, "value": value }));
     if cfg!(windows) {
-        push("OS 기본".into(), "");
+        push(tr("OS 기본").into(), "");
         push("PowerShell".into(), "powershell.exe");
         if on_path("pwsh.exe") {
             push("PowerShell 7 (pwsh)".into(), "pwsh.exe");
         }
-        push("명령 프롬프트 (cmd)".into(), "cmd.exe");
+        push(tr("명령 프롬프트 (cmd)").into(), "cmd.exe");
         if find_git_bash("git-bash").is_some() {
             push("Git Bash".into(), "git-bash");
         }
     } else {
         let sys = std::env::var("SHELL").unwrap_or_default();
-        let label = if sys.is_empty() { "OS 기본".into() } else { format!("OS 기본 ({})", sys) };
+        let label = if sys.is_empty() { tr("OS 기본").into() } else { trf("OS 기본 ({sys})", &[("sys", &sys)]) };
         push(label, "");
         for sh in ["/bin/zsh", "/bin/bash"] {
             if sh != sys && std::path::Path::new(sh).is_file() {
@@ -425,10 +426,10 @@ fn resolve_shell(override_shell: &str) -> Result<ResolvedShell, String> {
         // --login: Git Bash 의 PATH·프롬프트 초기화, -i: 대화형 (Windows Terminal 프로필과 동일)
         return Ok(ResolvedShell { program, args: vec!["--login", "-i"], msys_bash: true });
     }
-    Err(format!(
+    Err(trf(
         "Git Bash 를 찾을 수 없습니다 — 설정의 셸에 bash.exe 전체 경로를 입력하세요 \
-         (예: C:\\Program Files\\Git\\bin\\bash.exe). 입력값: {}",
-        shell
+         (예: C:\\Program Files\\Git\\bin\\bash.exe). 입력값: {shell}",
+        &[("shell", &shell)],
     ))
 }
 

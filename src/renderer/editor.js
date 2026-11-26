@@ -21,12 +21,12 @@ Object.assign(App, {
     try {
       file = await ta.readTextFile(path);
     } catch (e) {
-      App.showToast('편집할 수 없는 파일입니다 — ' + String(e));
+      App.showToast(tr('편집할 수 없는 파일입니다 — {e}', { e: String(e) }));
       return;
     }
     // 잘린 내용으로 저장하면 나머지가 날아간다 — 큰 파일은 편집을 막는다
     if (file.truncated) {
-      App.showToast('2MB 가 넘는 파일은 편집할 수 없습니다 — 외부 편집기를 사용하세요');
+      App.showToast(tr('2MB 가 넘는 파일은 편집할 수 없습니다 — 외부 편집기를 사용하세요'));
       return;
     }
     const ext = previewExt(path);
@@ -42,8 +42,8 @@ Object.assign(App, {
       <div class="modal-actions">
         <span class="editor-status"></span>
         <span style="flex:1"></span>
-        <button id="m-cancel">취소</button>
-        <button id="m-save" class="primary">저장</button>
+        <button id="m-cancel">${tr('취소')}</button>
+        <button id="m-save" class="primary">${tr('저장')}</button>
       </div>`,
       (m, close) => {
         m.querySelector('h3').textContent = name;
@@ -61,7 +61,7 @@ Object.assign(App, {
         };
         const markDirty = () => {
           dirty = true;
-          setStatus('저장되지 않음', 'unsaved');
+          setStatus(tr('저장되지 않음'), 'unsaved');
           resetCancel();
         };
 
@@ -77,14 +77,14 @@ Object.assign(App, {
           if (surface.beforeSave && !surface.beforeSave()) return; // JSON 문법 오류 등
           saving = true;
           saveBtn.disabled = true;
-          setStatus('저장 중…');
+          setStatus(tr('저장 중…'));
           try {
             await ta.writeTextFile(path, ta_.value);
             dirty = false;
-            setStatus('저장됨', 'saved');
+            setStatus(tr('저장됨'), 'saved');
             App.refreshExplorer(true); // git 상태 표시 갱신
           } catch (e) {
-            setStatus('저장 실패 — ' + String(e), 'unsaved');
+            setStatus(tr('저장 실패 — {e}', { e: String(e) }), 'unsaved');
           } finally {
             saving = false;
             saveBtn.disabled = false;
@@ -96,14 +96,14 @@ Object.assign(App, {
         const resetCancel = () => {
           clearTimeout(armTimer);
           armed = false;
-          cancelBtn.textContent = '취소';
+          cancelBtn.textContent = tr('취소');
           cancelBtn.classList.remove('confirm');
         };
         cancelBtn.onclick = () => {
           if (!dirty) { close(); return; }
           if (armed) { resetCancel(); close(); return; }
           armed = true;
-          cancelBtn.textContent = '변경 폐기 확인';
+          cancelBtn.textContent = tr('변경 폐기 확인');
           cancelBtn.classList.add('confirm');
           armTimer = setTimeout(resetCancel, CONFIRM_ARM_MS);
         };
@@ -185,8 +185,8 @@ Object.assign(App, {
     const bar = document.createElement('div');
     bar.className = 'editor-bar';
     const fmt = document.createElement('button');
-    fmt.textContent = '정렬';
-    fmt.title = 'JSON 을 2칸 들여쓰기로 다시 정렬';
+    fmt.textContent = tr('정렬');
+    fmt.title = tr('JSON 을 2칸 들여쓰기로 다시 정렬');
     bar.appendChild(fmt);
     body.appendChild(bar);
 
@@ -204,11 +204,11 @@ Object.assign(App, {
     const onInput = () => {
       inner.onInput();
       const err = check();
-      if (err) setStatus('JSON 오류: ' + err, 'unsaved');
+      if (err) setStatus(tr('JSON 오류: {err}', { err }), 'unsaved');
     };
     fmt.onclick = () => {
       const err = check();
-      if (err) { setStatus('JSON 오류: ' + err, 'unsaved'); return; }
+      if (err) { setStatus(tr('JSON 오류: {err}', { err }), 'unsaved'); return; }
       area.value = JSON.stringify(JSON.parse(area.value), null, 2);
       area.dispatchEvent(new Event('input'));
     };
@@ -218,7 +218,7 @@ Object.assign(App, {
       // 문법이 깨진 JSON 은 저장을 막는다 (설정 파일이 망가지는 사고 방지)
       beforeSave() {
         const err = check();
-        if (err) { setStatus('JSON 오류로 저장할 수 없습니다: ' + err, 'unsaved'); return false; }
+        if (err) { setStatus(tr('JSON 오류로 저장할 수 없습니다: {err}', { err }), 'unsaved'); return false; }
         return true;
       }
     };

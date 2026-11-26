@@ -1,5 +1,6 @@
 // 탐색기: 프로젝트 파일 트리(지연 로딩) + git 변경 상태 + 미리보기용 텍스트 읽기.
 // 렌더러에는 fs 플러그인이 없으므로 파일 접근은 전부 이 모듈의 커맨드를 거친다.
+use crate::i18n::{tr, trf};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -32,7 +33,7 @@ pub struct DirEntry {
 /// async 커맨드 → 워커 스레드 실행이라 대형 폴더(node_modules 등)도 UI 를 막지 않는다.
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
-    let rd = fs::read_dir(&path).map_err(|e| format!("폴더를 읽을 수 없습니다: {}", e))?;
+    let rd = fs::read_dir(&path).map_err(|e| trf("폴더를 읽을 수 없습니다: {e}", &[("e", &e)]))?;
     let mut out: Vec<DirEntry> = Vec::new();
     for e in rd.flatten() {
         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -357,7 +358,7 @@ pub(crate) fn git_cmd_full(cwd: &str, args: &[&str]) -> Result<String, String> {
     }
     let out = cmd
         .output()
-        .map_err(|e| format!("git 을 실행할 수 없습니다: {e}"))?;
+        .map_err(|e| trf("git 을 실행할 수 없습니다: {e}", &[("e", &e)]))?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if out.status.success() {
         return Ok(stdout);
@@ -562,7 +563,7 @@ pub async fn git_pull(cwd: String) -> GitPullResult {
         _ => {
             return GitPullResult {
                 ok: false,
-                message: "git 실행에 실패했습니다".into(),
+                message: tr("git 실행에 실패했습니다").into(),
                 kind: "other".into(),
                 files: Vec::new(),
                 raw: String::new(),
@@ -591,7 +592,7 @@ pub async fn git_pull(cwd: String) -> GitPullResult {
     GitPullResult {
         ok,
         message: if message.is_empty() {
-            "완료".into()
+            tr("완료").into()
         } else {
             message
         },
@@ -740,7 +741,7 @@ pub async fn git_discard_paths(
         let root = git_cmd(&cwd, &["rev-parse", "--show-toplevel"])
             .map(|o| String::from_utf8_lossy(&o).trim().to_string())
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "git 저장소가 아닙니다".to_string())?;
+            .ok_or_else(|| tr("git 저장소가 아닙니다").to_string())?;
         let mut done = Vec::new();
         let mut failed = Vec::new();
         for path in paths {
@@ -757,7 +758,7 @@ pub async fn git_discard_paths(
         })
     })
     .await
-    .map_err(|e| format!("되돌리기를 실행할 수 없습니다: {e}"))?
+    .map_err(|e| trf("되돌리기를 실행할 수 없습니다: {e}", &[("e", &e)]))?
 }
 
 /// 경로 한 개 되돌리기.
@@ -765,12 +766,12 @@ pub async fn git_discard_paths(
 /// HEAD 에 없는 파일(새로 추가·미추적)은 복원할 원본이 없으니 삭제로 처리한다.
 fn discard_one(root: &str, path: &str) -> Result<(), String> {
     if path.is_empty() {
-        return Err("빈 경로".into());
+        return Err(tr("빈 경로").into());
     }
     // 경로는 git 이 알려 준 저장소 상대 경로여야 한다 — 절대 경로·상위 참조는 거부
     if path.starts_with('/') || path.starts_with('\\') || path.contains("..") || path.contains(':')
     {
-        return Err("저장소 안의 상대 경로가 아닙니다".into());
+        return Err(tr("저장소 안의 상대 경로가 아닙니다").into());
     }
     if git_cmd(root, &["cat-file", "-e", &format!("HEAD:{path}")]).is_some() {
         // 인덱스를 HEAD 로 되돌린 뒤 워크트리를 복원한다 (충돌 표시도 이 순서로 풀린다)
@@ -957,11 +958,11 @@ CONFLICT (content): Merge conflict in src/a.js";
 /// 미리보기용 텍스트 파일 읽기. 바이너리(NUL 포함)면 오류 — 프론트가 '미지원' 안내로 처리.
 #[tauri::command]
 pub async fn read_text_file(path: String) -> Result<serde_json::Value, String> {
-    let md = fs::metadata(&path).map_err(|e| format!("파일을 읽을 수 없습니다: {}", e))?;
+    let md = fs::metadata(&path).map_err(|e| trf("파일을 읽을 수 없습니다: {e}", &[("e", &e)]))?;
     if !md.is_file() {
-        return Err("파일이 아닙니다".into());
+        return Err(tr("파일이 아닙니다").into());
     }
-    let mut f = fs::File::open(&path).map_err(|e| format!("파일을 열 수 없습니다: {}", e))?;
+    let mut f = fs::File::open(&path).map_err(|e| trf("파일을 열 수 없습니다: {e}", &[("e", &e)]))?;
     let want = md.len().min(PREVIEW_CAP) as usize;
     let mut buf = vec![0u8; want];
     let mut read = 0;
@@ -969,13 +970,13 @@ pub async fn read_text_file(path: String) -> Result<serde_json::Value, String> {
         match f.read(&mut buf[read..]) {
             Ok(0) => break,
             Ok(n) => read += n,
-            Err(e) => return Err(format!("읽기 실패: {}", e)),
+            Err(e) => return Err(trf("읽기 실패: {e}", &[("e", &e)])),
         }
     }
     buf.truncate(read);
     // 앞부분에 NUL 이 있으면 텍스트가 아니라고 판단 (일반적인 바이너리 판별 휴리스틱)
     if buf.iter().take(8000).any(|&b| b == 0) {
-        return Err("텍스트 파일이 아닙니다".into());
+        return Err(tr("텍스트 파일이 아닙니다").into());
     }
     let content = String::from_utf8_lossy(&buf).into_owned();
     Ok(serde_json::json!({
@@ -990,18 +991,18 @@ pub async fn read_text_file(path: String) -> Result<serde_json::Value, String> {
 pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
     let p = Path::new(&path);
     if p.is_dir() {
-        return Err("폴더에는 저장할 수 없습니다".into());
+        return Err(tr("폴더에는 저장할 수 없습니다").into());
     }
-    let dir = p.parent().ok_or("상위 폴더를 찾을 수 없습니다")?;
+    let dir = p.parent().ok_or(tr("상위 폴더를 찾을 수 없습니다"))?;
     let name = p
         .file_name()
         .and_then(|s| s.to_str())
-        .ok_or("파일 이름이 올바르지 않습니다")?;
+        .ok_or(tr("파일 이름이 올바르지 않습니다"))?;
     let tmp = dir.join(format!(".{name}.ta-tmp"));
-    fs::write(&tmp, content.as_bytes()).map_err(|e| format!("임시 파일 저장 실패: {}", e))?;
+    fs::write(&tmp, content.as_bytes()).map_err(|e| trf("임시 파일 저장 실패: {e}", &[("e", &e)]))?;
     if let Err(e) = fs::rename(&tmp, p) {
         let _ = fs::remove_file(&tmp);
-        return Err(format!("저장 반영 실패: {}", e));
+        return Err(trf("저장 반영 실패: {e}", &[("e", &e)]));
     }
     Ok(())
 }
@@ -1013,17 +1014,17 @@ pub async fn create_file(dir: String, name: String) -> Result<String, String> {
     valid_entry_name(name)?;
     let base = Path::new(&dir);
     if !base.is_dir() {
-        return Err("대상 폴더가 없습니다".into());
+        return Err(tr("대상 폴더가 없습니다").into());
     }
     let target = base.join(name);
     if target.exists() {
-        return Err("같은 이름의 파일이 이미 있습니다".into());
+        return Err(tr("같은 이름의 파일이 이미 있습니다").into());
     }
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&target)
-        .map_err(|e| format!("파일을 만들 수 없습니다: {}", e))?;
+        .map_err(|e| trf("파일을 만들 수 없습니다: {e}", &[("e", &e)]))?;
     Ok(target.to_string_lossy().into_owned())
 }
 
@@ -1032,11 +1033,11 @@ pub async fn create_file(dir: String, name: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn delete_file(path: String) -> Result<(), String> {
     let p = Path::new(&path);
-    let md = fs::metadata(p).map_err(|e| format!("파일을 찾을 수 없습니다: {}", e))?;
+    let md = fs::metadata(p).map_err(|e| trf("파일을 찾을 수 없습니다: {e}", &[("e", &e)]))?;
     if md.is_dir() {
-        return Err("폴더는 삭제할 수 없습니다".into());
+        return Err(tr("폴더는 삭제할 수 없습니다").into());
     }
-    fs::remove_file(p).map_err(|e| format!("삭제하지 못했습니다: {}", e))
+    fs::remove_file(p).map_err(|e| trf("삭제하지 못했습니다: {e}", &[("e", &e)]))
 }
 
 /// 탐색기 '새로 만들기' — 폴더 생성. 이미 있으면 오류.
@@ -1048,13 +1049,13 @@ pub async fn create_dir(dir: String, name: String) -> Result<String, String> {
     }
     let base = Path::new(&dir);
     if !base.is_dir() {
-        return Err("대상 폴더가 없습니다".into());
+        return Err(tr("대상 폴더가 없습니다").into());
     }
     let target = base.join(name);
     if target.exists() {
-        return Err("같은 이름의 항목이 이미 있습니다".into());
+        return Err(tr("같은 이름의 항목이 이미 있습니다").into());
     }
-    fs::create_dir(&target).map_err(|e| format!("폴더를 만들 수 없습니다: {}", e))?;
+    fs::create_dir(&target).map_err(|e| trf("폴더를 만들 수 없습니다: {e}", &[("e", &e)]))?;
     Ok(target.to_string_lossy().into_owned())
 }
 
@@ -1064,7 +1065,7 @@ pub async fn move_path(from: String, to: String) -> Result<String, String> {
     let src = Path::new(&from);
     let dst = Path::new(&to);
     if !src.exists() {
-        return Err("원본을 찾을 수 없습니다".into());
+        return Err(tr("원본을 찾을 수 없습니다").into());
     }
     if src == dst {
         return Ok(to);
@@ -1075,31 +1076,31 @@ pub async fn move_path(from: String, to: String) -> Result<String, String> {
         && fs::canonicalize(src).ok() == fs::canonicalize(dst).ok()
         && fs::canonicalize(src).is_ok();
     if dst.exists() && !same_entry {
-        return Err("대상 위치에 같은 이름이 이미 있습니다".into());
+        return Err(tr("대상 위치에 같은 이름이 이미 있습니다").into());
     }
-    let parent = dst.parent().ok_or("대상 폴더를 찾을 수 없습니다")?;
+    let parent = dst.parent().ok_or(tr("대상 폴더를 찾을 수 없습니다"))?;
     if !parent.is_dir() {
-        return Err("대상 폴더가 없습니다".into());
+        return Err(tr("대상 폴더가 없습니다").into());
     }
     // 폴더를 자기 자신의 하위로 옮기면 트리가 끊긴다
     if src.is_dir() {
         if let (Ok(s), Ok(p)) = (fs::canonicalize(src), fs::canonicalize(parent)) {
             if p.starts_with(&s) {
-                return Err("폴더를 자기 하위로 옮길 수 없습니다".into());
+                return Err(tr("폴더를 자기 하위로 옮길 수 없습니다").into());
             }
         }
     }
-    fs::rename(src, dst).map_err(|e| format!("옮기지 못했습니다: {}", e))?;
+    fs::rename(src, dst).map_err(|e| trf("옮기지 못했습니다: {e}", &[("e", &e)]))?;
     Ok(dst.to_string_lossy().into_owned())
 }
 
 /// 새 파일·폴더 이름과 F2 이름 변경에 공통으로 쓰는 검사 (경로 구분자·특수 이름 금지)
 fn valid_entry_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
-        return Err("이름을 입력하세요".into());
+        return Err(tr("이름을 입력하세요").into());
     }
     if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
-        return Err("이름에 경로 구분자를 쓸 수 없습니다".into());
+        return Err(tr("이름에 경로 구분자를 쓸 수 없습니다").into());
     }
     Ok(())
 }

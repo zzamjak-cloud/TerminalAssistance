@@ -3,7 +3,7 @@
 function statusTag(status) {
   const t = document.createElement('span');
   t.className = 'status-tag ' + status;
-  t.textContent = { idle: '대기중', running: '진행중', waiting: '허가 대기', done: '완료', exited: '종료됨' }[status] || status;
+  t.textContent = { idle: tr('대기중'), running: tr('진행중'), waiting: tr('허가 대기'), done: tr('완료'), exited: tr('종료됨') }[status] || status;
   return t;
 }
 
@@ -150,7 +150,7 @@ function startSessionTitleRename(id, restore) {
     const rollback = (error) => {
       s.title = oldTitle;
       refreshSessionTitleSurfaces();
-      if (App.showToast) App.showToast('세션 제목을 바꾸지 못했습니다: ' + String(error));
+      if (App.showToast) App.showToast(tr('세션 제목을 바꾸지 못했습니다: {error}', { error: String(error) }));
       else console.warn('세션 제목 저장 실패:', error);
     };
     try {
@@ -205,8 +205,8 @@ function renderSidebar() {
     if (App._restoredSessions && App._restoredSessions.has(s.id)) {
       const r = document.createElement('span');
       r.className = 'restored-tag';
-      r.textContent = '복원됨';
-      r.title = '재시작 전 열려 있던 세션 — 셸만 다시 열렸고 화면 내용은 복원하지 않습니다';
+      r.textContent = tr('복원됨');
+      r.title = tr('재시작 전 열려 있던 세션 — 셸만 다시 열렸고 화면 내용은 복원하지 않습니다');
       row.appendChild(r);
     }
     row.appendChild(statusTag(s.status));
@@ -214,8 +214,8 @@ function renderSidebar() {
     const x = document.createElement('button');
     const armed = ArmedConfirm.isArmed(['session-close', s.id]);
     x.className = 'session-close' + (armed ? ' confirm' : '');
-    x.textContent = armed ? '삭제 확인' : '✕';
-    x.title = armed ? '한 번 더 클릭하면 닫기' : '세션 닫기';
+    x.textContent = armed ? tr('삭제 확인') : '✕';
+    x.title = armed ? tr('한 번 더 클릭하면 닫기') : tr('세션 닫기');
     x.onclick = (e) => {
       e.stopPropagation();
       if (armed) {
@@ -253,7 +253,7 @@ function renderSidebar() {
   // 프로젝트에 속하지 않은 세션(홈 디렉토리 터미널)의 상주 프로젝트.
   // 세션이 없어도 항상 표시 — 신규 일반 세션은 여기의 ＋ 로 추가한다. (검색 중엔 이름이 일치할 때만)
   let shownCount = 0;
-  if (matchesProjectSearch('일반 터미널')) {
+  if (matchesProjectSearch(tr('일반 터미널'))) {
     shownCount++;
     const HOME_FOLD_KEY = '__home__'; // Collapsed 저장용 가상 id (실프로젝트 id 와 충돌 없음)
     const orphans = sessions.filter((s) => !s.projectId || !projects.some((p) => p.id === s.projectId));
@@ -267,7 +267,7 @@ function renderSidebar() {
     if (orphans.length) {
       chev.className = 'chevron ' + (folded ? 'folded' : 'open');
       chev.textContent = '❯';
-      chev.title = folded ? '펼치기' : '접기';
+      chev.title = folded ? tr('펼치기') : tr('접기');
       chev.onclick = (e) => { e.stopPropagation(); Collapsed.toggle(HOME_FOLD_KEY); renderSidebar(); };
     } else {
       chev.className = 'chevron';
@@ -276,7 +276,7 @@ function renderSidebar() {
 
     const name = document.createElement('span');
     name.className = 'project-name';
-    name.textContent = '일반 터미널';
+    name.textContent = tr('일반 터미널');
     name.style.color = 'var(--fg-dim)';
     row.appendChild(name);
 
@@ -295,7 +295,7 @@ function renderSidebar() {
     actions.className = 'project-actions';
     const addBtn = document.createElement('button');
     addBtn.textContent = '＋';
-    addBtn.title = '새 일반 터미널 세션 (홈 디렉토리)';
+    addBtn.title = tr('새 일반 터미널 세션 (홈 디렉토리)');
     addBtn.onclick = (e) => {
       e.stopPropagation();
       if (Collapsed.has(HOME_FOLD_KEY)) Collapsed.toggle(HOME_FOLD_KEY); // 새 세션이 바로 보이도록 펼침
@@ -310,7 +310,7 @@ function renderSidebar() {
       if (!orphans.length) { App.createSession(null); return; }
       App.activateSession(orphans[orphans.length - 1].id);
     };
-    row.title = '홈 디렉토리에서 여는 일반 터미널';
+    row.title = tr('홈 디렉토리에서 여는 일반 터미널');
     box.appendChild(row);
     if (!folded) {
       for (const s of orphans) box.appendChild(sessionRow(s));
@@ -358,7 +358,7 @@ function renderSidebar() {
     if (mySessions.length) {
       chev.className = 'chevron ' + (folded ? 'folded' : 'open');
       chev.textContent = '❯';
-      chev.title = folded ? '펼치기' : '접기';
+      chev.title = folded ? tr('펼치기') : tr('접기');
       chev.onclick = (e) => { e.stopPropagation(); Collapsed.toggle(p.id); renderSidebar(); };
     } else {
       chev.className = 'chevron';
@@ -371,7 +371,7 @@ function renderSidebar() {
       const mark = document.createElement('span');
       mark.className = 'worktree-mark';
       mark.innerHTML = branchIconSvg(11);
-      mark.title = '워크트리 — ' + (p.branch || '');
+      mark.title = tr('워크트리 — {branch}', { branch: p.branch || '' });
       row.appendChild(mark);
     }
 
@@ -402,13 +402,13 @@ function renderSidebar() {
       const wtBtn = document.createElement('button');
       wtBtn.className = 'icon-btn';
       wtBtn.innerHTML = branchIconSvg(13);
-      wtBtn.title = '워크트리 만들기 — 다른 브랜치를 별도 폴더로 열기';
+      wtBtn.title = tr('워크트리 만들기 — 다른 브랜치를 별도 폴더로 열기');
       wtBtn.onclick = (e) => { e.stopPropagation(); App.showWorktreeModal(p); };
       actions.appendChild(wtBtn);
     }
     const addBtn = document.createElement('button');
     addBtn.textContent = '＋';
-    addBtn.title = '새 세션';
+    addBtn.title = tr('새 세션');
     addBtn.onclick = (e) => {
       e.stopPropagation();
       // 접힌 프로젝트에 세션을 추가하면 자동으로 펼친다 — 새 세션이 바로 보이도록
@@ -417,14 +417,14 @@ function renderSidebar() {
     };
     const editBtn = document.createElement('button');
     editBtn.textContent = '✎';
-    editBtn.title = '수정';
+    editBtn.title = tr('수정');
     editBtn.onclick = (e) => { e.stopPropagation(); App.showProjectModal(p); };
     actions.appendChild(addBtn);
     actions.appendChild(editBtn);
     if (isWorktree) {
       const delBtn = document.createElement('button');
       delBtn.textContent = '✕';
-      delBtn.title = '워크트리 제거';
+      delBtn.title = tr('워크트리 제거');
       delBtn.onclick = (e) => { e.stopPropagation(); App.removeWorktree(p); };
       actions.appendChild(delBtn);
     }
@@ -439,7 +439,7 @@ function renderSidebar() {
       const target = mySessions.find((s) => s.id === lastId) || mySessions[mySessions.length - 1];
       App.activateSession(target.id);
     };
-    row.title = isWorktree ? `워크트리 · ${p.branch}\n${p.path}` : p.path;
+    row.title = isWorktree ? tr('워크트리 · {branch}', { branch: p.branch }) + '\n' + p.path : p.path;
     box.appendChild(row);
 
     if (!folded) {
@@ -451,7 +451,7 @@ function renderSidebar() {
   if (searching && !shownCount) {
     const empty = document.createElement('div');
     empty.className = 'project-search-empty';
-    empty.textContent = '일치하는 프로젝트가 없습니다';
+    empty.textContent = tr('일치하는 프로젝트가 없습니다');
     list.appendChild(empty);
   }
 

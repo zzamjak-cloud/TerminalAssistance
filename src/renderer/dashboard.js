@@ -141,13 +141,13 @@ Object.assign(App, {
       for (const id of [...map.keys()]) if (!alive.has(id)) map.delete(id);
     }
     document.getElementById('dashboard-count').textContent =
-      sessions.length ? `세션 ${sessions.length}개` : '';
+      sessions.length ? tr('세션 {n}개', { n: sessions.length }) : '';
 
     App._dashOrphanSig = null; // grid 를 비웠으니 백그라운드 섹션도 다시 만든다
     if (!sessions.length) {
       const empty = document.createElement('div');
       empty.className = 'dash-empty';
-      empty.textContent = '열려 있는 세션이 없습니다. 좌측에서 프로젝트를 클릭해 터미널을 시작하세요.';
+      empty.textContent = tr('열려 있는 세션이 없습니다. 좌측에서 프로젝트를 클릭해 터미널을 시작하세요.');
       grid.appendChild(empty);
       App.renderDashboardOrphans();
       return;
@@ -165,7 +165,7 @@ Object.assign(App, {
       if (g.project && g.project.color) swatch.style.background = g.project.color;
       const title = document.createElement('span');
       title.className = 'dash-group-name';
-      title.textContent = g.project ? g.project.name : '홈 터미널';
+      title.textContent = g.project ? g.project.name : tr('홈 터미널');
       head.append(swatch, title);
       // 워크트리 프로젝트는 어느 브랜치인지가 곧 정체성이다 (글리프는 글꼴 의존이라 텍스트로)
       if (g.project && g.project.parentId && g.project.branch) {
@@ -220,19 +220,19 @@ Object.assign(App, {
     head.className = 'dash-group-head';
     const title = document.createElement('span');
     title.className = 'dash-group-name';
-    title.textContent = '백그라운드 프로세스';
+    title.textContent = tr('백그라운드 프로세스');
     const chips = document.createElement('span');
     chips.className = 'dash-group-chips';
     const left = list.filter((o) => !o.liveTab).length;
     if (left) {
       const c = document.createElement('span');
       c.className = 'status-tag waiting';
-      c.textContent = '남은 것 ' + left;
+      c.textContent = tr('남은 것 {n}', { n: left });
       chips.appendChild(c);
     }
     const count = document.createElement('span');
     count.className = 'dash-group-count';
-    count.textContent = `${list.length}개 · ${formatMemKb(orphanMemKb(list))}`;
+    count.textContent = tr('{n}개', { n: list.length }) + ' · ' + formatMemKb(orphanMemKb(list));
     head.append(title, chips, count);
     const tiles = document.createElement('div');
     tiles.className = 'dash-group-tiles';
@@ -244,7 +244,7 @@ Object.assign(App, {
   buildDashboardOrphanTile(o) {
     const tile = document.createElement('article');
     tile.className = 'dash-tile dash-orphan' + (o.liveTab ? ' live' : ' leftover');
-    tile.title = o.command + (o.cwd ? '\n' + o.cwd : '') + '\n(우클릭=종료)';
+    tile.title = o.command + (o.cwd ? '\n' + o.cwd : '') + '\n' + tr('(우클릭=종료)');
     const head = document.createElement('div');
     head.className = 'dash-head';
     const dot = document.createElement('span');
@@ -256,16 +256,16 @@ Object.assign(App, {
 
     const p = App.state.projects.find((x) => x.id === o.projectId);
     const tab = o.liveTab ? App.state.sessions.find((x) => x.id === o.sessionId) : null;
-    const where = tab ? '탭 ' + tab.title : (o.projectId ? (p ? p.name : '프로젝트 밖') : (o.cwd || '경로 모름'));
+    const where = tab ? tr('탭 {title}', { title: tab.title }) : (o.projectId ? (p ? p.name : tr('프로젝트 밖')) : (o.cwd || tr('경로 모름')));
     const meta = document.createElement('div');
     meta.className = 'dash-meta';
     const tag = document.createElement('span');
     tag.className = 'status-tag ' + (o.liveTab ? 'idle' : 'waiting');
-    tag.textContent = o.liveTab ? '탭 소속' : '남음';
+    tag.textContent = o.liveTab ? tr('탭 소속') : tr('남음');
     const info = document.createElement('span');
     info.className = 'dash-since';
     info.textContent = [where, `CPU ${Math.round(o.cpu || 0)}%`, formatMemKb(o.rssKb || 0),
-      o.ports && o.ports.length ? '포트 ' + o.ports.join(',') : ''].filter(Boolean).join(' · ');
+      o.ports && o.ports.length ? tr('포트 {ports}', { ports: o.ports.join(',') }) : ''].filter(Boolean).join(' · ');
     meta.append(tag, info);
     tile.append(head, meta);
 
@@ -314,22 +314,22 @@ Object.assign(App, {
     menu.appendChild(label);
     const tab = o.liveTab ? App.state.sessions.find((x) => x.id === o.sessionId) : null;
     if (tab) {
-      menu.appendChild(App._dashMenuItem('소속 탭으로 이동', () => {
+      menu.appendChild(App._dashMenuItem(tr('소속 탭으로 이동'), () => {
         App.closeDashboard();
         App.activateSession(tab.id);
       }));
     }
-    const n = o.pids && o.pids.length > 1 ? ` (프로세스 ${o.pids.length}개)` : '';
-    menu.appendChild(App._dashMenuItem('■ 프로세스 종료' + n, async () => {
+    const n = o.pids && o.pids.length > 1 ? tr(' (프로세스 {n}개)', { n: o.pids.length }) : '';
+    menu.appendChild(App._dashMenuItem(tr('■ 프로세스 종료') + n, async () => {
       try {
         await ta.killOrphan(Number(o.pgid));
         // 신호 직후의 ps 에는 아직 보일 수 있어 목록에서 먼저 걷고, 잠시 뒤 다시 조회한다
         App._orphans = App._orphans.filter((x) => x.pgid !== o.pgid);
         App.renderOrphanBadge();
         App.renderDashboardOrphans();
-      } catch (e) { App.showToast('종료하지 못했습니다: ' + e); }
+      } catch (e) { App.showToast(tr('종료하지 못했습니다: {e}', { e })); }
       setTimeout(() => { void App.scanOrphans(); }, 500);
-    }, '한 번 더 눌러 종료'));
+    }, tr('한 번 더 눌러 종료')));
     App._openDashMenu(ev, menu);
   },
 
@@ -400,7 +400,7 @@ Object.assign(App, {
     const phone = document.createElement('button');
     phone.type = 'button';
     phone.className = 'term-context-item';
-    phone.textContent = '📱 폰에서 열기';
+    phone.textContent = tr('📱 폰에서 열기');
     phone.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); };
     phone.onclick = (e) => {
       e.stopPropagation();
@@ -412,7 +412,7 @@ Object.assign(App, {
     if (!App.isSplit()) {
       const hint = document.createElement('div');
       hint.className = 'term-context-hint';
-      hint.textContent = '분할 화면에서만 패널을 지정할 수 있습니다 (상단바 분할 버튼)';
+      hint.textContent = tr('분할 화면에서만 패널을 지정할 수 있습니다 (상단바 분할 버튼)');
       menu.appendChild(hint);
     } else {
       const count = App.splitPaneCount();
@@ -424,8 +424,8 @@ Object.assign(App, {
         btn.className = 'term-context-item';
         const here = held === sessionId;
         // 세션 라벨 자체에 '—' 가 들어가므로(프로젝트명 — S2) 구분은 괄호로 한다
-        const holds = here ? '여기 표시 중' : (heldSession ? '현재: ' + App.sessionLabel(heldSession) : '비어 있음');
-        btn.textContent = `${i + 1}번 패널 (${holds})`;
+        const holds = here ? tr('여기 표시 중') : (heldSession ? tr('현재: {label}', { label: App.sessionLabel(heldSession) }) : tr('비어 있음'));
+        btn.textContent = tr('{n}번 패널 ({holds})', { n: i + 1, holds });
         btn.disabled = here;
         btn.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); };
         btn.onclick = (e) => {
@@ -442,12 +442,12 @@ Object.assign(App, {
     const sep = document.createElement('div');
     sep.className = 'term-context-sep';
     menu.appendChild(sep);
-    menu.appendChild(App._dashMenuItem('■ 세션 종료', async () => {
+    menu.appendChild(App._dashMenuItem(tr('■ 세션 종료'), async () => {
       try { await App.closeSession(sessionId); }
-      catch (e) { App.showToast('세션을 닫지 못했습니다: ' + e); return; }
+      catch (e) { App.showToast(tr('세션을 닫지 못했습니다: {e}', { e })); return; }
       // 닫힌 탭이 띄운 작업은 이제 '남은 프로세스' — 탭 소속 표시를 바로 바꾼다
       void App.scanOrphans();
-    }, '한 번 더 눌러 종료'));
+    }, tr('한 번 더 눌러 종료')));
 
     App._openDashMenu(ev, menu);
   },
@@ -516,7 +516,7 @@ Object.assign(App, {
           box.chipsEl.appendChild(chip);
         }
       }
-      const countText = g.sessions.length + '개';
+      const countText = tr('{n}개', { n: g.sessions.length });
       if (box.countEl.textContent !== countText) box.countEl.textContent = countText;
 
       // 그룹 안 카드 순서 — 같은 기준을 그대로 적용한다

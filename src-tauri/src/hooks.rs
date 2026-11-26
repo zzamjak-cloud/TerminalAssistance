@@ -7,6 +7,7 @@
 //   OSC 9 이스케이프를 pty.rs 리더가 직접 가로챈다 (이 모듈은 설치만 담당).
 //
 // 설치는 모두 opt-in 이며 기존 사용자 설정을 보존 병합하고 .bak-ta 백업을 남긴다.
+use crate::i18n::{tr, trf};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
@@ -110,7 +111,7 @@ exit 0
 const CLAUDE_EVENTS: [&str; 5] = ["UserPromptSubmit", "PostToolUse", "Stop", "Notification", "SessionEnd"];
 
 fn home() -> Result<PathBuf, String> {
-    crate::claude::home_dir().ok_or_else(|| "홈 디렉토리를 찾을 수 없습니다".into())
+    crate::claude::home_dir().ok_or_else(|| tr("홈 디렉토리를 찾을 수 없습니다").into())
 }
 
 fn hooks_dir(home: &PathBuf) -> PathBuf {
@@ -347,7 +348,7 @@ pub fn install_claude() -> Result<(), String> {
     let mut root: Value = if path.exists() {
         let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         // 깨진 JSON 은 덮어쓰지 않는다 — 사용자가 직접 복구해야 할 수 있음
-        serde_json::from_str(&text).map_err(|e| format!("settings.json 파싱 실패 (설치 중단): {}", e))?
+        serde_json::from_str(&text).map_err(|e| trf("settings.json 파싱 실패 (설치 중단): {e}", &[("e", &e)]))?
     } else {
         json!({})
     };
@@ -357,14 +358,14 @@ pub fn install_claude() -> Result<(), String> {
     let cmd = hook_command(&home);
     let hooks = root
         .as_object_mut()
-        .ok_or("settings.json 루트가 객체가 아닙니다")?
+        .ok_or(tr("settings.json 루트가 객체가 아닙니다"))?
         .entry("hooks")
         .or_insert(json!({}));
-    let hooks = hooks.as_object_mut().ok_or("settings.json 의 hooks 가 객체가 아닙니다")?;
+    let hooks = hooks.as_object_mut().ok_or(tr("settings.json 의 hooks 가 객체가 아닙니다"))?;
     let mut added = false;
     for ev in CLAUDE_EVENTS {
         let arr = hooks.entry(ev).or_insert(json!([]));
-        let arr = arr.as_array_mut().ok_or_else(|| format!("hooks.{} 가 배열이 아닙니다", ev))?;
+        let arr = arr.as_array_mut().ok_or_else(|| trf("hooks.{ev} 가 배열이 아닙니다", &[("ev", &ev)]))?;
         // 기존 사용자 훅은 보존, 우리 항목은 중복 등록 방지
         if !arr.iter().any(|e| e.to_string().contains(MARKER)) {
             arr.push(json!({ "hooks": [{ "type": "command", "command": cmd }] }));
@@ -384,7 +385,7 @@ pub fn uninstall_claude() -> Result<(), String> {
     let path = home.join(".claude").join("settings.json");
     let Ok(text) = fs::read_to_string(&path) else { return Ok(()) };
     let Ok(mut root) = serde_json::from_str::<Value>(&text) else {
-        return Err("settings.json 파싱 실패 (제거 중단)".into());
+        return Err(tr("settings.json 파싱 실패 (제거 중단)").into());
     };
     let mut changed = false;
     if let Some(hooks) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
@@ -426,14 +427,14 @@ pub fn install_codex() -> Result<(), String> {
     let path = home.join(".codex").join("config.toml");
     let text = fs::read_to_string(&path).unwrap_or_default();
     let mut doc: toml_edit::DocumentMut =
-        text.parse().map_err(|e| format!("config.toml 파싱 실패 (설치 중단): {}", e))?;
+        text.parse().map_err(|e| trf("config.toml 파싱 실패 (설치 중단): {e}", &[("e", &e)]))?;
     if path.exists() {
         let _ = fs::copy(&path, path.with_extension("toml.bak-ta"));
     }
     let tui = doc
         .entry("tui")
         .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
-    let tui = tui.as_table_mut().ok_or("config.toml 의 [tui] 가 테이블이 아닙니다")?;
+    let tui = tui.as_table_mut().ok_or(tr("config.toml 의 [tui] 가 테이블이 아닙니다"))?;
 
     // notifications = true 는 이미 전 이벤트 활성 → 손대지 않음
     if tui.get("notifications").and_then(|i| i.as_bool()) != Some(true) {
@@ -464,7 +465,7 @@ pub fn uninstall_codex() -> Result<(), String> {
     let path = home.join(".codex").join("config.toml");
     let Ok(text) = fs::read_to_string(&path) else { return Ok(()) };
     let mut doc: toml_edit::DocumentMut =
-        text.parse().map_err(|e| format!("config.toml 파싱 실패 (제거 중단): {}", e))?;
+        text.parse().map_err(|e| trf("config.toml 파싱 실패 (제거 중단): {e}", &[("e", &e)]))?;
     let Some(tui) = doc.get_mut("tui").and_then(|t| t.as_table_mut()) else { return Ok(()) };
     // 우리가 추가하는 이벤트만 제거 — bool(사용자 직접 설정)은 건드리지 않음
     if let Some(arr) = tui.get_mut("notifications").and_then(|i| i.as_array_mut()) {

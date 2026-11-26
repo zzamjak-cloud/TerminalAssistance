@@ -6,15 +6,15 @@
 
 // 모드 id 는 '열x행'. 순서 = 헤더 드롭다운 표시 순서.
 const SPLIT_MODES = [
-  { id: '1x1', cols: 1, rows: 1, label: '단일 화면' },
-  { id: '2x1', cols: 2, rows: 1, label: '좌우 2분할' },
-  { id: '1x2', cols: 1, rows: 2, label: '상하 2분할' },
-  { id: '2x2', cols: 2, rows: 2, label: '2×2 4분할' },
-  { id: '3x1', cols: 3, rows: 1, label: '좌우 3분할' },
-  { id: '1x3', cols: 1, rows: 3, label: '상하 3분할' },
-  { id: '4x1', cols: 4, rows: 1, label: '좌우 4분할' },
-  { id: '3x2', cols: 3, rows: 2, label: '3×2 6분할' },
-  { id: '2x3', cols: 2, rows: 3, label: '2×3 6분할' }
+  { id: '1x1', cols: 1, rows: 1, label: tr('단일 화면') },
+  { id: '2x1', cols: 2, rows: 1, label: tr('좌우 2분할') },
+  { id: '1x2', cols: 1, rows: 2, label: tr('상하 2분할') },
+  { id: '2x2', cols: 2, rows: 2, label: tr('2×2 4분할') },
+  { id: '3x1', cols: 3, rows: 1, label: tr('좌우 3분할') },
+  { id: '1x3', cols: 1, rows: 3, label: tr('상하 3분할') },
+  { id: '4x1', cols: 4, rows: 1, label: tr('좌우 4분할') },
+  { id: '3x2', cols: 3, rows: 2, label: tr('3×2 6분할') },
+  { id: '2x3', cols: 2, rows: 3, label: tr('2×3 6분할') }
 ];
 // v0.11.6 이전 저장값 호환 (단일/좌우/상하/2×2)
 const SPLIT_LEGACY_MODES = { single: '1x1', horizontal: '2x1', vertical: '1x2', grid: '2x2' };
@@ -416,7 +416,7 @@ Object.assign(App, {
     const btn = document.getElementById('btn-split');
     btn.textContent = '';
     btn.appendChild(App.splitModeIcon(m.cols, m.rows));
-    btn.title = `화면 분할 — 현재 ${m.label}`;
+    btn.title = tr('화면 분할 — 현재 {label}', { label: m.label });
     const menu = document.getElementById('split-menu');
     if (!menu.childElementCount) {
       for (const mode of SPLIT_MODES) {
@@ -505,13 +505,13 @@ Object.assign(App, {
       label.dataset.sid = sid; // 상태 전이 시 태그만 교체하기 위한 좌표
       if (proj && proj.color) label.style.color = Theme.adjustText(proj.color);
       label.title = [App.sessionLabel(sess), branch && '⎇ ' + branch, sess.cwd].filter(Boolean).join('\n');
-      label.title += '\n(제목 바를 끌어 패널 위치 변경)';
+      label.title += '\n' + tr('(제목 바를 끌어 패널 위치 변경)');
       label.addEventListener('mousedown', (e) => App.startPaneDrag(i, e));
       label.appendChild(statusTag(sess.status));
       const nameEl = document.createElement('span');
       nameEl.className = 'ppl-name';
       nameEl.textContent = App.sessionLabel(sess);
-      nameEl.title = '프로젝트 및 세션 변경';
+      nameEl.title = tr('프로젝트 및 세션 변경');
       nameEl.onclick = (e) => {
         e.stopPropagation();
         App.toggleSessionSwitchMenu(bar, i);
@@ -544,7 +544,7 @@ Object.assign(App, {
     const search = document.createElement('input');
     search.type = 'text';
     search.className = 'pane-session-search';
-    search.placeholder = '프로젝트·세션 검색';
+    search.placeholder = tr('프로젝트·세션 검색');
     search.spellcheck = false;
     search.autocomplete = 'off';
     menu.appendChild(search);
@@ -587,26 +587,26 @@ Object.assign(App, {
 
     const knownProjects = new Set(App.state.projects.map((p) => p.id));
     const homeSessions = App.state.sessions.filter((s) => !s.projectId || !knownProjects.has(s.projectId));
-    addGroup('일반 터미널');
+    addGroup(tr('일반 터미널'));
     homeSessions.forEach(appendSession);
     // 세션이 이미 있어도 그룹 끝에 항상 새 세션 항목을 둔다 — 추가 생성 경로가 사라지지 않게.
-    addItem('+ 새 일반 터미널', '홈 디렉토리에서 새 세션 시작', () => App.createPaneSession(paneIdx, null), { empty: true });
+    addItem(tr('+ 새 일반 터미널'), tr('홈 디렉토리에서 새 세션 시작'), () => App.createPaneSession(paneIdx, null), { empty: true });
 
     for (const p of App.state.projects) {
       addGroup(p.name, p.color ? Theme.adjustText(p.color) : '', p.path);
       App.state.sessions.filter((s) => s.projectId === p.id).forEach(appendSession);
-      addItem('+ 새 세션 시작', p.path, () => App.createPaneSession(paneIdx, p.id), { empty: true });
+      addItem(tr('+ 새 세션 시작'), p.path, () => App.createPaneSession(paneIdx, p.id), { empty: true });
     }
 
     const noHit = document.createElement('div');
     noHit.className = 'pane-session-nohit';
-    noHit.textContent = '일치하는 프로젝트가 없습니다';
+    noHit.textContent = tr('일치하는 프로젝트가 없습니다');
     noHit.hidden = true;
     menu.appendChild(noHit);
 
     const footer = document.createElement('button');
     footer.className = 'pane-session-add';
-    footer.textContent = '+ 현재 프로젝트에 새 세션';
+    footer.textContent = tr('+ 현재 프로젝트에 새 세션');
     footer.onclick = (e) => {
       e.stopPropagation();
       App.closeSessionSwitchMenus();
@@ -720,15 +720,14 @@ Object.assign(App, {
     if (behind > 0 && git.hasUpstream) btn.classList.add('has-updates');
 
     if (!git.hasUpstream) {
-      btn.title = '업스트림 브랜치가 없어 pull 대상이 없습니다' + (git.branch ? ` (${git.branch})` : '');
+      btn.title = tr('업스트림 브랜치가 없어 pull 대상이 없습니다') + (git.branch ? ` (${git.branch})` : '');
     } else if (behind > 0) {
-      btn.title = `원격에 새 커밋 ${behind}개 — 클릭하면 git pull --ff-only 실행`
-        + (git.ahead ? `
-(로컬 앞선 커밋 ${git.ahead}개)` : '');
+      btn.title = tr('원격에 새 커밋 {n}개 — 클릭하면 git pull --ff-only 실행', { n: behind })
+        + (git.ahead ? '\n' + tr('(로컬 앞선 커밋 {n}개)', { n: git.ahead }) : '');
     } else {
       btn.title = git.fetchFailed
-        ? '원격 확인에 실패했습니다 (오프라인·인증) — 마지막으로 받아둔 기준으로는 최신입니다'
-        : '이미 최신 상태입니다';
+        ? tr('원격 확인에 실패했습니다 (오프라인·인증) — 마지막으로 받아둔 기준으로는 최신입니다')
+        : tr('이미 최신 상태입니다');
     }
     btn.onclick = () => App.runGitPull(cwd);
     wrap.appendChild(btn);
@@ -751,8 +750,8 @@ Object.assign(App, {
     const total = globals.length + projs.length;
     const btn = document.createElement('button');
     btn.className = 'pane-preset-toggle';
-    btn.textContent = total ? `프리셋 ${total} ▾` : '프리셋 ▾';
-    btn.title = '명령 프리셋 (전역 + 프로젝트 전용) — 이 패널의 세션에 실행';
+    btn.textContent = total ? tr('프리셋 {n} ▾', { n: total }) : tr('프리셋 ▾');
+    btn.title = tr('명령 프리셋 (전역 + 프로젝트 전용) — 이 패널의 세션에 실행');
     wrap.appendChild(btn);
 
     const menu = document.createElement('div');
@@ -761,7 +760,7 @@ Object.assign(App, {
       const item = document.createElement('button');
       item.className = 'pane-preset-item' + (isGlobal ? ' global' : '');
       item.dataset.id = p.id; // 드래그 정렬 좌표
-      item.title = p.command + '\n(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)';
+      item.title = p.command + '\n' + tr('(클릭=즉시 실행, Shift+클릭=입력만, 우클릭=수정)');
       item.textContent = p.label;
       if (p.color) {
         item.classList.add('colored');
@@ -778,8 +777,8 @@ Object.assign(App, {
     // '프리셋 관리' — 관리 팝업을 이 패널 세션의 프로젝트 기준으로 연다
     const add = document.createElement('button');
     add.className = 'pane-preset-add';
-    add.textContent = '⚙ 프리셋 관리 · 추가';
-    add.title = '프리셋 관리 (추가·수정·삭제·순서·색상)';
+    add.textContent = tr('⚙ 프리셋 관리 · 추가');
+    add.title = tr('프리셋 관리 (추가·수정·삭제·순서·색상)');
     add.onclick = () => { App.closePanePresetMenus(); App.showPresetManager(projectId || null); };
     menu.appendChild(add);
 
@@ -830,14 +829,14 @@ Object.assign(App, {
       const candidates = App.state.sessions.filter((x) => !taken.includes(x.id));
       const emptyProjects = App.state.projects.filter((p) => !App.state.sessions.some((s) => s.projectId === p.id));
       const h = document.createElement('h3');
-      h.textContent = candidates.length || emptyProjects.length ? '표시할 세션 선택' : '세션이 없습니다';
+      h.textContent = candidates.length || emptyProjects.length ? tr('표시할 세션 선택') : tr('세션이 없습니다');
       picker.appendChild(h);
       if (candidates.length || emptyProjects.length) {
         // 제목 드롭다운과 같은 방식의 검색창 — 프로젝트 이름이 걸리면 그 프로젝트의 세션도 함께 남는다
         const search = document.createElement('input');
         search.type = 'text';
         search.className = 'pane-picker-search';
-        search.placeholder = '프로젝트·세션 검색';
+        search.placeholder = tr('프로젝트·세션 검색');
         search.spellcheck = false;
         search.autocomplete = 'off';
         picker.appendChild(search);
@@ -869,7 +868,7 @@ Object.assign(App, {
           if (proj.color) name.style.color = Theme.adjustText(proj.color);
           const tag = document.createElement('span');
           tag.className = 'status-tag idle';
-          tag.textContent = '새 세션';
+          tag.textContent = tr('새 세션');
           btn.title = proj.path;
           btn.appendChild(name);
           btn.appendChild(tag);
@@ -883,7 +882,7 @@ Object.assign(App, {
 
         const noHit = document.createElement('div');
         noHit.className = 'pane-picker-nohit';
-        noHit.textContent = '일치하는 프로젝트가 없습니다';
+        noHit.textContent = tr('일치하는 프로젝트가 없습니다');
         noHit.hidden = true;
         picker.appendChild(noHit);
 
@@ -913,8 +912,8 @@ Object.assign(App, {
       // '+ 세션 추가' — 프로젝트를 골라 이 패널에 새 세션을 연다 (세션이 있어도 상주)
       const addBtn = document.createElement('button');
       addBtn.className = 'pane-add-session';
-      addBtn.textContent = '+ 세션 추가';
-      addBtn.title = '프로젝트를 선택해 이 패널에 새 세션을 시작';
+      addBtn.textContent = tr('+ 세션 추가');
+      addBtn.title = tr('프로젝트를 선택해 이 패널에 새 세션을 시작');
       addBtn.onclick = ((paneIdx) => () => App.showSessionAddModal(paneIdx))(i);
       picker.appendChild(addBtn);
     }

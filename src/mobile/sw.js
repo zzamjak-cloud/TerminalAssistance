@@ -1,11 +1,11 @@
 // 셸만 캐시하는 서비스 워커 — 앱을 홈 화면에서 열 때 정적 파일을 빨리 띄우기 위함.
 // /api·/ws 는 인증·실시간 데이터라 절대 캐시하지 않는다.
 // 정적 파일은 네트워크 우선 — 데스크톱 앱이 업데이트되면 다음 접속에 바로 새 셸을 받는다.
-const CACHE = 'ta-remote-shell-v4';
+const CACHE = 'ta-remote-shell-v5';
 // VPN 이 꺼지면 문서 요청이 오래 매달린다 — 이 시간 안에 응답이 없으면 캐시 셸을 띄운다
 const NETWORK_TIMEOUT_MS = 4000;
 const SHELL = [
-  '/', '/boot-guard.js', '/mobile.css', '/mobile.js', '/remote-core.js', '/dashboard-core.js',
+  '/', '/boot-guard.js', '/i18n.js', '/en-shared.js', '/en-mobile.js', '/mobile.css', '/mobile.js', '/remote-core.js', '/dashboard-core.js',
   '/xterm.js', '/xterm.css', '/manifest.webmanifest', '/icon.png', '/icon-192.png', '/icon-512.png',
   '/apple-touch-icon.png'
 ];

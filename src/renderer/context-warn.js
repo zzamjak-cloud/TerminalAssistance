@@ -45,8 +45,8 @@ Object.assign(App, {
     if (!view || !view.holder) return;
     const k = Math.round(usage.tokens / 1000) + 'K';
     const msg = usage.agent === 'codex'
-      ? `컨텍스트 ${k} (${Math.round(usage.tokens / usage.window * 100)}%) · 토큰 절약을 위해 주제가 바뀌었다면 /new 해주세요.`
-      : `컨텍스트 ${k} · 토큰 절약을 위해 주제가 바뀌었다면 /clear 해주세요.`;
+      ? tr('컨텍스트 {k} ({pct}%) · 토큰 절약을 위해 주제가 바뀌었다면 /new 해주세요.', { k, pct: Math.round(usage.tokens / usage.window * 100) })
+      : tr('컨텍스트 {k} · 토큰 절약을 위해 주제가 바뀌었다면 /clear 해주세요.', { k });
     let b = App._ctxBanners.get(sessionId);
     if (!b) {
       const bar = document.createElement('div');
@@ -59,7 +59,7 @@ Object.assign(App, {
       const close = document.createElement('button');
       close.className = 'rb-close';
       close.textContent = '✕';
-      close.title = '닫기';
+      close.title = tr('닫기');
       close.onclick = () => {
         const cur = App._ctxBanners.get(sessionId);
         if (cur) App._ctxDismiss.set(sessionId, { convId: cur.convId, dismissedAt: cur.tokens });

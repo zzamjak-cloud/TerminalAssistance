@@ -374,16 +374,16 @@ Object.assign(App, {
     const tabs = App.HELP_TAB_DEFS;
     const mod = App._helpModKey();
     const tabBar = tabs.map((t) =>
-      `<button type="button" class="help-tab${t.id === App._helpTab ? ' on' : ''}" data-help-tab="${t.id}">${escapeHtml(t.label)}</button>`).join('');
+      `<button type="button" class="help-tab${t.id === App._helpTab ? ' on' : ''}" data-help-tab="${t.id}">${escapeHtml(tr(t.label))}</button>`).join('');
     App.modal(`
-      <h3>도움말</h3>
+      <h3>${tr('도움말')}</h3>
       <div class="help-search">
-        <input type="text" id="help-q" placeholder="명령어·단축키 검색 (예: 브랜치, grep, Mod+J)" spellcheck="false" autocomplete="off">
-        <button type="button" id="help-q-clear" title="검색 지우기">✕</button>
+        <input type="text" id="help-q" placeholder="${tr('명령어·단축키 검색 (예: 브랜치, grep, Mod+J)')}" spellcheck="false" autocomplete="off">
+        <button type="button" id="help-q-clear" title="${tr('검색 지우기')}">✕</button>
       </div>
       <div class="help-tabs" id="help-tabs">${tabBar}</div>
       <div class="help-body" id="help-body"></div>
-      <div class="modal-actions"><button id="m-close">닫기</button></div>`,
+      <div class="modal-actions"><button id="m-close">${tr('닫기')}</button></div>`,
       (m, close) => {
         const body = m.querySelector('#help-body');
         const input = m.querySelector('#help-q');
@@ -433,37 +433,37 @@ Object.assign(App, {
     let total = 0;
     for (const def of App.HELP_TAB_DEFS) {
       for (const g of App[def.data]) {
+        // 원문(한국어)과 현재 언어 표시문 양쪽으로 대조한다
         const hits = g.items.filter(([k, d]) =>
-          App._helpNorm(k, mod).includes(needle) || App._helpNorm(d, mod).includes(needle)
-          || App._helpNorm(g.title, mod).includes(needle));
+          [k, tr(k), d, tr(d), g.title, tr(g.title, null, 'help')].some((s) => App._helpNorm(s, mod).includes(needle)));
         if (!hits.length) continue;
         total += hits.length;
-        out.push(App._helpGroupHtml(`${g.title}`, hits, mod, def.label, q));
+        out.push(App._helpGroupHtml(g.title, hits, mod, def.label, q));
       }
     }
     if (!total) {
-      return `<div class="help-empty">'${escapeHtml(q)}' 에 해당하는 항목이 없습니다.</div>`;
+      return `<div class="help-empty">${escapeHtml(tr("'{q}' 에 해당하는 항목이 없습니다.", { q }))}</div>`;
     }
-    return `<div class="help-count">검색 결과 ${total}건</div>` + out.join('');
+    return `<div class="help-count">${escapeHtml(tr('검색 결과 {n}건', { n: total }))}</div>` + out.join('');
   },
 
   _helpGroupHtml(title, items, mod, tabLabel, q) {
     const rows = items.map(([k, d]) => `
       <div class="help-row">
-        <div class="help-key">${App._helpMark(App._helpSub(k, mod), q)}</div>
-        <div class="help-desc">${App._helpMark(App._helpSub(d, mod), q)}</div>
+        <div class="help-key">${App._helpMark(App._helpSub(tr(k), mod), q)}</div>
+        <div class="help-desc">${App._helpMark(App._helpSub(tr(d), mod), q)}</div>
       </div>`).join('');
-    const badge = tabLabel ? `<span class="help-badge">${escapeHtml(tabLabel)}</span>` : '';
-    return `<section class="help-group"><h4>${escapeHtml(title)}${badge}</h4>${rows}</section>`;
+    const badge = tabLabel ? `<span class="help-badge">${escapeHtml(tr(tabLabel))}</span>` : '';
+    return `<section class="help-group"><h4>${escapeHtml(tr(title, null, 'help'))}${badge}</h4>${rows}</section>`;
   },
 
   _helpSub(s, mod) {
-    return String(s).replace(/Mod/g, mod);
+    return String(s).replace(/\bMod\b/g, mod);
   },
 
   // 검색 대조용 정규화 — 대소문자·공백 무시, 'Mod' 표기와 실제 키 표기를 모두 매칭
   _helpNorm(s, mod) {
-    return String(s).replace(/Mod/g, mod).toLowerCase().replace(/\s+/g, '');
+    return String(s).replace(/\bMod\b/g, mod).toLowerCase().replace(/\s+/g, '');
   },
 
   // 검색어 강조 — escapeHtml 이후에 <mark> 만 삽입한다

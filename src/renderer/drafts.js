@@ -175,20 +175,20 @@ Object.assign(App, {
     const paused = PromptQueue.pausedInfo(id);
     if (paused && queued.length) {
       const note = {
-        leftover: '터미널 입력줄에 내용이 남아 있어 예약을 보류했습니다',
-        paste: '프롬프트가 터미널에 들어가지 않아 멈췄습니다',
-        submit: '프롬프트는 들어갔지만 전송이 확인되지 않아 멈췄습니다',
-        unconfirmed: '전송된 것 같지만 확인되지 않아 멈췄습니다 — 터미널을 확인해 주세요',
-        mismatch: '예약과 다른 내용이 전송되어 멈췄습니다 — 터미널을 확인해 주세요',
-        error: '예약 전송 중 오류가 나 멈췄습니다',
-      }[paused.reason] || '예약 전송이 멈췄습니다';
+        leftover: tr('터미널 입력줄에 내용이 남아 있어 예약을 보류했습니다'),
+        paste: tr('프롬프트가 터미널에 들어가지 않아 멈췄습니다'),
+        submit: tr('프롬프트는 들어갔지만 전송이 확인되지 않아 멈췄습니다'),
+        unconfirmed: tr('전송된 것 같지만 확인되지 않아 멈췄습니다 — 터미널을 확인해 주세요'),
+        mismatch: tr('예약과 다른 내용이 전송되어 멈췄습니다 — 터미널을 확인해 주세요'),
+        error: tr('예약 전송 중 오류가 나 멈췄습니다'),
+      }[paused.reason] || tr('예약 전송이 멈췄습니다');
       // 이미 전송됐을 가능성이 높은 사유 — [다시 시도] 를 감춰 실수로 두 번 보내지 않게 한다
       const maybeSent = paused.reason === 'unconfirmed' || paused.reason === 'mismatch';
       const row = document.createElement('div');
       row.className = 'composer-item queue-paused';
       const kind = document.createElement('span');
       kind.className = 'composer-kind';
-      kind.textContent = '보류';
+      kind.textContent = tr('보류');
       const text = document.createElement('span');
       text.className = 'composer-text';
       text.textContent = note;
@@ -202,9 +202,9 @@ Object.assign(App, {
       };
       row.append(
         kind, text,
-        ...(maybeSent ? [] : [mk('다시 시도', '같은 내용을 다시 전송합니다', () => void PromptQueue.retry(id))]),
-        mk('입력창으로', '내용을 프롬프트 입력창으로 되돌립니다', () => void PromptQueue.releaseToComposer(id)),
-        mk('취소', '이 예약만 버리고 다음 항목으로 넘어갑니다', () => void PromptQueue.cancelPaused(id))
+        ...(maybeSent ? [] : [mk(tr('다시 시도'), tr('같은 내용을 다시 전송합니다'), () => void PromptQueue.retry(id))]),
+        mk(tr('입력창으로'), tr('내용을 프롬프트 입력창으로 되돌립니다'), () => void PromptQueue.releaseToComposer(id)),
+        mk(tr('취소'), tr('이 예약만 버리고 다음 항목으로 넘어갑니다'), () => void PromptQueue.cancelPaused(id))
       );
       row.lastChild.className = 'composer-remove';
       el.appendChild(row);
@@ -213,8 +213,8 @@ Object.assign(App, {
     queued.forEach((d, index) => {
       const cancel = document.createElement('button');
       cancel.className = 'composer-remove';
-      cancel.textContent = '취소';
-      cancel.title = '예약을 취소하고 내용을 입력창으로 되돌립니다';
+      cancel.textContent = tr('취소');
+      cancel.title = tr('예약을 취소하고 내용을 입력창으로 되돌립니다');
       cancel.onclick = () => {
         void App.removeStoredDraft(queueKey, d.id);
         // 취소는 대부분 내용을 더 추가·수정하려는 의도 — 입력창으로 되돌린다.
@@ -224,21 +224,21 @@ Object.assign(App, {
         c.input.focus();
         c.input.setSelectionRange(c.input.value.length, c.input.value.length);
       };
-      appendItem(d, `예약 ${index + 1}`, 'queued', [cancel]);
+      appendItem(d, tr('예약 {n}', { n: index + 1 }), 'queued', [cancel]);
     });
 
     legacy.forEach((d) => {
       const load = document.createElement('button');
-      load.textContent = '불러오기';
+      load.textContent = tr('불러오기');
       load.onclick = () => {
         App.setComposerText(id, d.text);
         c.input.focus();
       };
       const remove = document.createElement('button');
       remove.className = 'composer-remove';
-      remove.textContent = '삭제';
+      remove.textContent = tr('삭제');
       remove.onclick = () => App.removeStoredDraft(legacyKey, d.id);
-      appendItem(d, '기존 초안', 'legacy', [load, remove]);
+      appendItem(d, tr('기존 초안'), 'legacy', [load, remove]);
     });
 
     el.classList.toggle('hidden', !queued.length && !legacy.length);
@@ -362,20 +362,20 @@ Object.assign(App, {
   showFanoutModal(text, onSuccess) {
     const alive = App.state.sessions.filter((s) => s.status !== 'exited');
     if (!text.trim() || !alive.length) return;
-    const statusName = { idle: '대기중', running: '진행중', waiting: '허가 대기', done: '완료' };
+    const statusName = { idle: tr('대기중'), running: tr('진행중'), waiting: tr('허가 대기'), done: tr('완료') };
     const rows = alive.map((s) => {
-      const label = App.sessionLabel(s) + (s.id === App.state.activeId ? ' (현재)' : '');
+      const label = App.sessionLabel(s) + (s.id === App.state.activeId ? ' ' + tr('(현재)') : '');
       return `<div class="check"><input type="checkbox" data-sid="${s.id}" id="fo-${s.id}">` +
         `<label for="fo-${s.id}" style="margin:0">${escapeHtml(label)}` +
         ` <span style="color:var(--fg-dim)">· ${statusName[s.status] || s.status}</span></label></div>`;
     }).join('');
     App.modal(`
-      <h3>여러 세션에 실행</h3>
+      <h3>${tr('여러 세션에 실행')}</h3>
       <p style="color:var(--fg-dim);line-height:1.6;margin-bottom:6px">
-        체크한 모든 세션에 프롬프트를 즉시 실행합니다.
-        셸 프롬프트 상태의 세션에서는 셸 명령으로 실행되니 대상을 확인하세요.</p>
+        ${tr('체크한 모든 세션에 프롬프트를 즉시 실행합니다.')}
+        ${tr('셸 프롬프트 상태의 세션에서는 셸 명령으로 실행되니 대상을 확인하세요.')}</p>
       ${rows}
-      <div class="modal-actions"><button id="m-cancel">취소</button><button id="m-fanout">실행</button></div>`,
+      <div class="modal-actions"><button id="m-cancel">${tr('취소')}</button><button id="m-fanout">${tr('실행')}</button></div>`,
       (m, close) => {
         m.querySelector('#m-cancel').onclick = close;
         m.querySelector('#m-fanout').onclick = () => {

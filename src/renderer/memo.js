@@ -262,7 +262,7 @@ Object.assign(App, {
       };
       menu.appendChild(btn);
     };
-    mkItem('복사', () => {
+    mkItem(tr('복사'), () => {
       const v = TerminalView.views.get(sessionId);
       // 라이브 선택이 있으면 터미널에 포커스 후 복사 명령 → rich copy 핸들러 경유(색상 보존)
       if (v && typeof v.term.hasSelection === 'function' && v.term.hasSelection()) {
@@ -276,8 +276,8 @@ Object.assign(App, {
       try { void navigator.clipboard.writeText(selection); } catch (_) {}
     });
     // TUI 가 줄바꿈해 둔 긴 명령어를 그대로 붙여넣을 수 있게 줄바꿈·들여쓰기를 걷어낸다
-    mkItem('한 줄로 복사 (명령어)', () => { void TerminalView.copySelectionOneLine(sessionId); });
-    mkItem('메모에 등록하기', () => {
+    mkItem(tr('한 줄로 복사 (명령어)'), () => { void TerminalView.copySelectionOneLine(sessionId); });
+    mkItem(tr('메모에 등록하기'), () => {
       App.showMemoModal({ prefillText: selection, sessionId });
     });
     document.body.appendChild(menu);
@@ -310,19 +310,19 @@ Object.assign(App, {
     const session = App.state.sessions.find((item) => item.id === sid);
     const cwd = session && session.projectId ? session.cwd : null;
     if (!cwd) {
-      alert('메모를 저장할 프로젝트 세션을 먼저 열어 주세요.');
+      alert(tr('메모를 저장할 프로젝트 세션을 먼저 열어 주세요.'));
       return;
     }
     App.modal(`
-      <h3>메모 추가</h3>
-      <label for="memo-title">제목</label>
-      <input id="memo-title" type="text" maxlength="80" autocomplete="off" placeholder="메모 제목">
-      <label id="memo-body-label">본문</label>
+      <h3>${tr('메모 추가')}</h3>
+      <label for="memo-title">${tr('제목')}</label>
+      <input id="memo-title" type="text" maxlength="80" autocomplete="off" placeholder="${tr('메모 제목')}">
+      <label id="memo-body-label">${tr('본문')}</label>
       <div id="memo-body" class="memo-modal-editor" contenteditable="true" role="textbox"
-        aria-labelledby="memo-body-label" aria-multiline="true" data-placeholder="메모 내용을 입력하세요"></div>
+        aria-labelledby="memo-body-label" aria-multiline="true" data-placeholder="${tr('메모 내용을 입력하세요')}"></div>
       <div id="memo-error" class="form-error" role="alert" aria-live="polite"></div>
       <div class="modal-actions">
-        <button id="m-cancel">취소</button><button id="m-save" disabled>저장</button>
+        <button id="m-cancel">${tr('취소')}</button><button id="m-save" disabled>${tr('저장')}</button>
       </div>`,
     (m, close) => {
       const title = m.querySelector('#memo-title');
@@ -358,19 +358,19 @@ Object.assign(App, {
       cancel.onclick = close;
       save.onclick = async () => {
         if (busy || !validate()) {
-          error.textContent = '제목과 본문을 모두 입력해 주세요.';
+          error.textContent = tr('제목과 본문을 모두 입력해 주세요.');
           return;
         }
         const safeHtml = App.sanitizeMemoHtml(editor.innerHTML);
         const markdown = App.memoHtmlToMarkdown(safeHtml);
         if (!markdown.trim()) {
-          error.textContent = '본문을 입력해 주세요.';
+          error.textContent = tr('본문을 입력해 주세요.');
           return;
         }
         busy = true;
         save.disabled = true;
         cancel.disabled = true;
-        save.textContent = '저장 중…';
+        save.textContent = tr('저장 중…');
         error.textContent = '';
         try {
           const saved = await ta.createMemoDoc(cwd, title.value.trim(), markdown, null);
@@ -385,9 +385,9 @@ Object.assign(App, {
         } catch (e) {
           busy = false;
           cancel.disabled = false;
-          save.textContent = '저장';
+          save.textContent = tr('저장');
           validate();
-          error.textContent = '메모 저장 실패: ' + e;
+          error.textContent = tr('메모 저장 실패: {e}', { e });
         }
       };
       title.focus();
@@ -397,20 +397,20 @@ Object.assign(App, {
   // 저장된 메모 수정 팝업 — 본문은 Markdown 원문 그대로 편집한다 (추가·삭제·수정 자유).
   showMemoEditModal(cwd, doc) {
     App.modal(`
-      <h3>메모 수정</h3>
+      <h3>${tr('메모 수정')}</h3>
       <div class="modal-sub"></div>
-      <label for="memo-title">제목</label>
-      <input id="memo-title" type="text" maxlength="80" autocomplete="off" placeholder="메모 제목">
-      <label for="memo-edit-body">본문</label>
-      <textarea id="memo-edit-body" class="memo-edit-body" spellcheck="false" placeholder="메모 내용을 입력하세요"></textarea>
+      <label for="memo-title">${tr('제목')}</label>
+      <input id="memo-title" type="text" maxlength="80" autocomplete="off" placeholder="${tr('메모 제목')}">
+      <label for="memo-edit-body">${tr('본문')}</label>
+      <textarea id="memo-edit-body" class="memo-edit-body" spellcheck="false" placeholder="${tr('메모 내용을 입력하세요')}"></textarea>
       <div id="memo-error" class="form-error" role="alert" aria-live="polite"></div>
       <div class="modal-actions">
-        <button id="m-delete" class="danger">삭제</button>
-        <button id="m-cancel">취소</button><button id="m-save">저장</button>
+        <button id="m-delete" class="danger">${tr('삭제')}</button>
+        <button id="m-cancel">${tr('취소')}</button><button id="m-save">${tr('저장')}</button>
       </div>`,
     (m, close) => {
       m.querySelector('.modal-sub').textContent =
-        '메모 · ' + new Date(doc.updatedMs || doc.createdMs).toLocaleString() +
+        tr('메모') + ' · ' + new Date(doc.updatedMs || doc.createdMs).toLocaleString() +
         (doc.path ? ' · ' + doc.path : '');
       const title = m.querySelector('#memo-title');
       const body = m.querySelector('#memo-edit-body');
@@ -445,14 +445,14 @@ Object.assign(App, {
       remove.onclick = () => App.removeDocument(cwd, doc, { button: remove, close });
       save.onclick = async () => {
         if (busy || !validate()) {
-          error.textContent = '제목과 본문을 모두 입력해 주세요.';
+          error.textContent = tr('제목과 본문을 모두 입력해 주세요.');
           return;
         }
         busy = true;
         save.disabled = true;
         cancel.disabled = true;
         remove.disabled = true;
-        save.textContent = '저장 중…';
+        save.textContent = tr('저장 중…');
         error.textContent = '';
         try {
           const saved = await ta.updateMemoDoc(cwd, doc.id, title.value.trim(), body.value);
@@ -467,9 +467,9 @@ Object.assign(App, {
           busy = false;
           cancel.disabled = false;
           remove.disabled = false;
-          save.textContent = '저장';
+          save.textContent = tr('저장');
           validate();
-          error.textContent = '메모 저장 실패: ' + e;
+          error.textContent = tr('메모 저장 실패: {e}', { e });
         }
       };
       // "내용에 더 추가"가 가장 흔한 편집 — 커서를 본문 끝에 둔다

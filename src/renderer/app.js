@@ -34,8 +34,13 @@ const App = {
   async boot() {
     // 크래시 복구 감지 — sessionStorage 는 렌더러 리로드에는 살아남고 새 프로세스에선 비어 있다.
     // 값이 이미 있으면 이번 boot 는 리로드(크래시 자동 복구 또는 수동 새로고침)다.
-    const recovered = sessionStorage.getItem('ta-booted') === '1';
+    // 언어 변경으로 다시 불러온 경우는 복구가 아니다 (토스트·복구 기록 없이)
+    const langReload = sessionStorage.getItem('ta-lang-reload') === '1';
+    sessionStorage.removeItem('ta-lang-reload');
+    const recovered = !langReload && sessionStorage.getItem('ta-booted') === '1';
     sessionStorage.setItem('ta-booted', '1');
+    I18N.apply(document.body); // 정적 마크업(index.html) 번역 — 온보딩 안내 보관보다 먼저
+    await ta.setUiLanguage(I18N.lang).catch(() => {}); // 백엔드 오류 문구 언어 — 다른 IPC 보다 먼저
     TerminalView.init();
     // 기본 온보딩 안내(index.html 정적 마크업)를 보관 — 빈 프로젝트 화면과 번갈아 쓴다
     App._emptyDefault = document.getElementById('empty-state').innerHTML;
@@ -113,7 +118,7 @@ const App = {
     ta.onRemoteStatus((v) => App.onRemoteStatus(v));
     ta.remoteGetConfig().then((v) => App.onRemoteStatus(v)).catch(() => {});
     ta.onExit(({ sessionId }) => {
-      TerminalView.write(sessionId, '\r\n\x1b[31m[세션 종료됨 — 닫기(✕)로 정리]\x1b[0m\r\n');
+      TerminalView.write(sessionId, '\r\n\x1b[31m[' + tr('세션 종료됨 — 닫기(✕)로 정리') + ']\x1b[0m\r\n');
     });
     ta.onFileDrop((payload) => {
       const paths = payload && payload.paths ? payload.paths : [];
@@ -241,7 +246,7 @@ const App = {
       log.push(new Date().toISOString());
       localStorage.setItem('ta-recovery-log', JSON.stringify(log.slice(-30)));
     } catch (_) {}
-    App.showToast(`⟳ 화면이 복구되었습니다 — 작성 중이던 프롬프트는 보존됩니다${count ? ` (누적 ${count}회)` : ''}`);
+    App.showToast(tr('⟳ 화면이 복구되었습니다 — 작성 중이던 프롬프트는 보존됩니다') + (count ? tr(' (누적 {n}회)', { n: count }) : ''));
   },
 
   // 하단 중앙 토스트 — 자동으로 사라진다 (복구 알림 등 가벼운 공지용)
@@ -449,15 +454,15 @@ const App = {
     const cut = fromTerminal ? TerminalView.cutTypedLine(id) : '';
     if (cut) {
       App.insertComposerText(c, id, cut); // 커서 위치 삽입 + 입력창 포커스
-      App.showToast('✂ 터미널에 치던 내용을 프롬프트 입력창으로 옮겼습니다', 4000);
+      App.showToast(tr('✂ 터미널에 치던 내용을 프롬프트 입력창으로 옮겼습니다'), 4000);
       return true;
     }
     c.input.focus();
     const why = fromTerminal ? TerminalView.cutFailReason(id) : '';
     if (why === 'invalid') {
-      App.showToast('커서만 옮겼습니다 — 방향키·Tab 등으로 입력 라인을 따라갈 수 없어 터미널 내용은 그대로 뒀습니다', 5000);
+      App.showToast(tr('커서만 옮겼습니다 — 방향키·Tab 등으로 입력 라인을 따라갈 수 없어 터미널 내용은 그대로 뒀습니다'), 5000);
     } else if (why === 'mismatch') {
-      App.showToast('커서만 옮겼습니다 — 터미널 화면과 추적 내용이 달라 안전하게 그대로 뒀습니다', 5000);
+      App.showToast(tr('커서만 옮겼습니다 — 터미널 화면과 추적 내용이 달라 안전하게 그대로 뒀습니다'), 5000);
     }
     return true;
   },
@@ -514,10 +519,10 @@ const App = {
     h.textContent = proj.name;
     h.style.color = proj.color ? Theme.adjustText(proj.color) : '';
     const p = document.createElement('p');
-    p.textContent = '아직 이 프로젝트에 세션이 없습니다.';
+    p.textContent = tr('아직 이 프로젝트에 세션이 없습니다.');
     const btn = document.createElement('button');
     btn.id = 'btn-empty-new';
-    btn.textContent = '＋ 새 세션 시작';
+    btn.textContent = tr('＋ 새 세션 시작');
     btn.onclick = () => App.createSession(proj.id); // activateSession 이 화면을 터미널로 전환
     el.append(h, p, btn);
   },
@@ -653,10 +658,10 @@ const App = {
     if (!u || !u.windows.length) {   // 한 번도 값을 구하지 못했을 때만 비운다
       el.className = 'gauge idle';
       el.textContent = name + ' --';
-      el.title = name + ' 남은 사용량을 가져오지 못했습니다\n' + (reason || '로그인·네트워크를 확인하세요');
+      el.title = tr('{name} 남은 사용량을 가져오지 못했습니다', { name }) + '\n' + (reason || tr('로그인·네트워크를 확인하세요'));
       return;
     }
-    const label = (m) => m === 300 ? '5시간' : m === 10080 ? '주간' : Math.round(m / 60) + '시간';
+    const label = (m) => m === 300 ? tr('5시간') : m === 10080 ? tr('주간') : tr('{n}시간', { n: Math.round(m / 60) });
     const level = (left) => {
       if (left <= 10) return 'crit';     // ≤ 10% 남음 : 소진 임박 (빨강)
       if (left <= 25) return 'warn';
@@ -676,13 +681,13 @@ const App = {
       seg.textContent = `${label(w.windowMinutes)} ${Math.max(0, 100 - Math.round(w.usedPercent))}%`;
       el.appendChild(seg);
     });
-    el.title = name + ' 남은 사용량:\n' + u.windows.map((w) =>
-      `${label(w.windowMinutes)} ${(100 - w.usedPercent).toFixed(1)}% 남음` +
-      (w.resetsAt ? ` (리셋 ${new Date(w.resetsAt * 1000).toLocaleString()})` : '')
+    el.title = tr('{name} 남은 사용량:', { name }) + '\n' + u.windows.map((w) =>
+      tr('{label} {pct}% 남음', { label: label(w.windowMinutes), pct: (100 - w.usedPercent).toFixed(1) }) +
+      (w.resetsAt ? ' (' + tr('리셋 {time}', { time: new Date(w.resetsAt * 1000).toLocaleString() }) + ')' : '')
     ).join('\n') + (u.groups && u.groups.length ? '\n' + u.groups.map((g) =>
       `[${g.name}] ` + g.windows.map((w) => `${label(w.windowMinutes)} ${(100 - w.usedPercent).toFixed(1)}%`).join(' · ')
-    ).join('\n') : '') + (u.plan ? `\n플랜: ${u.plan}` : '') +
-      `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleString()}` +
+    ).join('\n') : '') + (u.plan ? '\n' + tr('플랜: {plan}', { plan: u.plan }) : '') +
+      '\n' + tr('마지막 갱신: {time}', { time: new Date(u.mtimeMs).toLocaleString() }) +
       (reason ? `\n⚠ ${reason}` : '');
   },
 
@@ -690,17 +695,17 @@ const App = {
   usageErrorText(name, u) {
     if (!u || !u.error) return '';
     const retry = u.retryAtMs ? Math.max(1, Math.ceil((u.retryAtMs - Date.now()) / 60000)) : 0;
-    const after = retry ? ` — 약 ${retry}분 뒤 재시도` : '';
+    const after = retry ? tr(' — 약 {n}분 뒤 재시도', { n: retry }) : '';
     switch (u.error) {
-      case 'token_expired': return '로그인 토큰 만료 — Claude Code 를 실행하면 자동 갱신됩니다';
-      case 'forbidden': return '사용량 API 접근 거부(403) — Claude Code 에서 /login 으로 다시 로그인해 보세요';
-      case 'no_data': return '사용량 API 가 한도 정보를 주지 않았습니다 (한도 없는 플랜일 수 있음)';
-      case 'rate_limited': return '사용량 API 호출 제한(429)' + after;
-      case 'network': return '네트워크·서버 오류' + after;
-      case 'no_credentials': return 'Claude Code 로그인 정보가 없습니다 (claude 에서 /login)';
-      case 'not_running': return 'Antigravity 앱(허브)이 실행 중일 때만 조회됩니다';
-      case 'unavailable': return name + ' 사용량 API 조회 실패 — 코덱스를 실행하면 토큰이 갱신됩니다';
-      default: return '조회 실패 (' + u.error + ')';
+      case 'token_expired': return tr('로그인 토큰 만료 — Claude Code 를 실행하면 자동 갱신됩니다');
+      case 'forbidden': return tr('사용량 API 접근 거부(403) — Claude Code 에서 /login 으로 다시 로그인해 보세요');
+      case 'no_data': return tr('사용량 API 가 한도 정보를 주지 않았습니다 (한도 없는 플랜일 수 있음)');
+      case 'rate_limited': return tr('사용량 API 호출 제한(429)') + after;
+      case 'network': return tr('네트워크·서버 오류') + after;
+      case 'no_credentials': return tr('Claude Code 로그인 정보가 없습니다 (claude 에서 /login)');
+      case 'not_running': return tr('Antigravity 앱(허브)이 실행 중일 때만 조회됩니다');
+      case 'unavailable': return tr('{name} 사용량 API 조회 실패 — 코덱스를 실행하면 토큰이 갱신됩니다', { name });
+      default: return tr('조회 실패 ({error})', { error: u.error });
     }
   },
 
@@ -749,11 +754,11 @@ const App = {
       const cpuEl = document.getElementById('panel-cpu');
       cpuEl.className = 'gauge ' + level(m.cpu);
       cpuEl.textContent = `cpu ${m.cpu}%`;
-      cpuEl.title = `시스템 CPU 사용률 ${m.cpu}%`;
+      cpuEl.title = tr('시스템 CPU 사용률 {n}%', { n: m.cpu });
       const el = document.getElementById('panel-mem');
       el.className = 'gauge ' + level(m.pct);
       el.textContent = `mem ${m.pct}%`;
-      el.title = `시스템 메모리 ${m.usedGb} / ${m.totalGb} GB`;
+      el.title = tr('시스템 메모리 {used} / {total} GB', { used: m.usedGb, total: m.totalGb });
     } catch (_) { /* 조회 실패는 무시 */ }
   },
 
@@ -792,13 +797,13 @@ const App = {
     const waiting = App.state.sessions.filter((x) => x.status === 'waiting');
     const wi = document.getElementById('waiting-indicator');
     wi.classList.toggle('hidden', !waiting.length);
-    if (waiting.length) wi.textContent = '허가 대기 ' + waiting.length;
+    if (waiting.length) wi.textContent = tr('허가 대기 {n}', { n: waiting.length });
     const el = document.getElementById('active-info');
     // 분할 중에는 패널마다 헤더 바(상태·프로젝트명 — 세션명 ⎇브랜치)가 따로 붙으므로
     // 루트 헤더의 활성 세션 표기는 생략한다 — 같은 정보를 두 곳에 중복해 두지 않는다.
     if (App.isSplit && App.isSplit()) { el.textContent = ''; el.title = ''; return; }
     const s = App.state.sessions.find((x) => x.id === App.state.activeId);
-    if (!s) { el.textContent = '세션 없음'; el.title = ''; return; }
+    if (!s) { el.textContent = tr('세션 없음'); el.title = ''; return; }
     el.textContent = '';
     el.title = s.cwd; // 경로는 표시 대신 호버 툴팁으로
     el.appendChild(statusTag(s.status));
@@ -842,7 +847,7 @@ const App = {
       App.activateSession(info.id);
       return info; // AI 세션 재개 등 후속 입력용
     } catch (e) {
-      alert('세션 생성 실패: ' + e);
+      alert(tr('세션 생성 실패: {e}', { e }));
     }
   },
 
@@ -877,7 +882,7 @@ const App = {
   onRemoteImage(p) {
     if (!p || !p.path) return;
     const s = App.state.sessions.find((x) => x.id === p.sessionId);
-    App.showToast('📱 이미지 수신' + (s ? ' — ' + App.sessionLabel(s) : '') + ' · ' + p.path, 5000);
+    App.showToast(tr('📱 이미지 수신') + (s ? ' — ' + App.sessionLabel(s) : '') + ' · ' + p.path, 5000);
   },
 
   // 세션이 목록에 들어가기 전 도착한 ta:status 는 버려졌다 — 백엔드의 현재 상태로 맞춘다
@@ -971,7 +976,7 @@ const App = {
     App.lastSessionByProject = {};
     localStorage.removeItem('ta-last-session-by-project');
     App.renderAll();
-    App.showToast(`세션 ${ids.length}개를 모두 닫았습니다`);
+    App.showToast(tr('세션 {n}개를 모두 닫았습니다', { n: ids.length }));
     return ids.length;
   },
 
@@ -1007,7 +1012,7 @@ const App = {
     if (!watching && App.state.settings.notifyOnDone && now - last >= App.NOTIFY_GAP_MS) {
       App._lastNotifyAt.set(s.id, now);
       const secs = Math.round((busyMs || 0) / 1000);
-      void ta.notify('작업 완료 — ' + App.sessionLabel(s), secs + '초 동안 실행되던 작업이 끝났습니다.', s.id)
+      void ta.notify(tr('작업 완료 — {label}', { label: App.sessionLabel(s) }), tr('{n}초 동안 실행되던 작업이 끝났습니다.', { n: secs }), s.id)
         .catch((error) => console.warn('완료 알림 전송 실패:', error));
     }
   },
@@ -1044,7 +1049,7 @@ const App = {
   onWaiting(s) {
     const watching = s.id === App.state.activeId && document.hasFocus();
     if (!watching && App.state.settings.notifyOnWaiting) {
-      void ta.notify('허가 대기 — ' + App.sessionLabel(s), 'AI 도구가 실행 허가를 기다리고 있습니다.', s.id)
+      void ta.notify(tr('허가 대기 — {label}', { label: App.sessionLabel(s) }), tr('AI 도구가 실행 허가를 기다리고 있습니다.'), s.id)
         .catch((error) => console.warn('허가 대기 알림 전송 실패:', error));
     }
   },
@@ -1157,9 +1162,9 @@ const App = {
     return new Promise((resolve) => {
       let done = false;
       App.modal(`
-        <h3>프리셋 입력값</h3>
+        <h3>${tr('프리셋 입력값')}</h3>
         <label>${escapeHtml(label)}</label><input type="text" id="m-slot-value">
-        <div class="modal-actions"><button id="m-cancel">취소</button><button id="m-save">계속</button></div>`,
+        <div class="modal-actions"><button id="m-cancel">${tr('취소')}</button><button id="m-save">${tr('계속')}</button></div>`,
         (m, close) => {
           const input = m.querySelector('#m-slot-value');
           const finish = (value) => {

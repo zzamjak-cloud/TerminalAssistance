@@ -5,6 +5,7 @@
   const { listen } = window.__TAURI__.event;
 
   window.ta = {
+    setUiLanguage: (lang) => invoke('set_ui_language', { lang }),
     getState: () => invoke('get_state'),
 
     addProject: (p) => invoke('add_project', {

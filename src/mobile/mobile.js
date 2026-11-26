@@ -36,6 +36,9 @@ const Remote = {
 
   // ── 부팅 ──
   async boot() {
+    I18N.apply(document.body);
+    // 서버가 넣은 'TA 원격 · {PC}' 의 PC 이름은 두고 접두어만 폰 언어로 바꾼다
+    document.title = document.title.replace('TA 원격', tr('TA 원격')).replace('TerminalAssistance 원격', tr('TerminalAssistance 원격'));
     Remote.bindViewport();
     Remote.bindUi();
     if ('serviceWorker' in navigator) {
@@ -89,7 +92,7 @@ const Remote = {
     const el = document.getElementById('offline-retry-note');
     let left = Math.round(delay / 1000);
     const tick = () => {
-      el.textContent = left > 0 ? left + '초 후 자동으로 다시 시도합니다' : '다시 시도하는 중…';
+      el.textContent = left > 0 ? tr('{n}초 후 자동으로 다시 시도합니다', { n: left }) : tr('다시 시도하는 중…');
       if (left-- <= 0) { void Remote.enter(); return; }
       Remote.offlineTimer = setTimeout(tick, 1000);
     };
@@ -104,7 +107,7 @@ const Remote = {
     Remote.pendingSession = null;
     history.replaceState(null, '', location.pathname + location.search + stripSessionHash(location.hash));
     if (Remote.findSession(id)) Remote.openView(id);
-    else Remote.toast('세션이 이미 닫혔습니다', true);
+    else Remote.toast(tr('세션이 이미 닫혔습니다'), true);
   },
 
   standalone() {
@@ -153,8 +156,8 @@ const Remote = {
     const simple = Remote.standalone() && !code;
     document.getElementById('screen-pair').classList.toggle('pair-simple', simple);
     document.getElementById('pair-help').textContent = simple
-      ? '데스크톱 앱 상단의 📱 버튼에 표시된 8자 코드를 입력하세요.'
-      : '데스크톱 앱 상단의 📱 버튼을 누르고, 표시된 QR 을 찍거나 8자 코드를 입력하세요.';
+      ? tr('데스크톱 앱 상단의 📱 버튼에 표시된 8자 코드를 입력하세요.')
+      : tr('데스크톱 앱 상단의 📱 버튼을 누르고, 표시된 QR 을 찍거나 8자 코드를 입력하세요.');
     document.getElementById('pair-net-hint').classList.add('hidden');
     if (code) codeEl.value = code;
     if (!nameEl.value) nameEl.value = guessDeviceName();
@@ -185,10 +188,10 @@ const Remote = {
       Remote.maybeShowInstallSheet();
     } catch (e) {
       if (e.status === 401 || e.status === 429) {
-        errEl.textContent = e.status === 401 ? '코드가 틀렸거나 만료되었습니다. 데스크톱에서 새 코드를 받으세요.'
-          : '시도가 너무 많습니다. 잠시 후 다시 시도하세요.';
+        errEl.textContent = e.status === 401 ? tr('코드가 틀렸거나 만료되었습니다. 데스크톱에서 새 코드를 받으세요.')
+          : tr('시도가 너무 많습니다. 잠시 후 다시 시도하세요.');
       } else {
-        Remote.showPairNetError('연결 실패 — 데스크톱 앱이 켜져 있는지 확인하세요.');
+        Remote.showPairNetError(tr('연결 실패 — 데스크톱 앱이 켜져 있는지 확인하세요.'));
       }
     } finally {
       btn.disabled = false;
@@ -203,7 +206,7 @@ const Remote = {
     const showInstall = shouldShowInstallSheet(Remote.standalone(), dismissed);
     const showVpn = shouldShowVpnTips(platform, dismissed);
     if (!showInstall && !showVpn) return;
-    const body = Remote.openSheet(showInstall ? '홈 화면에 추가' : '끊김 없이 쓰려면');
+    const body = Remote.openSheet(showInstall ? tr('홈 화면에 추가') : tr('끊김 없이 쓰려면'));
     const p = (text, cls) => {
       const el = document.createElement('p');
       el.className = cls || 'install-text';
@@ -212,21 +215,21 @@ const Remote = {
       return el;
     };
     if (showInstall) {
-      p('홈 화면에 추가하면 앱처럼 전체 화면으로 열리고, 다음부터 아이콘 한 번으로 접속합니다.');
+      p(tr('홈 화면에 추가하면 앱처럼 전체 화면으로 열리고, 다음부터 아이콘 한 번으로 접속합니다.'));
       if (platform === 'ios') {
         const steps = document.createElement('ol');
         steps.className = 'install-steps';
         const step = (html) => { const li = document.createElement('li'); li.innerHTML = html; steps.appendChild(li); };
         // 정적 문구만 innerHTML 로 — 사용자 값은 섞지 않는다
-        step('Safari 의 <b>공유</b> 버튼 <span class="share-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3v12M7 8l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 11v9h14v-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span> 을 누릅니다 (아이폰은 화면 아래, 아이패드는 위).');
-        step('목록을 내려 <b>홈 화면에 추가</b> <span class="add-ico" aria-hidden="true">＋</span> 를 고릅니다.');
-        step('오른쪽 위 <b>추가</b> 를 누르면 끝.');
+        step(tr('Safari 의 <b>공유</b> 버튼 {icon} 을 누릅니다 (아이폰은 화면 아래, 아이패드는 위).', { icon: '<span class="share-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3v12M7 8l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 11v9h14v-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span>' }));
+        step(tr('목록을 내려 <b>홈 화면에 추가</b> {icon} 를 고릅니다.', { icon: '<span class="add-ico" aria-hidden="true">＋</span>' }));
+        step(tr('오른쪽 위 <b>추가</b> 를 누르면 끝.'));
         body.appendChild(steps);
       } else if (platform === 'android' && window.__taInstallPrompt) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'primary install-btn';
-        btn.textContent = '앱 설치';
+        btn.textContent = tr('앱 설치');
         btn.onclick = async () => {
           const ev = window.__taInstallPrompt;
           window.__taInstallPrompt = null; // prompt() 는 이벤트당 한 번만 쓸 수 있다
@@ -236,9 +239,9 @@ const Remote = {
         };
         body.appendChild(btn);
       } else if (platform === 'android') {
-        p('크롬 오른쪽 위 메뉴(⋮) → \'홈 화면에 추가\' 또는 \'앱 설치\' 를 누르세요.');
+        p(tr('크롬 오른쪽 위 메뉴(⋮) → \'홈 화면에 추가\' 또는 \'앱 설치\' 를 누르세요.'));
       } else {
-        p('브라우저 메뉴에서 \'홈 화면에 추가\' 를 선택하세요.');
+        p(tr('브라우저 메뉴에서 \'홈 화면에 추가\' 를 선택하세요.'));
       }
     }
     if (showVpn) Remote.renderVpnTips(body, platform);
@@ -246,14 +249,14 @@ const Remote = {
     actions.className = 'install-actions';
     const never = document.createElement('button');
     never.type = 'button';
-    never.textContent = '다시 보지 않기';
+    never.textContent = tr('다시 보지 않기');
     never.onclick = () => {
       try { localStorage.setItem(INSTALL_DISMISS_KEY, '1'); } catch (_) {}
       Remote.closeSheet();
     };
     const close = document.createElement('button');
     close.type = 'button';
-    close.textContent = '닫기';
+    close.textContent = tr('닫기');
     close.onclick = () => Remote.closeSheet();
     actions.append(never, close);
     body.appendChild(actions);
@@ -263,7 +266,7 @@ const Remote = {
   renderVpnTips(body, platform) {
     const head = document.createElement('p');
     head.className = 'install-text vpn-head';
-    head.textContent = '끊김 없이 쓰려면 Tailscale 이 항상 켜져 있게 하세요.';
+    head.textContent = tr('끊김 없이 쓰려면 Tailscale 이 항상 켜져 있게 하세요.');
     body.appendChild(head);
     for (const group of vpnTipSteps(platform)) {
       const title = document.createElement('div');
@@ -310,7 +313,7 @@ const Remote = {
     } catch (e) {
       if (e.moved) return;
       if (e.status === 401) { Remote.unauthorized(); return; }
-      Remote.toast('상태 조회 실패', true);
+      Remote.toast(tr('상태 조회 실패'), true);
     }
   },
 
@@ -319,7 +322,7 @@ const Remote = {
     Remote.closeWs();
     Remote.closeView(true);
     Remote.showPair(null);
-    document.getElementById('pair-error').textContent = '이 기기의 연결이 해제되었습니다. 다시 페어링하세요.';
+    document.getElementById('pair-error').textContent = tr('이 기기의 연결이 해제되었습니다. 다시 페어링하세요.');
   },
 
   // ── WebSocket ──
@@ -436,7 +439,7 @@ const Remote = {
         const s = Remote.findSession(msg.id);
         if (s) { s.status = 'exited'; Remote.lastChangeAt.set(s.id, Date.now()); }
         if (msg.id === Remote.viewId && Remote.term) {
-          Remote.term.write('\r\n\x1b[31m[세션 종료됨]\x1b[0m\r\n');
+          Remote.term.write('\r\n\x1b[31m[' + tr('세션 종료됨') + ']\x1b[0m\r\n');
         }
         Remote.refresh();
         break;
@@ -467,7 +470,7 @@ const Remote = {
       case 'error':
         if (isReplyTo(Remote.pendingCreate, msg)) Remote.clearPendingCreate();
         else if (Remote.controlPending) Remote.failControlRequest();
-        Remote.toast(msg.msg || '오류', true);
+        Remote.toast(msg.msg || tr('오류'), true);
         break;
     }
   },
@@ -497,7 +500,7 @@ const Remote = {
     for (const id of ['conn-dash', 'conn-term']) {
       const el = document.getElementById(id);
       el.className = 'conn' + (kind === 'online' ? ' online' : kind === 'connecting' ? ' connecting' : '');
-      el.title = kind === 'online' ? '연결됨' : kind === 'connecting' ? '연결 중…' : '연결 끊김 — 재시도 중';
+      el.title = kind === 'online' ? tr('연결됨') : kind === 'connecting' ? tr('연결 중…') : tr('연결 끊김 — 재시도 중');
     }
   },
 
@@ -506,12 +509,12 @@ const Remote = {
     const list = document.getElementById('dash-list');
     const sessions = Remote.state.sessions;
     const projects = Remote.state.projects;
-    document.getElementById('dash-count').textContent = sessions.length ? sessions.length + '개' : '';
+    document.getElementById('dash-count').textContent = sessions.length ? tr('{n}개', { n: sessions.length }) : '';
     list.textContent = '';
     if (!sessions.length) {
       const empty = document.createElement('div');
       empty.className = 'dash-empty';
-      empty.textContent = '열린 세션이 없습니다. + 새 세션으로 시작하세요.';
+      empty.textContent = tr('열린 세션이 없습니다. + 새 세션으로 시작하세요.');
       list.appendChild(empty);
       return;
     }
@@ -531,7 +534,7 @@ const Remote = {
       if (g.project && g.project.color) swatch.style.background = g.project.color;
       const name = document.createElement('span');
       name.className = 'dash-group-name';
-      name.textContent = g.project ? g.project.name : '홈 터미널';
+      name.textContent = g.project ? g.project.name : tr('홈 터미널');
       head.append(swatch, name);
       if (g.project && g.project.parentId && g.project.branch) {
         const br = document.createElement('span');
@@ -568,8 +571,8 @@ const Remote = {
 
   // ── 새 세션 ──
   showNewSessionSheet() {
-    const body = Remote.openSheet('새 세션 — 프로젝트 선택');
-    const items = [{ id: null, name: '홈 터미널', path: '', color: '' }].concat(Remote.state.projects);
+    const body = Remote.openSheet(tr('새 세션 — 프로젝트 선택'));
+    const items = [{ id: null, name: tr('홈 터미널'), path: '', color: '' }].concat(Remote.state.projects);
     for (const p of items) {
       const row = document.createElement('div');
       row.className = 'sheet-item';
@@ -591,21 +594,21 @@ const Remote = {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'primary';
-      btn.textContent = '시작';
+      btn.textContent = tr('시작');
       btn.onclick = () => {
         const reqId = newReqId();
-        if (!Remote.send({ t: 'create', projectId: p.id, reqId })) { Remote.toast('연결이 끊겨 있습니다', true); return; }
+        if (!Remote.send({ t: 'create', projectId: p.id, reqId })) { Remote.toast(tr('연결이 끊겨 있습니다'), true); return; }
         Remote.clearPendingCreate();
         Remote.pendingCreate = {
           reqId,
           timer: setTimeout(() => {
             if (!Remote.pendingCreate || Remote.pendingCreate.reqId !== reqId) return;
             Remote.pendingCreate = null;
-            Remote.toast('세션 생성 응답이 없습니다', true);
+            Remote.toast(tr('세션 생성 응답이 없습니다'), true);
           }, CREATE_TIMEOUT_MS)
         };
         Remote.closeSheet();
-        Remote.toast('세션 만드는 중…');
+        Remote.toast(tr('세션 만드는 중…'));
       };
       row.append(sw, main, btn);
       body.appendChild(row);
@@ -703,7 +706,7 @@ const Remote = {
   renderControlButton() {
     const btn = document.getElementById('btn-control');
     const holding = Remote.isHolding();
-    btn.textContent = holding ? '최적 해제' : '최적보기';
+    btn.textContent = holding ? tr('최적 해제') : tr('최적보기');
     btn.classList.toggle('holding', holding);
   },
 
@@ -764,7 +767,7 @@ const Remote = {
       const availH = wrap.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
       const size = controlSize(availW, availH, screen.offsetWidth / Remote.term.cols, screen.offsetHeight / Remote.term.rows);
       if (!Remote.send({ t: 'control', id, cols: size.cols, rows: size.rows })) {
-        Remote.toast('연결이 끊겨 있습니다', true);
+        Remote.toast(tr('연결이 끊겨 있습니다'), true);
         Remote.failControlRequest();
       }
     });
@@ -787,10 +790,10 @@ const Remote = {
     const id = Remote.viewId;
     if (!file || !id || Remote.uploading) return;
     Remote.uploading = true;
-    Remote.setUpload('이미지 준비 중…', 0);
+    Remote.setUpload(tr('이미지 준비 중…'), 0);
     try {
       const blob = await prepareImage(file);
-      const res = await uploadImage(id, blob, (ratio) => Remote.setUpload('이미지 올리는 중 ' + Math.round(ratio * 100) + '%', ratio));
+      const res = await uploadImage(id, blob, (ratio) => Remote.setUpload(tr('이미지 올리는 중 {n}%', { n: Math.round(ratio * 100) }), ratio));
       const input = document.getElementById('composer-input');
       const next = insertAtCaret(input.value, input.selectionStart, input.selectionEnd, quoteRemotePath(res.path) + ' ');
       input.value = next.value;
@@ -872,7 +875,7 @@ const Remote = {
     if (changed) Remote.fitFont();
     if (persist) {
       try { localStorage.setItem(TERM_ZOOM_KEY, String(z)); } catch (_) {}
-      if (Remote.term) Remote.toast(z === TERM_ZOOM_MIN ? '글꼴 화면 맞춤' : '글꼴 ' + Remote.term.options.fontSize + 'px');
+      if (Remote.term) Remote.toast(z === TERM_ZOOM_MIN ? tr('글꼴 화면 맞춤') : tr('글꼴 {n}px', { n: Remote.term.options.fontSize }));
     }
   },
 
@@ -1060,7 +1063,7 @@ const Remote = {
   // ── 입력 ──
   write(data) {
     if (!Remote.viewId || !data) return;
-    if (!Remote.send({ t: 'write', id: Remote.viewId, data })) Remote.toast('연결이 끊겨 있습니다', true);
+    if (!Remote.send({ t: 'write', id: Remote.viewId, data })) Remote.toast(tr('연결이 끊겨 있습니다'), true);
   },
 
   submitComposer(ev) {
@@ -1094,12 +1097,12 @@ const Remote = {
   // ── 프리셋 ──
   showPresetSheet() {
     const s = Remote.findSession(Remote.viewId);
-    const body = Remote.openSheet('프리셋');
+    const body = Remote.openSheet(tr('프리셋'));
     const presets = presetsForSession(Remote.state.presets, s);
     if (!presets.length) {
       const empty = document.createElement('div');
       empty.className = 'sheet-empty';
-      empty.textContent = '이 세션에 쓸 수 있는 프리셋이 없습니다.';
+      empty.textContent = tr('이 세션에 쓸 수 있는 프리셋이 없습니다.');
       body.appendChild(empty);
       return;
     }
@@ -1117,12 +1120,12 @@ const Remote = {
       main.append(label, sub);
       const fill = document.createElement('button');
       fill.type = 'button';
-      fill.textContent = '입력';
+      fill.textContent = tr('입력');
       fill.onclick = () => Remote.runPreset(p, false);
       const run = document.createElement('button');
       run.type = 'button';
       run.className = 'primary';
-      run.textContent = '실행';
+      run.textContent = tr('실행');
       run.onclick = () => Remote.runPreset(p, true);
       row.append(main, fill, run);
       body.appendChild(row);
@@ -1233,7 +1236,7 @@ const Remote = {
     });
     document.getElementById('offline-retry').onclick = () => {
       clearTimeout(Remote.offlineTimer);
-      document.getElementById('offline-retry-note').textContent = '다시 시도하는 중…';
+      document.getElementById('offline-retry-note').textContent = tr('다시 시도하는 중…');
       void Remote.enter();
     };
   },
@@ -1316,12 +1319,12 @@ function uploadImage(sessionId, blob, onProgress) {
 }
 
 function uploadErrorText(e) {
-  if (e && e.kind === 'heic') return 'HEIC 사진을 이 브라우저가 열 수 없습니다 — 카메라 설정의 \'높은 호환성\'(JPEG)으로 찍거나 스크린샷을 보내세요';
-  if (e && e.kind === 'decode') return '이 이미지 형식은 열 수 없습니다';
-  if (e && e.status === 413) return '이미지가 너무 큽니다 (최대 15MB)';
-  if (e && e.status === 415) return '지원하지 않는 이미지 형식입니다';
-  if (e && e.status === 401) return '인증이 만료되었습니다 — 다시 페어링하세요';
-  return '이미지 업로드 실패';
+  if (e && e.kind === 'heic') return tr('HEIC 사진을 이 브라우저가 열 수 없습니다 — 카메라 설정의 \'높은 호환성\'(JPEG)으로 찍거나 스크린샷을 보내세요');
+  if (e && e.kind === 'decode') return tr('이 이미지 형식은 열 수 없습니다');
+  if (e && e.status === 413) return tr('이미지가 너무 큽니다 (최대 15MB)');
+  if (e && e.status === 415) return tr('지원하지 않는 이미지 형식입니다');
+  if (e && e.status === 401) return tr('인증이 만료되었습니다 — 다시 페어링하세요');
+  return tr('이미지 업로드 실패');
 }
 
 function statusTagEl(status) {

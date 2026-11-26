@@ -7,6 +7,7 @@ mod server;
 mod tailscale;
 mod upload;
 
+use crate::i18n::{tr, trf};
 use crate::pty::{PtyEvent, PtyManager, RemoteSub, SessionInfo};
 use crate::store::{RemoteConfig, RemoteDevice, Store};
 use crate::util::plock;
@@ -190,9 +191,9 @@ fn device_ts_state(status: Option<&tailscale::TsStatus>, dev_ip: Option<&str>) -
 /// 설정 바인드 문자열 → 실제 바인드 IP. auto 는 미리 탐지한 Tailscale IP
 fn resolve_bind(bind: &str, ts: Option<IpAddr>) -> Result<IpAddr, String> {
     if is_auto(bind) {
-        return ts.ok_or_else(|| NO_TAILSCALE.to_string());
+        return ts.ok_or_else(|| tr(NO_TAILSCALE).to_string());
     }
-    bind.trim().parse().map_err(|_| format!("잘못된 바인드 주소: {}", bind))
+    bind.trim().parse().map_err(|_| trf("잘못된 바인드 주소: {bind}", &[("bind", &bind)]))
 }
 
 /// 감시 주기 판단 — 켜져 있는데 안 떠 있으면 재시도, auto 면 Tailscale IP 변경 시 즉시 재바인드.
@@ -546,7 +547,7 @@ impl RemoteHub {
         let bind = endpoint.bind_ip();
         // 동기 바인드 — 포트 충돌 등 실패를 즉시 호출부로 돌려준다
         let std_listener = std::net::TcpListener::bind((bind, cfg.port))
-            .map_err(|e| format!("{} 바인드 실패: {}", url_of(&bind, cfg.port), e))?;
+            .map_err(|e| trf("{url} 바인드 실패: {e}", &[("url", &url_of(&bind, cfg.port)), ("e", &e)]))?;
         std_listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let ifaces = if bind.is_unspecified() { iface_ips() } else { Vec::new() };
         let https_host = match &endpoint {
@@ -601,7 +602,7 @@ impl RemoteHub {
         let gen = st.gen;
         let handle = tauri::async_runtime::spawn(async move {
             let result = match tokio::net::TcpListener::from_std(std_listener) {
-                Err(e) => Err(format!("원격 서버 리스너 생성 실패: {}", e)),
+                Err(e) => Err(trf("원격 서버 리스너 생성 실패: {e}", &[("e", &e)])),
                 Ok(listener) => {
                     let shutdown = async move {
                         let _ = sig.wait_for(|v| *v).await;
@@ -609,7 +610,7 @@ impl RemoteHub {
                     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
                         .with_graceful_shutdown(shutdown)
                         .await
-                        .map_err(|e| format!("원격 서버가 중단되었습니다: {}", e))
+                        .map_err(|e| trf("원격 서버가 중단되었습니다: {e}", &[("e", &e)]))
                 }
             };
             if *stopping.borrow() {
@@ -622,7 +623,7 @@ impl RemoteHub {
                     return;
                 }
                 st.server = None;
-                st.error = Some(result.err().unwrap_or_else(|| "원격 서버가 예기치 않게 종료되었습니다".into()));
+                st.error = Some(result.err().unwrap_or_else(|| tr("원격 서버가 예기치 않게 종료되었습니다").into()));
             }
             emit_status(&app);
         });
@@ -712,7 +713,7 @@ fn emit_status(app: &AppHandle) {
 
 fn push_warning(url: &str) -> Option<String> {
     url.trim().to_ascii_lowercase().starts_with("http://").then(|| {
-        "ntfy 서버 주소가 http:// 입니다 — 알림 내용과 토픽이 암호화되지 않은 채 전송됩니다.".to_string()
+        tr("ntfy 서버 주소가 http:// 입니다 — 알림 내용과 토픽이 암호화되지 않은 채 전송됩니다.").to_string()
     })
 }
 
@@ -933,24 +934,24 @@ pub async fn remote_set_config(app: AppHandle, cfg: RemoteConfigInput) -> Result
     let bind = if is_auto(&bind) {
         BIND_AUTO.to_string()
     } else {
-        bind.parse::<IpAddr>().map_err(|_| format!("바인드 주소는 IP 또는 auto 여야 합니다: {}", bind))?;
+        bind.parse::<IpAddr>().map_err(|_| trf("바인드 주소는 IP 또는 auto 여야 합니다: {bind}", &[("bind", &bind)]))?;
         bind
     };
     if cfg.port == 0 {
-        return Err("포트는 1~65535 사이여야 합니다".into());
+        return Err(tr("포트는 1~65535 사이여야 합니다").into());
     }
     let kind = cfg.push.kind.trim().to_string();
     if kind != "off" && kind != "ntfy" {
-        return Err(format!("지원하지 않는 푸시 종류: {}", kind));
+        return Err(trf("지원하지 않는 푸시 종류: {kind}", &[("kind", &kind)]));
     }
     let url = cfg.push.url.trim().trim_end_matches('/').to_string();
     let topic = cfg.push.topic.trim().to_string();
     if kind == "ntfy" {
         if !(url.starts_with("https://") || url.starts_with("http://")) {
-            return Err("ntfy 서버 주소는 http(s):// 로 시작해야 합니다".into());
+            return Err(tr("ntfy 서버 주소는 http(s):// 로 시작해야 합니다").into());
         }
         if !topic.is_empty() && !notify::valid_topic(&topic) {
-            return Err("ntfy 토픽은 영문·숫자·-·_ 64자 이내여야 합니다".into());
+            return Err(tr("ntfy 토픽은 영문·숫자·-·_ 64자 이내여야 합니다").into());
         }
     }
     let restart = {
@@ -984,10 +985,10 @@ pub fn remote_start_pairing(app: AppHandle, hub: State<RemoteHub>) -> Result<Pai
 
 fn issue_pairing(app: &AppHandle, hub: &RemoteHub) -> Result<PairingView, String> {
     if !hub.running() {
-        return Err("원격 서버가 실행 중이 아닙니다".into());
+        return Err(tr("원격 서버가 실행 중이 아닙니다").into());
     }
     // QR 에는 실제 공개 주소 (HTTPS 모드면 https://<name>.ts.net:7443, 아니면 Tailscale IP)
-    let base = hub.public_base(app).ok_or("접속 주소를 찾을 수 없습니다")?;
+    let base = hub.public_base(app).ok_or(tr("접속 주소를 찾을 수 없습니다"))?;
     let now = Instant::now();
     let (code, expires) = plock(&hub.pairing).start(now);
     let expires_ms = now_ms() + expires.duration_since(now).as_millis() as u64;
@@ -1166,12 +1167,12 @@ pub async fn remote_open_on_phone(app: AppHandle, session_id: Option<String>) ->
     if cfg.kind != "ntfy" || !notify::valid_topic(&cfg.topic) {
         return Err("no-push".into());
     }
-    let base = app.state::<RemoteHub>().public_base(&app).ok_or("원격 서버가 실행 중이 아닙니다")?;
+    let base = app.state::<RemoteHub>().public_base(&app).ok_or(tr("원격 서버가 실행 중이 아닙니다"))?;
     let sid = session_id.filter(|s| !s.is_empty());
     let click = notify::click_url(&base, sid.as_deref());
     let body = match &sid {
-        Some(id) => format!("{} — 폰에서 열기", notify::session_label(&app, id, cfg.include_project).unwrap_or_else(|| "세션".into())),
-        None => "Terminal Assistance — 폰에서 열기".into(),
+        Some(id) => trf("{label} — 폰에서 열기", &[("label", &notify::session_label(&app, id, cfg.include_project).unwrap_or_else(|| tr("세션").into()))]),
+        None => tr("Terminal Assistance — 폰에서 열기").into(),
     };
     tauri::async_runtime::spawn_blocking(move || {
         notify::send_ntfy(&cfg.url, &cfg.topic, &body, "high", "iphone", Some(&click))
@@ -1278,9 +1279,9 @@ pub async fn remote_setup_status(app: AppHandle) -> Result<SetupStatus, String> 
 /// Tailscale 앱 창을 연다 (로그인·켜기는 사용자가 앱에서 한다)
 #[tauri::command]
 pub fn remote_open_tailscale() -> Result<(), String> {
-    let (bin, args) = tailscale::open_app_command(std::env::consts::OS).ok_or("이 OS 에서는 Tailscale 앱을 직접 열어 주세요")?;
+    let (bin, args) = tailscale::open_app_command(std::env::consts::OS).ok_or(tr("이 OS 에서는 Tailscale 앱을 직접 열어 주세요"))?;
     let mut child =
-        std::process::Command::new(bin).args(args).spawn().map_err(|e| format!("Tailscale 열기 실패: {}", e))?;
+        std::process::Command::new(bin).args(args).spawn().map_err(|e| trf("Tailscale 열기 실패: {e}", &[("e", &e)]))?;
     // 끝난 자식을 거둬 좀비 프로세스가 남지 않게
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -1296,7 +1297,7 @@ fn qr_allowed(text: &str) -> bool {
 #[tauri::command]
 pub fn remote_qr(text: String) -> Result<String, String> {
     if !qr_allowed(&text) {
-        return Err("QR 로 만들 수 없는 주소입니다".into());
+        return Err(tr("QR 로 만들 수 없는 주소입니다").into());
     }
     qr_svg(&text)
 }
@@ -1305,13 +1306,13 @@ pub fn remote_qr(text: String) -> Result<String, String> {
 pub async fn remote_test_push(app: AppHandle) -> Result<(), String> {
     let cfg = plock(&app.state::<Mutex<Store>>()).data.remote.push.clone();
     if cfg.kind != "ntfy" {
-        return Err("푸시가 꺼져 있습니다".into());
+        return Err(tr("푸시가 꺼져 있습니다").into());
     }
     if !notify::valid_topic(&cfg.topic) {
-        return Err("ntfy 토픽이 올바르지 않습니다".into());
+        return Err(tr("ntfy 토픽이 올바르지 않습니다").into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        notify::send_ntfy(&cfg.url, &cfg.topic, "테스트 알림 — 원격 푸시가 연결되었습니다", "default", "bell", None)
+        notify::send_ntfy(&cfg.url, &cfg.topic, tr("테스트 알림 — 원격 푸시가 연결되었습니다"), "default", "bell", None)
     })
     .await
     .map_err(|e| e.to_string())?

@@ -7,6 +7,7 @@
 // 사용자가 띄운 작업이 아니므로 제외한다. Windows 는 지원하지 않는다(빈 목록).
 // 순수 파서는 unix 조회 경로에서만 쓰인다 — Windows 빌드의 미사용 경고를 막는다
 #![cfg_attr(not(unix), allow(dead_code))]
+use crate::i18n::{tr, trf};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
@@ -381,7 +382,7 @@ pub async fn list_orphans(store: StoreArg<'_>, ptys: PtysArg<'_>) -> Result<Vec<
 #[tauri::command]
 pub async fn kill_orphan(store: StoreArg<'_>, ptys: PtysArg<'_>, pgid: i32) -> Result<(), String> {
     let results = kill_batch(&store, &ptys, vec![pgid]).await?;
-    results.into_iter().next().map(|r| r.result).unwrap_or_else(|| Err("종료 대상이 없습니다".into()))
+    results.into_iter().next().map(|r| r.result).unwrap_or_else(|| Err(tr("종료 대상이 없습니다").into()))
 }
 
 #[derive(Serialize)]
@@ -421,7 +422,7 @@ fn kill_blocking(projects: &[(String, String)], live: &HashSet<String>, pgids: &
     for &pgid in pgids {
         match current.iter().find(|o| o.pgid == pgid && pgid > 1) {
             Some(o) => targets.push(o.clone()),
-            None => out.push((pgid, Err("이미 종료되었거나 목록에 없는 프로세스입니다".into()))),
+            None => out.push((pgid, Err(tr("이미 종료되었거나 목록에 없는 프로세스입니다").into()))),
         }
     }
     let any_alive = |ts: &[Orphan]| ts.iter().any(|o| o.pids.iter().any(|p| alive(*p)));
@@ -444,7 +445,7 @@ fn kill_blocking(projects: &[(String, String)], live: &HashSet<String>, pgids: &
     }
     for o in targets {
         let left: Vec<String> = o.pids.iter().filter(|p| alive(**p)).map(u32::to_string).collect();
-        let r = if left.is_empty() { Ok(()) } else { Err(format!("종료되지 않은 프로세스: {}", left.join(", "))) };
+        let r = if left.is_empty() { Ok(()) } else { Err(trf("종료되지 않은 프로세스: {left}", &[("left", &left.join(", "))])) };
         out.push((o.pgid, r));
     }
     out
@@ -452,7 +453,7 @@ fn kill_blocking(projects: &[(String, String)], live: &HashSet<String>, pgids: &
 
 #[cfg(not(unix))]
 fn kill_blocking(_projects: &[(String, String)], _live: &HashSet<String>, pgids: &[i32]) -> Vec<(i32, Result<(), String>)> {
-    pgids.iter().map(|&p| (p, Err("이 OS 에서는 지원하지 않습니다".into()))).collect()
+    pgids.iter().map(|&p| (p, Err(tr("이 OS 에서는 지원하지 않습니다").into()))).collect()
 }
 
 // ── 탭·앱을 닫을 때 그 세션이 띄운 백그라운드 프로세스 정리 ──

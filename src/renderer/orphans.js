@@ -25,7 +25,7 @@ Object.assign(App, {
       await App.scanOrphans();
       const left = App._leftoverOrphans();
       if (left.length) {
-        App.showToastWhenFree(`이전 작업에서 남은 백그라운드 프로세스 ${left.length}개 · 약 ${formatMemKb(orphanMemKb(left))} 사용 중 — 사이드바 아래 '백그라운드'에서 확인할 수 있습니다`, 9000);
+        App.showToastWhenFree(tr("이전 작업에서 남은 백그라운드 프로세스 {n}개 · 약 {mem} 사용 중 — 사이드바 아래 '백그라운드'에서 확인할 수 있습니다", { n: left.length, mem: formatMemKb(orphanMemKb(left)) }), 9000);
       }
     }, App._crashed ? 0 : ORPHAN_FIRST_SCAN_MS);
     setInterval(() => { void App.scanOrphans(); }, ORPHAN_RESCAN_MS);
@@ -56,8 +56,8 @@ Object.assign(App, {
     if (!el) return;
     const n = App._leftoverOrphans().length;
     el.classList.toggle('hidden', n === 0);
-    el.textContent = `백그라운드 ${n}`;
-    el.title = `닫힌 탭·이전 실행에서 남은 백그라운드 프로세스 ${n}개 · 약 ${formatMemKb(orphanMemKb(App._leftoverOrphans()))} 사용 중 — 클릭해 확인·종료`;
+    el.textContent = tr('백그라운드 {n}', { n });
+    el.title = tr('닫힌 탭·이전 실행에서 남은 백그라운드 프로세스 {n}개 · 약 {mem} 사용 중 — 클릭해 확인·종료', { n, mem: formatMemKb(orphanMemKb(App._leftoverOrphans())) });
   },
 
   // 실행 경과(초)로 시작 시각을 계산한다 — ps 의 lstart 문자열은 웹뷰마다 해석이 다르다
@@ -68,7 +68,7 @@ Object.assign(App, {
 
   _orphanRowHtml(o) {
     const p = App.state.projects.find((x) => x.id === o.projectId);
-    const where = o.projectId ? (p ? p.name : '프로젝트 밖') : (o.cwd || '경로 모름');
+    const where = o.projectId ? (p ? p.name : tr('프로젝트 밖')) : (o.cwd || tr('경로 모름'));
     const tab = o.liveTab ? App.state.sessions.find((x) => x.id === o.sessionId) : null;
     return `
       <div class="orphan-row" data-pgid="${o.pgid}">
@@ -77,13 +77,13 @@ Object.assign(App, {
           <div class="orphan-meta">
             ${escapeHtml(where)}
             · CPU ${escapeHtml(String(Math.round(o.cpu || 0)))}% · ${escapeHtml(formatMemKb(o.rssKb || 0))}
-            · ${escapeHtml(App._orphanStarted(o))} 시작
-            ${o.ports.length ? ` · 포트 ${o.ports.map((x) => escapeHtml(String(x))).join(', ')}` : ''}
-            ${o.pids.length > 1 ? ` · 프로세스 ${o.pids.length}개` : ''}
-            ${tab ? ` · 탭 ${escapeHtml(tab.title)}` : (o.fromApp ? ' · 앱 세션에서 실행' : '')}
+            · ${tr('{time} 시작', { time: escapeHtml(App._orphanStarted(o)) })}
+            ${o.ports.length ? ` · ${tr('포트 {ports}', { ports: o.ports.map((x) => escapeHtml(String(x))).join(', ') })}` : ''}
+            ${o.pids.length > 1 ? ` · ${tr('프로세스 {n}개', { n: o.pids.length })}` : ''}
+            ${tab ? ` · ${tr('탭 {title}', { title: escapeHtml(tab.title) })}` : (o.fromApp ? ' · ' + tr('앱 세션에서 실행') : '')}
           </div>
         </div>
-        <button class="orphan-kill danger">종료</button>
+        <button class="orphan-kill danger">${tr('종료', null, 'kill')}</button>
       </div>`;
   },
 
@@ -92,18 +92,18 @@ Object.assign(App, {
     const leftovers = App._leftoverOrphans();
     const liveOnes = App._orphans.filter((o) => o.liveTab);
     const liveSection = liveOnes.length
-      ? `<div class="orphan-group">열린 탭 소속 (${liveOnes.length}) — 탭에서 띄운 백그라운드 작업입니다</div>${liveOnes.map((o) => App._orphanRowHtml(o)).join('')}`
+      ? `<div class="orphan-group">${tr('열린 탭 소속 ({n}) — 탭에서 띄운 백그라운드 작업입니다', { n: liveOnes.length })}</div>${liveOnes.map((o) => App._orphanRowHtml(o)).join('')}`
       : '';
     App.modal(`
-      <h3>남은 백그라운드 프로세스</h3>
-      <p style="color:var(--fg-dim);line-height:1.6">닫힌 탭이나 이전 실행에서 에이전트가 띄운 뒤 남은 프로세스입니다.</p>
+      <h3>${tr('남은 백그라운드 프로세스')}</h3>
+      <p style="color:var(--fg-dim);line-height:1.6">${tr('닫힌 탭이나 이전 실행에서 에이전트가 띄운 뒤 남은 프로세스입니다.')}</p>
       <div class="orphan-list">
-        ${leftovers.map((o) => App._orphanRowHtml(o)).join('') || '<div class="prompt-empty">남은 백그라운드 프로세스가 없습니다.</div>'}
+        ${leftovers.map((o) => App._orphanRowHtml(o)).join('') || '<div class="prompt-empty">' + tr('남은 백그라운드 프로세스가 없습니다.') + '</div>'}
         ${liveSection}
       </div>
       <div class="modal-actions">
-        <button id="m-cancel">닫기</button>
-        ${leftovers.length > 1 ? '<button id="m-kill-all" class="danger">남은 프로세스 모두 종료</button>' : ''}
+        <button id="m-cancel">${tr('닫기')}</button>
+        ${leftovers.length > 1 ? '<button id="m-kill-all" class="danger">' + tr('남은 프로세스 모두 종료') + '</button>' : ''}
       </div>`,
       (m, close) => {
         m.querySelector('#m-cancel').onclick = close;
@@ -111,14 +111,14 @@ Object.assign(App, {
           const btn = row.querySelector('.orphan-kill');
           btn.onclick = async () => {
             btn.disabled = true;
-            btn.textContent = '종료 중…';
+            btn.textContent = tr('종료 중…', null, 'kill');
             try {
               await ta.killOrphan(Number(row.dataset.pgid));
               row.remove();
             } catch (e) {
               btn.disabled = false;
-              btn.textContent = '종료';
-              App.showToast('종료하지 못했습니다: ' + e);
+              btn.textContent = tr('종료', null, 'kill');
+              App.showToast(tr('종료하지 못했습니다: {e}', { e }));
             }
             await App.scanOrphans();
           };
@@ -126,10 +126,10 @@ Object.assign(App, {
         const all = m.querySelector('#m-kill-all');
         if (all) all.onclick = async () => {
           all.disabled = true;
-          all.textContent = '종료 중…';
+          all.textContent = tr('종료 중…', null, 'kill');
           let results = [];
           try { results = await ta.killOrphans(leftovers.map((o) => o.pgid)); }
-          catch (e) { App.showToast('종료하지 못했습니다: ' + e); }
+          catch (e) { App.showToast(tr('종료하지 못했습니다: {e}', { e })); }
           // 실제로 종료된 항목만 목록에서 걷는다
           const failed = [];
           for (const r of results) {
@@ -139,8 +139,8 @@ Object.assign(App, {
           await App.scanOrphans();
           if (failed.length) {
             all.disabled = false;
-            all.textContent = '남은 프로세스 모두 종료';
-            App.showToast(`${failed.length}개를 종료하지 못했습니다 — ${failed[0]}`, 9000);
+            all.textContent = tr('남은 프로세스 모두 종료');
+            App.showToast(tr('{n}개를 종료하지 못했습니다 — {first}', { n: failed.length, first: failed[0] }), 9000);
           } else {
             close();
           }

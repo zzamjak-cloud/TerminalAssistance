@@ -131,26 +131,26 @@ Object.assign(App, {
   async showWorktreeModal(parent) {
     let info = null;
     try { info = await ta.repoInfo(parent.path); }
-    catch (e) { App.showToast('⚠ 저장소 정보를 읽지 못했습니다 — ' + e); return; }
-    if (!info) { App.showToast('⚠ git 저장소가 아닙니다 — 워크트리를 만들 수 없습니다'); return; }
+    catch (e) { App.showToast(tr('⚠ 저장소 정보를 읽지 못했습니다 — {e}', { e })); return; }
+    if (!info) { App.showToast(tr('⚠ git 저장소가 아닙니다 — 워크트리를 만들 수 없습니다')); return; }
 
     // 이미 쓰이는 경로: 기존 워크트리 + 등록된 프로젝트 경로
     const taken = info.worktrees.map((w) => w.path).concat(App.state.projects.map((p) => p.path));
     const branches = info.branches;
 
     App.modal(`
-      <h3>워크트리 만들기 — ${escapeHtml(info.repoName)}</h3>
-      <label>브랜치</label>
-      <input type="text" id="w-branch" placeholder="예: feat/login (없는 이름이면 새로 만듭니다)" autocomplete="off">
+      <h3>${tr('워크트리 만들기 — {name}', { name: escapeHtml(info.repoName) })}</h3>
+      <label>${tr('브랜치')}</label>
+      <input type="text" id="w-branch" placeholder="${tr('예: feat/login (없는 이름이면 새로 만듭니다)')}" autocomplete="off">
       <div class="form-help" id="w-branch-state"></div>
       <div class="wt-branch-list" id="w-list"></div>
-      <label id="w-base-label">새 브랜치의 기준</label>
+      <label id="w-base-label">${tr('새 브랜치의 기준')}</label>
       <select id="w-base"></select>
-      <label>폴더</label>
-      <input type="text" id="w-path" placeholder="워크트리를 만들 경로">
-      <div class="form-help">부모 저장소 옆(형제 폴더)에 만듭니다. 직접 고쳐도 됩니다.</div>
+      <label>${tr('폴더')}</label>
+      <input type="text" id="w-path" placeholder="${tr('워크트리를 만들 경로')}">
+      <div class="form-help">${tr('부모 저장소 옆(형제 폴더)에 만듭니다. 직접 고쳐도 됩니다.')}</div>
       <div class="modal-actions">
-        <button id="w-cancel">취소</button><button id="w-create">만들고 세션 열기</button>
+        <button id="w-cancel">${tr('취소')}</button><button id="w-create">${tr('만들고 세션 열기')}</button>
       </div>`,
       (m, close) => {
         const input = m.querySelector('#w-branch');
@@ -180,21 +180,21 @@ Object.assign(App, {
           baseEl.style.display = createNew ? '' : 'none';
 
           if (!raw) {
-            stateEl.textContent = '만들거나 체크아웃할 브랜치 이름을 입력하세요.';
+            stateEl.textContent = tr('만들거나 체크아웃할 브랜치 이름을 입력하세요.');
             stateEl.className = 'form-help';
             createBtn.disabled = true;
           } else if (hit && hit.checkedOutAt) {
-            stateEl.textContent = `이미 다른 워크트리가 쓰는 중입니다 — ${hit.checkedOutAt}`;
+            stateEl.textContent = tr('이미 다른 워크트리가 쓰는 중입니다 — {at}', { at: hit.checkedOutAt });
             stateEl.className = 'form-help warn';
             createBtn.disabled = true;
           } else if (hit) {
             stateEl.textContent = hit.remote
-              ? `원격 브랜치 ${hit.name} 을 받아 체크아웃합니다.`
-              : `기존 브랜치 ${hit.name} 을 체크아웃합니다.`;
+              ? tr('원격 브랜치 {name} 을 받아 체크아웃합니다.', { name: hit.name })
+              : tr('기존 브랜치 {name} 을 체크아웃합니다.', { name: hit.name });
             stateEl.className = 'form-help';
             createBtn.disabled = false;
           } else {
-            stateEl.textContent = `새 브랜치 ${raw} 을 만듭니다.`;
+            stateEl.textContent = tr('새 브랜치 {name} 을 만듭니다.', { name: raw });
             stateEl.className = 'form-help';
             createBtn.disabled = false;
           }
@@ -217,7 +217,7 @@ Object.assign(App, {
             row.appendChild(nameSpan);
             const tag = document.createElement('span');
             tag.className = 'wt-branch-tag';
-            tag.textContent = b.checkedOutAt ? '사용 중' : (b.remote ? '원격' : (b.name === info.currentBranch ? '현재' : ''));
+            tag.textContent = b.checkedOutAt ? tr('사용 중') : (b.remote ? tr('원격') : (b.name === info.currentBranch ? tr('현재') : ''));
             row.appendChild(tag);
             if (!b.checkedOutAt) {
               row.onclick = () => { input.value = b.name; pathEdited = false; refresh(); input.focus(); };
@@ -235,7 +235,7 @@ Object.assign(App, {
           const hit = raw ? findBranch(raw) : null;
           if (!raw || (hit && hit.checkedOutAt)) return;
           const path = pathEl.value.trim();
-          if (!path) return alert('워크트리를 만들 경로를 입력하세요.');
+          if (!path) return alert(tr('워크트리를 만들 경로를 입력하세요.'));
 
           // 원격 브랜치를 고르면 같은 이름의 로컬 브랜치를 새로 만들어 추적하게 한다
           const useRemote = hit && hit.remote;
@@ -244,14 +244,14 @@ Object.assign(App, {
           const base = useRemote ? hit.name : (createNew ? baseEl.value : null);
 
           createBtn.disabled = true;
-          createBtn.textContent = '만드는 중…';
+          createBtn.textContent = tr('만드는 중…');
           let created;
           try {
             created = await ta.worktreeAdd({ root: info.root, path, branch: localName, createNew, base });
           } catch (e) {
             createBtn.disabled = false;
-            createBtn.textContent = '만들고 세션 열기';
-            alert('워크트리 생성 실패:\n' + e);
+            createBtn.textContent = tr('만들고 세션 열기');
+            alert(tr('워크트리 생성 실패:\n{e}', { e }));
             return;
           }
 
@@ -263,7 +263,7 @@ Object.assign(App, {
             });
           } catch (e) {
             close();
-            App.showToast('⚠ 워크트리는 만들어졌지만 프로젝트 등록에 실패했습니다 — ' + e);
+            App.showToast(tr('⚠ 워크트리는 만들어졌지만 프로젝트 등록에 실패했습니다 — {e}', { e }));
             return;
           }
 
@@ -271,7 +271,7 @@ Object.assign(App, {
           App._repoProbe.set(created, true);
           close();
           App.renderAll();
-          App.showToast(`워크트리 생성 — ${localName} (${created})`);
+          App.showToast(tr('워크트리 생성 — {name} ({path})', { name: localName, path: created }));
           App.createSession(project.id);
         };
 
@@ -287,27 +287,26 @@ Object.assign(App, {
     const root = parent ? parent.path : project.path; // 부모 등록이 없으면 워크트리 자신을 기준으로
     const live = App.state.sessions.filter((s) => s.projectId === project.id && s.status !== 'exited');
     if (live.length) {
-      App.showToast(`⚠ 이 워크트리의 세션 ${live.length}개가 열려 있습니다 — 먼저 닫아주세요`);
+      App.showToast(tr('⚠ 이 워크트리의 세션 {n}개가 열려 있습니다 — 먼저 닫아주세요', { n: live.length }));
       return;
     }
 
     let check;
     try { check = await ta.worktreeCheck(root, project.path); }
-    catch (e) { App.showToast('⚠ 상태를 확인하지 못했습니다 — ' + e); return; }
+    catch (e) { App.showToast(tr('⚠ 상태를 확인하지 못했습니다 — {e}', { e })); return; }
 
     const warnings = [];
-    if (check.dirtyCount) warnings.push(`커밋하지 않은 변경 ${check.dirtyCount}개`);
-    if (check.ahead) warnings.push(`아직 push 하지 않은 커밋 ${check.ahead}개`);
-    if (check.noUpstream) warnings.push('원격에 올린 적 없는 브랜치');
+    if (check.dirtyCount) warnings.push(tr('커밋하지 않은 변경 {n}개', { n: check.dirtyCount }));
+    if (check.ahead) warnings.push(tr('아직 push 하지 않은 커밋 {n}개', { n: check.ahead }));
+    if (check.noUpstream) warnings.push(tr('원격에 올린 적 없는 브랜치'));
     const risky = warnings.length > 0;
 
     if (!check.isWorktree) {
       // git 이 모르는 경로 — 등록만 지우면 된다
       App.modal(`
-        <h3>워크트리 등록 해제</h3>
-        <p class="modal-text">${escapeHtml(project.path)} 은 이 저장소의 워크트리가 아닙니다.
-        폴더는 그대로 두고 목록에서만 지웁니다.</p>
-        <div class="modal-actions"><button id="w-cancel">취소</button><button id="w-ok" class="danger">목록에서 지우기</button></div>`,
+        <h3>${tr('워크트리 등록 해제')}</h3>
+        <p class="modal-text">${tr('{path} 은 이 저장소의 워크트리가 아닙니다. 폴더는 그대로 두고 목록에서만 지웁니다.', { path: escapeHtml(project.path) })}</p>
+        <div class="modal-actions"><button id="w-cancel">${tr('취소')}</button><button id="w-ok" class="danger">${tr('목록에서 지우기')}</button></div>`,
         (m, close) => {
           m.querySelector('#w-cancel').onclick = close;
           m.querySelector('#w-ok').onclick = async () => { close(); await App._dropWorktreeProject(project); };
@@ -316,14 +315,14 @@ Object.assign(App, {
     }
 
     App.modal(`
-      <h3>워크트리 제거 — ${escapeHtml(project.branch || project.name)}</h3>
+      <h3>${tr('워크트리 제거 — {name}', { name: escapeHtml(project.branch || project.name) })}</h3>
       <p class="modal-text">${escapeHtml(project.path)}</p>
-      ${check.missing ? '<p class="modal-text warn">폴더가 이미 사라졌습니다 — git 등록만 정리합니다.</p>' : ''}
-      ${risky ? `<p class="modal-text warn">제거하면 사라지는 것: ${escapeHtml(warnings.join(' · '))}. 되돌릴 수 없습니다.</p>
-        <label class="check-row"><input type="checkbox" id="w-force"> 알고 있습니다 — 강제로 제거합니다</label>` : ''}
-      <div class="form-help">브랜치 자체는 지우지 않습니다. 필요하면 나중에 <code>git branch -d</code> 로 정리하세요.</div>
+      ${check.missing ? `<p class="modal-text warn">${tr('폴더가 이미 사라졌습니다 — git 등록만 정리합니다.')}</p>` : ''}
+      ${risky ? `<p class="modal-text warn">${tr('제거하면 사라지는 것: {list}. 되돌릴 수 없습니다.', { list: escapeHtml(warnings.join(' · ')) })}</p>
+        <label class="check-row"><input type="checkbox" id="w-force"> ${tr('알고 있습니다 — 강제로 제거합니다')}</label>` : ''}
+      <div class="form-help">${tr('브랜치 자체는 지우지 않습니다. 필요하면 나중에 <code>git branch -d</code> 로 정리하세요.')}</div>
       <div class="modal-actions">
-        <button id="w-cancel">취소</button><button id="w-ok" class="danger">제거</button>
+        <button id="w-cancel">${tr('취소')}</button><button id="w-ok" class="danger">${tr('제거')}</button>
       </div>`,
       (m, close) => {
         const force = m.querySelector('#w-force');
@@ -335,17 +334,17 @@ Object.assign(App, {
         m.querySelector('#w-cancel').onclick = close;
         ok.onclick = async () => {
           ok.disabled = true;
-          ok.textContent = '제거 중…';
+          ok.textContent = tr('제거 중…');
           try {
             await ta.worktreeRemove(root, project.path, !!(force && force.checked) || check.missing);
           } catch (e) {
             close();
-            App.showToast('⚠ 워크트리 제거 실패 — ' + e);
+            App.showToast(tr('⚠ 워크트리 제거 실패 — {e}', { e }));
             return;
           }
           close();
           await App._dropWorktreeProject(project);
-          App.showToast(`워크트리를 제거했습니다 — ${project.branch || project.name}`);
+          App.showToast(tr('워크트리를 제거했습니다 — {name}', { name: project.branch || project.name }));
         };
       });
   },
@@ -353,7 +352,7 @@ Object.assign(App, {
   // 레지스트리에서 워크트리 프로젝트를 지우고 화면을 갱신한다
   async _dropWorktreeProject(project) {
     try { await ta.removeProject(project.id); }
-    catch (e) { App.showToast('⚠ 프로젝트 등록 해제 실패 — ' + e); return; }
+    catch (e) { App.showToast(tr('⚠ 프로젝트 등록 해제 실패 — {e}', { e })); return; }
     App.state.projects = App.state.projects.filter((p) => p.id !== project.id);
     App.state.presets = App.state.presets.filter((p) => p.projectId !== project.id);
     App.state.recipes = App.state.recipes.filter((r) => r.projectId !== project.id);

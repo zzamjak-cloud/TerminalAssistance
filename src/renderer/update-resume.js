@@ -31,18 +31,18 @@ Object.assign(App, {
     const busy = await App._busyIds();
     if (App._modalOpen()) return; // 판정하는 사이 다른 모달이 열렸다
     const busyNote = busy.length
-      ? `<p class="update-busy">작업 중인 세션 ${busy.length}개 — 지금 업데이트하면 중단되고, 재시작 뒤 실행 중이던 Claude·Codex 를 자동으로 이어 실행합니다.</p>`
+      ? `<p class="update-busy">${tr('작업 중인 세션 {n}개 — 지금 업데이트하면 중단되고, 재시작 뒤 실행 중이던 Claude·Codex 를 자동으로 이어 실행합니다.', { n: busy.length })}</p>`
       : '';
     App.modal(`
-      <h3>새 버전 v${escapeHtml(info.version)} 이 있습니다</h3>
+      <h3>${tr('새 버전 v{version} 이 있습니다', { version: escapeHtml(info.version) })}</h3>
       <p style="color:var(--fg-dim);line-height:1.6;margin-bottom:6px">
-        ${info.notes ? escapeHtml(String(info.notes)).slice(0, 400) : '업데이트를 설치하면 앱이 자동으로 재시작됩니다.'}
+        ${info.notes ? escapeHtml(String(info.notes)).slice(0, 400) : tr('업데이트를 설치하면 앱이 자동으로 재시작됩니다.')}
       </p>
       ${busyNote}
-      <p><a href="#" id="m-changelog" style="color:var(--done)">전체 변경 사항 보기 (CHANGELOG)</a></p>
+      <p><a href="#" id="m-changelog" style="color:var(--done)">${tr('전체 변경 사항 보기 (CHANGELOG)')}</a></p>
       <div class="modal-actions">
-        <button id="m-cancel">나중에</button>
-        ${busy.length ? '<button id="m-idle">작업 끝나면 설치</button>' : ''}
+        <button id="m-cancel">${tr('나중에')}</button>
+        ${busy.length ? '<button id="m-idle">' + tr('작업 끝나면 설치') + '</button>' : ''}
         <button id="m-update">${escapeHtml(UpdateCore.updateButtonLabel(busy.length))}</button>
       </div>`,
       (m, close) => {
@@ -54,10 +54,10 @@ Object.assign(App, {
         btn.onclick = async () => {
           const label = btn.textContent;
           btn.disabled = true;
-          btn.textContent = '다운로드 중…';
+          btn.textContent = tr('다운로드 중…');
           App._progressButton = btn;
           try { await ta.installUpdate(); } // 성공 시 앱이 재시작되므로 이후 코드는 실행되지 않음
-          catch (e) { btn.disabled = false; btn.textContent = label; alert('업데이트 실패: ' + e); }
+          catch (e) { btn.disabled = false; btn.textContent = label; alert(tr('업데이트 실패: {e}', { e })); }
           finally { App._progressButton = null; }
         };
       });
@@ -66,7 +66,7 @@ Object.assign(App, {
   onUpdateProgress(p) {
     if (!p || !p.total) return;
     const pct = Math.min(100, Math.round((p.done / p.total) * 100));
-    if (App._progressButton) App._progressButton.textContent = `다운로드 중… ${pct}%`;
+    if (App._progressButton) App._progressButton.textContent = tr('다운로드 중… {pct}%', { pct });
   },
 
   // 작업 중 탭 id — 에이전트 탭은 백엔드가 가리고, 예약 프롬프트는 멈춘 것을 뺀다
@@ -81,15 +81,15 @@ Object.assign(App, {
   async installWhenIdle(version) {
     if (App._idleInstall) return;
     const st = App._idleInstall = { version, streak: 0, timer: null, countdown: null, startedAt: Date.now(), ticking: false };
-    App.showToast('업데이트를 내려받는 중입니다 — 작업이 끝나면 자동으로 설치합니다');
+    App.showToast(tr('업데이트를 내려받는 중입니다 — 작업이 끝나면 자동으로 설치합니다'));
     try { await ta.downloadUpdate(); }
     catch (e) {
       if (App._idleInstall === st) App._idleInstall = null;
-      App.showToast('업데이트 다운로드 실패: ' + e);
+      App.showToast(tr('업데이트 다운로드 실패: {e}', { e }));
       return;
     }
     if (App._idleInstall !== st) return; // 다운로드 중 취소됨
-    App.showToast('업데이트 준비 완료 — 모든 세션의 작업이 끝나면 설치합니다');
+    App.showToast(tr('업데이트 준비 완료 — 모든 세션의 작업이 끝나면 설치합니다'));
     App._startIdleWatch(st);
   },
 
@@ -105,10 +105,10 @@ Object.assign(App, {
     if (UpdateCore.idleInstallExpired(st.startedAt, Date.now())) {
       clearInterval(st.timer);
       st.timer = null;
-      App.showActionToast('30분째 작업이 끝나지 않아 업데이트를 기다리는 중입니다', [
-        { label: '지금 설치', onClick: () => { App.hideActionToast(); void App._installNow(st); } },
-        { label: '계속 대기', onClick: () => { App.hideActionToast(); if (App._idleInstall === st) App._startIdleWatch(st); } },
-        { label: '취소', onClick: () => App.cancelIdleInstall() }
+      App.showActionToast(tr('30분째 작업이 끝나지 않아 업데이트를 기다리는 중입니다'), [
+        { label: tr('지금 설치'), onClick: () => { App.hideActionToast(); void App._installNow(st); } },
+        { label: tr('계속 대기'), onClick: () => { App.hideActionToast(); if (App._idleInstall === st) App._startIdleWatch(st); } },
+        { label: tr('취소'), onClick: () => App.cancelIdleInstall() }
       ]);
       return;
     }
@@ -125,8 +125,8 @@ Object.assign(App, {
 
   _startInstallCountdown(st) {
     let left = UpdateCore.COUNTDOWN_SEC;
-    const cancel = [{ label: '취소', onClick: () => App.cancelIdleInstall() }];
-    const text = () => `작업이 모두 끝났습니다 — ${left}초 후 업데이트를 설치하고 재시작합니다`;
+    const cancel = [{ label: tr('취소'), onClick: () => App.cancelIdleInstall() }];
+    const text = () => tr('작업이 모두 끝났습니다 — {n}초 후 업데이트를 설치하고 재시작합니다', { n: left });
     App.showActionToast(text(), cancel);
     let checking = false;
     st.countdown = setInterval(async () => {
@@ -155,12 +155,12 @@ Object.assign(App, {
     if (App._idleInstall !== st) return;
     clearInterval(st.timer);
     clearInterval(st.countdown);
-    App.showActionToast('업데이트를 설치하는 중…', []);
+    App.showActionToast(tr('업데이트를 설치하는 중…'), []);
     try { await ta.installUpdate(); } // 성공 시 앱이 재시작된다
     catch (e) {
       App._idleInstall = null;
       App.hideActionToast();
-      App.showToast('업데이트 설치 실패: ' + e, 9000);
+      App.showToast(tr('업데이트 설치 실패: {e}', { e }), 9000);
     }
   },
 
@@ -171,7 +171,7 @@ Object.assign(App, {
     clearInterval(st.countdown);
     App._idleInstall = null;
     App.hideActionToast();
-    App.showToast('자동 설치를 취소했습니다 — 다음 업데이트 확인 때 다시 안내합니다');
+    App.showToast(tr('자동 설치를 취소했습니다 — 다음 업데이트 확인 때 다시 안내합니다'));
   },
 
   // 버튼이 달린 토스트 (카운트다운 취소 등). 일반 토스트(#app-toast)와 겹치지 않게 위쪽에 띄운다.
@@ -240,8 +240,8 @@ Object.assign(App, {
     }));
     if (started) {
       App.showToastWhenFree(App._autoResumeKind === 'crash'
-        ? `비정상 종료 후 복구 — 세션 ${started}개 이어하기`
-        : `업데이트 완료 — 세션 ${started}개 이어하기`);
+        ? tr('비정상 종료 후 복구 — 세션 {n}개 이어하기', { n: started })
+        : tr('업데이트 완료 — 세션 {n}개 이어하기', { n: started }));
     }
   },
 
@@ -278,15 +278,15 @@ Object.assign(App, {
     const targets = UpdateCore.quitTargets(payload && payload.sessions, App.state.sessions, App.state.drafts, paused);
     if (!targets.length) { void ta.confirmQuit(); return; }
     const items = targets.slice(0, 8).map((t) =>
-      `<li>${escapeHtml(t.title || '')}${t.queued ? ' <span style="color:var(--fg-dim)">(예약 프롬프트 남음)</span>' : ''}</li>`).join('');
-    const more = targets.length > 8 ? `<li style="color:var(--fg-dim)">외 ${targets.length - 8}개</li>` : '';
+      `<li>${escapeHtml(t.title || '')}${t.queued ? ' <span style="color:var(--fg-dim)">(' + tr('예약 프롬프트 남음') + ')</span>' : ''}</li>`).join('');
+    const more = targets.length > 8 ? `<li style="color:var(--fg-dim)">${tr('외 {n}개', { n: targets.length - 8 })}</li>` : '';
     App.modal(`
-      <h3>작업 중인 세션 ${targets.length}개가 중단됩니다</h3>
+      <h3>${tr('작업 중인 세션 {n}개가 중단됩니다', { n: targets.length })}</h3>
       <ul class="quit-list">${items}${more}</ul>
-      <p style="color:var(--fg-dim);line-height:1.6">종료해도 세션 배치는 다음 실행에서 복원됩니다. (5초 안에 다시 종료하면 묻지 않고 종료합니다)</p>
+      <p style="color:var(--fg-dim);line-height:1.6">${tr('종료해도 세션 배치는 다음 실행에서 복원됩니다. (5초 안에 다시 종료하면 묻지 않고 종료합니다)')}</p>
       <div class="modal-actions">
-        <button id="m-cancel">취소</button>
-        <button id="m-quit" class="danger">종료</button>
+        <button id="m-cancel">${tr('취소')}</button>
+        <button id="m-quit" class="danger">${tr('종료')}</button>
       </div>`,
       (el, close) => {
         el.querySelector('#m-cancel').onclick = close;

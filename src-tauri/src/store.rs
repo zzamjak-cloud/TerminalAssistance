@@ -1,4 +1,5 @@
 // 프로젝트·프리셋·설정을 앱 설정 디렉토리의 ta-config.json 에 영속화하는 저장소
+use crate::i18n::trf;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -360,8 +361,8 @@ impl Store {
         // 원자적 저장: 임시 파일에 완성한 뒤 rename — 저장 도중 크래시로 인한 설정 파일 손상 방지
         let json = serde_json::to_string_pretty(&self.data).map_err(|e| e.to_string())?;
         let tmp = self.file.with_extension("json.tmp");
-        fs::write(&tmp, json).map_err(|e| format!("설정 저장 실패: {}", e))?;
-        fs::rename(&tmp, &self.file).map_err(|e| format!("설정 저장 실패: {}", e))
+        fs::write(&tmp, json).map_err(|e| trf("설정 저장 실패: {e}", &[("e", &e)]))?;
+        fs::rename(&tmp, &self.file).map_err(|e| trf("설정 저장 실패: {e}", &[("e", &e)]))
     }
 }
 

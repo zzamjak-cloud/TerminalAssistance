@@ -5,6 +5,7 @@
 // 2) ~/.codex/sessions/<년>/<월>/<일>/rollout-*.jsonl 의 마지막 token_count 이벤트의 rate_limits:
 //    코덱스가 실행 중이면 API 캐시보다 최신일 수 있고, API 가 실패할 때 대체값이 된다.
 // 둘 다 읽기 전용 — 토큰 갱신은 코덱스 본체 담당이고 코덱스 저장소를 건드리지 않는다.
+use crate::i18n::tr;
 use crate::util::plock;
 use serde::Serialize;
 use std::fs;
@@ -472,7 +473,7 @@ pub async fn list_codex_sessions(cwd: String) -> Vec<CodexSession> {
         if !same_cwd(&file_cwd, &cwd) {
             continue;
         }
-        let preview = extract_codex_preview(&path).unwrap_or_else(|| "대화 내용 없음".to_string());
+        let preview = extract_codex_preview(&path).unwrap_or_else(|| tr("대화 내용 없음").to_string());
         out.push(CodexSession {
             id,
             mtime_ms,
@@ -548,7 +549,7 @@ fn codex_line_msgs(v: &serde_json::Value, out: &mut Vec<crate::claude::ChatMsg>)
                 .get("name")
                 .or_else(|| p.get("namespace"))
                 .and_then(|x| x.as_str())
-                .unwrap_or("도구");
+                .unwrap_or(tr("도구"));
             let hint = codex_args_hint(p);
             let text = if hint.is_empty() {
                 name.to_string()

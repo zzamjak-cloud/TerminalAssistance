@@ -4,7 +4,7 @@
 // 정렬 우선순위 — 내가 개입해야 하는 세션이 항상 먼저 온다 (이 뷰의 존재 이유)
 const DASH_STATUS_RANK = { waiting: 0, done: 1, running: 2, idle: 3, exited: 4 };
 
-const DASH_STATUS_TEXT = { idle: '대기중', running: '진행중', waiting: '허가 대기', done: '완료', exited: '종료됨' };
+const DASH_STATUS_TEXT = { idle: tr('대기중'), running: tr('진행중'), waiting: tr('허가 대기'), done: tr('완료'), exited: tr('종료됨') };
 
 // 그룹 요약 칩에 세는 순서 — 급한 상태부터
 const DASH_CHIP_ORDER = ['waiting', 'done', 'running', 'idle', 'exited'];
@@ -15,9 +15,9 @@ function dashboardStatusRank(status) {
 }
 
 const DASH_SORTS = [
-  { id: 'status', label: '상태' },
-  { id: 'project', label: '프로젝트' },
-  { id: 'activity', label: '최근 활동' }
+  { id: 'status', label: tr('상태') },
+  { id: 'project', label: tr('프로젝트') },
+  { id: 'activity', label: tr('최근 활동') }
 ];
 
 // 표시 순서를 계산한다. 렌더는 이 순서의 인덱스를 CSS order 로 적용하므로
@@ -73,17 +73,17 @@ function sortGroupsForDashboard(groups, mode, ctx) {
 // 진행 시간 표기 — 1분 미만은 초, 그 이상은 분:초
 function formatRunElapsed(ms) {
   const total = Math.max(0, Math.round(ms / 1000));
-  if (total < 60) return total + '초';
+  if (total < 60) return tr('{n}초', { n: total });
   return Math.floor(total / 60) + ':' + String(total % 60).padStart(2, '0');
 }
 
 // 마지막 활동 표기 — 초 단위까지 보여 줄 이유가 없다 (매초 글자가 바뀌면 눈만 피로하다)
 function formatSinceChange(nowMs, atMs) {
   const sec = Math.max(0, Math.round((nowMs - atMs) / 1000));
-  if (sec < 45) return '방금';
-  if (sec < 3600) return Math.max(1, Math.round(sec / 60)) + '분 전';
-  if (sec < 86400) return Math.round(sec / 3600) + '시간 전';
-  return Math.round(sec / 86400) + '일 전';
+  if (sec < 45) return tr('방금');
+  if (sec < 3600) return tr('{n}분 전', { n: Math.max(1, Math.round(sec / 60)) });
+  if (sec < 86400) return tr('{n}시간 전', { n: Math.round(sec / 3600) });
+  return tr('{n}일 전', { n: Math.round(sec / 86400) });
 }
 
 // 세션 집합·소속·프로젝트 표기가 바뀌었는지 판별하는 서명.

@@ -36,7 +36,7 @@ Object.assign(App, {
       el.textContent = '';
       const e = document.createElement('div');
       e.className = 'prompt-empty';
-      e.textContent = '세션을 열면 해당 경로에서 진행했던 Claude/Codex 세션 기록이 표시됩니다.';
+      e.textContent = tr('세션을 열면 해당 경로에서 진행했던 Claude/Codex 세션 기록이 표시됩니다.');
       el.appendChild(e);
       return;
     }
@@ -60,7 +60,7 @@ Object.assign(App, {
     if (!cached.items.length) {
       const e = document.createElement('div');
       e.className = 'prompt-empty';
-      e.textContent = '이 경로에 저장된 Claude/Codex 세션 기록이 없습니다.';
+      e.textContent = tr('이 경로에 저장된 Claude/Codex 세션 기록이 없습니다.');
       el.appendChild(e);
       return;
     }
@@ -74,7 +74,7 @@ Object.assign(App, {
       text.className = 'cs-text';
       text.textContent = it.preview;
       row.title = it.preview + '\n\n' + new Date(it.mtimeMs).toLocaleString()
-        + '\n클릭하면 저장된 대화 내용을 보여줍니다.';
+        + '\n' + tr('클릭하면 저장된 대화 내용을 보여줍니다.');
       row.onclick = () => App.showSessionHistoryPopup(it);
       row.append(time, text);
       el.appendChild(row);
@@ -95,12 +95,12 @@ Object.assign(App, {
       // 실패 = 빈 내용
     }
     App.modal(`
-      <h3>${label} 세션 기록</h3>
+      <h3>${tr('{label} 세션 기록', { label })}</h3>
       <div class="modal-sub"></div>
       <div class="cv-log"></div>
       <div class="modal-actions">
-        <button id="m-resume">새 터미널에서 이어서 진행</button>
-        <button id="m-close">닫기</button>
+        <button id="m-resume">${tr('새 터미널에서 이어서 진행')}</button>
+        <button id="m-close">${tr('닫기')}</button>
       </div>`,
       (m, close) => {
         m.querySelector('.modal-sub').textContent =
@@ -109,7 +109,7 @@ Object.assign(App, {
         if (!msgs.length) {
           const e = document.createElement('div');
           e.className = 'prompt-empty';
-          e.textContent = '표시할 대화 내용이 없습니다.';
+          e.textContent = tr('표시할 대화 내용이 없습니다.');
           log.appendChild(e);
         }
         for (const msg of msgs) {

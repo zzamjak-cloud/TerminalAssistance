@@ -1,4 +1,5 @@
 // 원격 인증 — 1회용 페어링 코드, 기기 토큰(해시만 저장), Host/Origin 검사, 바인드 주소 분류
+use crate::i18n::tr;
 use crate::store::RemoteDevice;
 use sha2::{Digest, Sha256};
 use std::net::IpAddr;
@@ -246,28 +247,28 @@ pub fn bind_warning(ip: &IpAddr) -> Option<String> {
     }
     if ip.is_unspecified() {
         return Some(
-            "⚠ 모든 네트워크 인터페이스에 공개됩니다. 같은 네트워크(공용 Wi-Fi 포함)나 인터넷의 누구나 \
-             접속을 시도할 수 있고, 통신은 암호화되지 않은 HTTP 입니다. Tailscale IP 바인드를 권장합니다."
+            tr("⚠ 모든 네트워크 인터페이스에 공개됩니다. 같은 네트워크(공용 Wi-Fi 포함)나 인터넷의 누구나 \
+             접속을 시도할 수 있고, 통신은 암호화되지 않은 HTTP 입니다. Tailscale IP 바인드를 권장합니다.")
                 .into(),
         );
     }
     if is_cgnat(ip) {
         return Some(
-            "Tailscale(100.64/10) 대역 주소입니다. tailnet 안의 기기만 접근할 수 있고 전송은 Tailscale 이 \
-             암호화합니다. 서버 자체는 HTTP 평문입니다."
+            tr("Tailscale(100.64/10) 대역 주소입니다. tailnet 안의 기기만 접근할 수 있고 전송은 Tailscale 이 \
+             암호화합니다. 서버 자체는 HTTP 평문입니다.")
                 .into(),
         );
     }
     if is_private(ip) {
         return Some(
-            "사설 네트워크(LAN) 주소입니다. 같은 네트워크의 기기가 접속을 시도할 수 있고, 통신은 \
-             암호화되지 않은 HTTP 라 같은 망에서 엿볼 수 있습니다."
+            tr("사설 네트워크(LAN) 주소입니다. 같은 네트워크의 기기가 접속을 시도할 수 있고, 통신은 \
+             암호화되지 않은 HTTP 라 같은 망에서 엿볼 수 있습니다.")
                 .into(),
         );
     }
     Some(
-        "⚠ 공인 IP 입니다. 인터넷 어디서나 접속을 시도할 수 있고 통신은 암호화되지 않습니다. \
-         사용을 권장하지 않습니다 — Tailscale IP 바인드를 쓰세요."
+        tr("⚠ 공인 IP 입니다. 인터넷 어디서나 접속을 시도할 수 있고 통신은 암호화되지 않습니다. \
+         사용을 권장하지 않습니다 — Tailscale IP 바인드를 쓰세요.")
             .into(),
     )
 }

@@ -10,6 +10,11 @@ pub fn lookup(path: &str) -> Option<(&'static [u8], &'static str)> {
             "text/html; charset=utf-8",
         ),
         "/boot-guard.js" => (include_bytes!("../../../src/mobile/boot-guard.js").as_slice(), JS),
+        "/i18n.js" => (include_bytes!("../../../src/renderer/i18n.js").as_slice(), JS),
+        "/en-shared.js" => {
+            (include_bytes!("../../../src/renderer/i18n/en-shared.js").as_slice(), JS)
+        }
+        "/en-mobile.js" => (include_bytes!("../../../src/mobile/en-mobile.js").as_slice(), JS),
         "/mobile.css" => (include_bytes!("../../../src/mobile/mobile.css").as_slice(), CSS),
         "/mobile.js" => (include_bytes!("../../../src/mobile/mobile.js").as_slice(), JS),
         "/remote-core.js" => (include_bytes!("../../../src/mobile/remote-core.js").as_slice(), JS),

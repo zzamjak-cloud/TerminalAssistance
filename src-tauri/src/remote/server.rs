@@ -1,5 +1,6 @@
 // 원격 HTTP/WebSocket 서버 (axum). 앱 상태 접근은 Backend 트레잇으로 추상화해
 // Tauri 없이도 라우트·인증·WS 프로토콜을 테스트할 수 있게 한다
+use crate::i18n::trf;
 use super::auth::{self, PairCheck, Pairing};
 use crate::pty::{PtyEvent, RemoteChunk, RemoteSub, SessionInfo};
 use crate::store::RemoteDevice;
@@ -649,7 +650,7 @@ async fn run_ws_conn(
                                 .await
                         } else if ctx.backend.sessions().len() >= MAX_SESSIONS {
                             // 빠른 거절용 사전 검사 — 최종 판정은 생성 경로의 직렬화된 검사
-                            let msg = format!("세션이 너무 많습니다 (최대 {}개)", MAX_SESSIONS);
+                            let msg = trf("세션이 너무 많습니다 (최대 {MAX_SESSIONS}개)", &[("MAX_SESSIONS", &MAX_SESSIONS)]);
                             send_json(&mut socket, json!({ "t": "error", "msg": msg, "reqId": req_id })).await
                         } else {
                             creating = true;

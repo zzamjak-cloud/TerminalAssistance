@@ -21,9 +21,9 @@ function describeSkippedSessions(skipped) {
     else byReason.other.push(s.title || folderName(s.cwd));
   }
   const parts = [];
-  if (byReason.project.length) parts.push(`프로젝트가 삭제됨 ${byReason.project.length}개`);
-  if (byReason.cwd.length) parts.push(`작업 폴더가 없어짐 ${byReason.cwd.length}개 (${byReason.cwd.slice(0, 2).join(', ')}${byReason.cwd.length > 2 ? ' 외' : ''})`);
-  if (byReason.other.length) parts.push(`시작 실패 ${byReason.other.length}개`);
+  if (byReason.project.length) parts.push(tr('프로젝트가 삭제됨 {n}개', { n: byReason.project.length }));
+  if (byReason.cwd.length) parts.push(tr('작업 폴더가 없어짐 {n}개 ({names})', { n: byReason.cwd.length, names: byReason.cwd.slice(0, 2).join(', ') + (byReason.cwd.length > 2 ? tr(' 외') : '') }));
+  if (byReason.other.length) parts.push(tr('시작 실패 {n}개', { n: byReason.other.length }));
   return parts.join(' · ');
 }
 
@@ -46,7 +46,7 @@ Object.assign(App, {
     if (!result || result.alreadyRunning) return;
     const skippedText = describeSkippedSessions(result.skipped);
     if (skippedText) {
-      App.showToast(`⚠ 복원하지 못한 세션이 있습니다 — ${skippedText}`, 9000);
+      App.showToast(tr('⚠ 복원하지 못한 세션이 있습니다 — {text}', { text: skippedText }), 9000);
     }
     // '복원됨' 표시는 실제 키 입력으로만 걷는다.
     // term.onData 는 셸 시작 출력에 대한 터미널 자동 응답(커서 위치 보고 등)도 실어 나르므로
@@ -144,13 +144,13 @@ Object.assign(App, {
     // 둘째 줄 = 마지막 실행 요청 (비동기로 채운다 — 배너 표시를 지연시키지 않는다)
     const last = document.createElement('div');
     last.className = 'rb-last loading';
-    last.textContent = '마지막 요청 불러오는 중…';
+    last.textContent = tr('마지막 요청 불러오는 중…');
 
     body.append(meta, last);
 
     const go = document.createElement('button');
     go.className = 'rb-go';
-    go.textContent = '이어서 하기';
+    go.textContent = tr('이어서 하기');
     go.onclick = () => {
       App.dismissResumeBanner(sessionId);
       App.resumeSessionHistory(item, { sessionId });
@@ -159,7 +159,7 @@ Object.assign(App, {
     const close = document.createElement('button');
     close.className = 'rb-close';
     close.textContent = '✕';
-    close.title = '닫기';
+    close.title = tr('닫기');
     close.onclick = () => App.dismissResumeBanner(sessionId);
 
     bar.append(body, go, close);
@@ -175,7 +175,7 @@ Object.assign(App, {
         last.remove(); // 찾지 못하면 빈 줄을 남기지 않는다
         return;
       }
-      last.textContent = '마지막 요청 · ' + text.replace(/\s+/g, ' ');
+      last.textContent = tr('마지막 요청 · {text}', { text: text.replace(/\s+/g, ' ') });
       last.title = text;
     });
   },

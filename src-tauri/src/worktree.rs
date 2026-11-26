@@ -1,6 +1,7 @@
 // git 워크트리 런처 — 같은 저장소를 브랜치별 폴더로 펼쳐 AI 에이전트를 병렬로 돌리기 위한 백엔드.
 // 앱은 워크트리를 "부모 프로젝트에 종속된 프로젝트"로 등록만 하고, 실제 소유는 git 이 한다.
 // 여기서는 생성 모달에 필요한 저장소 정보 조회 / 생성 / 제거 전 안전 검사 / 제거만 담당한다.
+use crate::i18n::{tr, trf};
 use crate::explorer::{git_cmd, git_cmd_full};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -218,20 +219,20 @@ pub async fn worktree_add(
     let branch = branch.trim().to_string();
     let path = path.trim().to_string();
     if branch.is_empty() {
-        return Err("브랜치 이름을 입력하세요".into());
+        return Err(tr("브랜치 이름을 입력하세요").into());
     }
     if path.is_empty() {
-        return Err("워크트리 경로를 입력하세요".into());
+        return Err(tr("워크트리 경로를 입력하세요").into());
     }
     let target = Path::new(&path);
     if target.exists() {
-        return Err(format!("이미 존재하는 경로입니다: {path}"));
+        return Err(trf("이미 존재하는 경로입니다: {path}", &[("path", &path)]));
     }
     if let Some(parent) = target.parent() {
         if !parent.exists() {
-            return Err(format!(
-                "상위 폴더가 없습니다: {}",
-                parent.to_string_lossy()
+            return Err(trf(
+                "상위 폴더가 없습니다: {dir}",
+                &[("dir", &parent.to_string_lossy())],
             ));
         }
     }

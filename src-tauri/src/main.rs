@@ -9,6 +9,7 @@ mod context;
 mod crash;
 mod explorer;
 mod hooks;
+mod i18n;
 mod images;
 #[cfg(target_os = "macos")]
 mod notify_macos;
@@ -21,6 +22,7 @@ mod store;
 mod util;
 mod worktree;
 
+use crate::i18n::{tr, trf};
 use pty::PtyManager;
 use serde_json::json;
 use std::fs;
@@ -153,7 +155,7 @@ fn update_project(
 ) -> Result<(), String> {
     let mut s = plock(&store);
     let Some(p) = s.data.projects.iter_mut().find(|p| p.id == id) else {
-        return Err("프로젝트를 찾을 수 없습니다".into());
+        return Err(tr("프로젝트를 찾을 수 없습니다").into());
     };
     if let Some(v) = name {
         p.name = v;
@@ -242,7 +244,7 @@ async fn pick_font(app: AppHandle) -> Result<Option<String>, String> {
     let mut dlg = app
         .dialog()
         .file()
-        .add_filter("글꼴 파일", &["ttf", "otf", "ttc"]);
+        .add_filter(tr("글꼴 파일"), &["ttf", "otf", "ttc"]);
     if let Some(dir) = system_font_dir() {
         dlg = dlg.set_directory(dir);
     }
@@ -250,10 +252,10 @@ async fn pick_font(app: AppHandle) -> Result<Option<String>, String> {
         return Ok(None);
     };
     let data = std::fs::read(picked.to_string())
-        .map_err(|e| format!("글꼴 파일을 읽지 못했습니다: {e}"))?;
+        .map_err(|e| trf("글꼴 파일을 읽지 못했습니다: {e}", &[("e", &e)]))?;
     font_family_name(&data)
         .map(Some)
-        .ok_or_else(|| "글꼴 이름(name 테이블)을 읽지 못했습니다".to_string())
+        .ok_or_else(|| tr("글꼴 이름(name 테이블)을 읽지 못했습니다").to_string())
 }
 
 // ── 프리셋 ──
@@ -290,7 +292,7 @@ fn update_preset(
 ) -> Result<(), String> {
     let mut s = plock(&store);
     let Some(p) = s.data.presets.iter_mut().find(|p| p.id == id) else {
-        return Err("프리셋을 찾을 수 없습니다".into());
+        return Err(tr("프리셋을 찾을 수 없습니다").into());
     };
     if let Some(v) = label {
         p.label = v;
@@ -356,7 +358,7 @@ fn update_recipe(
 ) -> Result<(), String> {
     let mut s = plock(&store);
     let Some(r) = s.data.recipes.iter_mut().find(|r| r.id == id) else {
-        return Err("런치 레시피를 찾을 수 없습니다".into());
+        return Err(tr("런치 레시피를 찾을 수 없습니다").into());
     };
     if let Some(v) = label {
         r.label = v;
@@ -564,7 +566,7 @@ fn create_session_inner(
     let _create = plock(&CREATE_LOCK);
     if let Some(max) = remote_max {
         if ptys.list().len() >= max {
-            return Err(format!("세션이 너무 많습니다 (최대 {}개)", max));
+            return Err(trf("세션이 너무 많습니다 (최대 {max}개)", &[("max", &max)]));
         }
     }
     let (cwd, shell, classic) = {
@@ -611,7 +613,7 @@ fn rename_session(
 ) -> Result<(), String> {
     let t = title.trim();
     if t.is_empty() {
-        return Err("제목이 비어 있습니다".into());
+        return Err(tr("제목이 비어 있습니다").into());
     }
     ptys.rename(&id, t);
     save_session_layout(&store, &ptys);
@@ -792,7 +794,7 @@ async fn download_update(
     downloaded: State<'_, DownloadedUpdate>,
 ) -> Result<(), String> {
     // Update 는 Clone — 락을 await 너머로 쥐지 않고, 원본은 재시도·나중 설치를 위해 남긴다
-    let update = plock(&pending).clone().ok_or("보류 중인 업데이트가 없습니다")?;
+    let update = plock(&pending).clone().ok_or(tr("보류 중인 업데이트가 없습니다"))?;
     if plock(&downloaded).as_ref().is_some_and(|(v, _)| *v == update.version) {
         return Ok(());
     }
@@ -834,7 +836,7 @@ async fn prepare_and_install(
     store: &Mutex<Store>,
     ptys: &PtyManager,
 ) -> Result<(), String> {
-    let update = plock(pending).clone().ok_or("보류 중인 업데이트가 없습니다")?;
+    let update = plock(pending).clone().ok_or(tr("보류 중인 업데이트가 없습니다"))?;
     let ready = plock(downloaded)
         .take()
         .filter(|(v, _)| *v == update.version)
@@ -983,6 +985,17 @@ fn confirm_quit(app: AppHandle) {
 #[cfg(target_os = "macos")]
 const QUIT_MENU_ID: &str = "ta-quit";
 
+// 언어 전환 때 글자를 바꾸려고 종료 메뉴 항목을 붙잡아 둔다
+#[cfg(target_os = "macos")]
+static QUIT_MENU_ITEM: std::sync::Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+pub(crate) fn refresh_menu_language() {
+    if let Some(item) = plock(&QUIT_MENU_ITEM).as_ref() {
+        let _ = item.set_text(i18n::tr("Terminal Assistance 종료"));
+    }
+}
+
 /// 기본 macOS 메뉴와 같은 구성에서 Quit 만 교체한다. 편집 메뉴의 복사·붙여넣기 등은
 /// 웹뷰 터미널의 Cmd+C/V 가 이 항목들(NSResponder 셀렉터)로 동작하므로 반드시 유지한다
 #[cfg(target_os = "macos")]
@@ -996,7 +1009,8 @@ fn build_macos_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::W
         authors: app.config().bundle.publisher.clone().map(|p| vec![p]),
         ..Default::default()
     };
-    let quit = MenuItem::with_id(app, QUIT_MENU_ID, "Terminal Assistance 종료", true, Some("CmdOrCtrl+Q"))?;
+    let quit = MenuItem::with_id(app, QUIT_MENU_ID, i18n::tr("Terminal Assistance 종료"), true, Some("CmdOrCtrl+Q"))?;
+    *plock(&QUIT_MENU_ITEM) = Some(quit.clone());
     let app_menu = Submenu::with_items(
         app,
         pkg.name.clone(),
@@ -1334,6 +1348,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            i18n::set_ui_language,
             get_state,
             add_project,
             update_project,

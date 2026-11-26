@@ -55,7 +55,7 @@ Object.assign(App, {
     const base = (session && session.cwd) || App.claudeCwd() || '';
     let resolved = null;
     try { resolved = (await ta.resolveLinkCandidates(base, [split.path]))[0]; } catch (_) {}
-    if (!resolved) return App.showToast(`파일을 찾을 수 없습니다: ${split.path}`, 3000);
+    if (!resolved) return App.showToast(tr('파일을 찾을 수 없습니다: {path}', { path: split.path }), 3000);
     return App.openResolvedLink(resolved, line);
   },
 
@@ -77,7 +77,7 @@ Object.assign(App, {
       // 알려진 텍스트 형식인데 못 읽었다면 형식 문제가 아니라 파일 문제(없음/권한)다
       return App._previewUnsupported(path, name, String(e), isText);
     }
-    if (!isText && file.content.length === 0) return App._previewUnsupported(path, name, '내용이 비어 있습니다');
+    if (!isText && file.content.length === 0) return App._previewUnsupported(path, name, tr('내용이 비어 있습니다'));
 
     if (ext === 'md' || ext === 'markdown') return App._previewMarkdown(path, name, file);
     if (ext === 'json') return App._previewJson(path, name, file);
@@ -93,11 +93,11 @@ Object.assign(App, {
       <div class="modal-sub"></div>
       <div class="${bodyClass}"></div>
       <div class="modal-actions">
-        <button id="m-open-ext">외부 프로그램으로 열기</button>
+        <button id="m-open-ext">${tr('외부 프로그램으로 열기')}</button>
         <span style="flex:1"></span>
-        ${opts && opts.copy != null ? '<button id="m-copy">내용 복사</button>' : ''}
-        ${opts && opts.edit ? '<button id="m-edit" class="primary">편집</button>' : ''}
-        <button id="m-close">닫기</button>
+        ${opts && opts.copy != null ? `<button id="m-copy">${tr('내용 복사')}</button>` : ''}
+        ${opts && opts.edit ? `<button id="m-edit" class="primary">${tr('편집')}</button>` : ''}
+        <button id="m-close">${tr('닫기')}</button>
       </div>`,
       (m, close) => {
         App._modalIsPreview = true; // 스페이스 토글(다시 누르면 닫기)의 판별 플래그
@@ -111,11 +111,11 @@ Object.assign(App, {
         if (copy) copy.onclick = async () => {
           try {
             await navigator.clipboard.writeText(opts.copy);
-            copy.textContent = '복사됨 ✓';
+            copy.textContent = tr('복사됨 ✓');
           } catch (_) {
-            copy.textContent = '복사 실패';
+            copy.textContent = tr('복사 실패');
           }
-          setTimeout(() => { copy.textContent = '내용 복사'; }, 1500);
+          setTimeout(() => { copy.textContent = tr('내용 복사'); }, 1500);
         };
         fill(m.querySelector('.' + bodyClass.split(' ')[0]));
       }, { xl: true });
@@ -129,7 +129,7 @@ Object.assign(App, {
       if (kind !== 'img') el.controls = true;
       if (kind === 'img') {
         el.alt = name;
-        el.onerror = () => { body.textContent = '이미지를 표시할 수 없습니다.'; };
+        el.onerror = () => { body.textContent = tr('이미지를 표시할 수 없습니다.'); };
       }
       body.appendChild(el);
     });
@@ -139,7 +139,7 @@ Object.assign(App, {
     if (!file.truncated) return;
     const n = document.createElement('div');
     n.className = 'preview-trunc';
-    n.textContent = `파일이 커서 앞부분 2MB 만 표시합니다 (전체 ${(file.size / 1048576).toFixed(1)}MB)`;
+    n.textContent = tr('파일이 커서 앞부분 2MB 만 표시합니다 (전체 {size}MB)', { size: (file.size / 1048576).toFixed(1) });
     body.prepend(n);
   },
 
@@ -210,7 +210,7 @@ Object.assign(App, {
       const d = document.createElement('div');
       d.className = 'tree-empty';
       d.style.padding = '30px 10px';
-      d.textContent = (readFailed ? '파일을 열 수 없습니다. (' : '미리보기를 지원하지 않는 형식입니다. (') + reason + ')';
+      d.textContent = (readFailed ? tr('파일을 열 수 없습니다. ({reason})', { reason }) : tr('미리보기를 지원하지 않는 형식입니다. ({reason})', { reason }));
       body.appendChild(d);
     });
   }

@@ -372,8 +372,8 @@ function holdsControl(control, myDeviceId) {
 // 최적보기(제어권)가 나에게서 떠났을 때 알릴 문구 (null = 알릴 것 없음)
 function controlLostText(prev, next, myDeviceId) {
   if (!holdsControl(prev, myDeviceId) || holdsControl(next, myDeviceId)) return null;
-  if (next && next.holder) return '최적보기가 ' + (next.deviceName || '다른 기기') + '(으)로 넘어갔습니다';
-  return '최적보기가 해제되었습니다 (PC 에서 되찾음)';
+  if (next && next.holder) return tr('최적보기가 {name}(으)로 넘어갔습니다', { name: next.deviceName || tr('다른 기기') });
+  return tr('최적보기가 해제되었습니다 (PC 에서 되찾음)');
 }
 
 // ── 홈 화면 앱화 ──
@@ -404,7 +404,7 @@ function deviceNameFromUA(ua, maxTouchPoints) {
   const android = /Android[^;)]*;\s*([^;)]+?)(?:\s+Build|\))/.exec(s);
   if (android && android[1].trim().length > 1) return android[1].trim().slice(0, 40);
   if (/Android/.test(s)) return 'Android';
-  return '모바일 브라우저';
+  return tr('모바일 브라우저');
 }
 
 // ── 폰에서 열기 · 오프라인 ──
@@ -444,27 +444,27 @@ function vpnTipSteps(platform) {
   if (platform === 'android') {
     return [
       {
-        title: '상시 VPN (갤럭시 기준)',
+        title: tr('상시 VPN (갤럭시 기준)'),
         steps: [
-          { icon: '⚙️', text: '설정 → 연결' },
-          { icon: '🔗', text: '기타 연결 설정 → VPN' },
-          { icon: '🛡️', text: 'Tailscale 옆 ⚙ → 상시 VPN 켜기' }
+          { icon: '⚙️', text: tr('설정 → 연결') },
+          { icon: '🔗', text: tr('기타 연결 설정 → VPN') },
+          { icon: '🛡️', text: tr('Tailscale 옆 ⚙ → 상시 VPN 켜기') }
         ]
       },
       {
-        title: '배터리 제한 해제',
+        title: tr('배터리 제한 해제'),
         steps: [
-          { icon: '📱', text: '설정 → 애플리케이션 → Tailscale' },
-          { icon: '🔋', text: '배터리 → 제한 없음' }
+          { icon: '📱', text: tr('설정 → 애플리케이션 → Tailscale') },
+          { icon: '🔋', text: tr('배터리 → 제한 없음') }
         ]
       },
       {
         // 삼성 월렛(삼성페이)은 VPN 이 켜져 있으면 결제를 막는다 — Tailscale 에서 월렛만 제외하면 둘 다 쓸 수 있다
-        title: '삼성 월렛(삼성페이)이 VPN 해제를 요구하면',
+        title: tr('삼성 월렛(삼성페이)이 VPN 해제를 요구하면'),
         steps: [
-          { icon: '🛡️', text: 'Tailscale 앱 → 왼쪽 위 프로필 아이콘' },
+          { icon: '🛡️', text: tr('Tailscale 앱 → 왼쪽 위 프로필 아이콘') },
           { icon: '🔀', text: 'App-based split tunneling' },
-          { icon: '✅', text: '삼성 월렛·삼성 패스 체크 (한글 앱은 목록 맨 아래, 검색은 spay)' }
+          { icon: '✅', text: tr('삼성 월렛·삼성 패스 체크 (한글 앱은 목록 맨 아래, 검색은 spay)') }
         ]
       }
     ];
@@ -474,8 +474,8 @@ function vpnTipSteps(platform) {
       {
         title: 'VPN On Demand',
         steps: [
-          { icon: '🛡️', text: 'Tailscale 앱 열기 → 설정' },
-          { icon: '🔁', text: 'VPN On Demand 켜기' }
+          { icon: '🛡️', text: tr('Tailscale 앱 열기 → 설정') },
+          { icon: '🔁', text: tr('VPN On Demand 켜기') }
         ]
       }
     ];

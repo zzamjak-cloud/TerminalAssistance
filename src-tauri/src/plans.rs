@@ -5,6 +5,7 @@
 //  - Claude Code 가 오래된 jsonl 을 정리해도, 한 번 추출된 계획은 앱 데이터
 //    (plans/<경로 변환>.json)에 남아 이후에도 열람·이어서 진행의 근거가 된다.
 //  - 스캔은 파일별 오프셋 기반 증분 — 첫 호출 이후에는 새로 추가된 기록만 읽는다.
+use crate::i18n::{tr, trf};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -147,7 +148,7 @@ fn plan_title(text: &str) -> String {
             return t.chars().take(TITLE_CAP).collect();
         }
     }
-    "계획 문서".into()
+    tr("계획 문서").into()
 }
 
 fn content_hash(text: &str) -> String {
@@ -201,11 +202,11 @@ fn plan_meta(p: &PlanDoc) -> PlanMeta {
 }
 
 fn save_store(path: &Path, store: &PlanStore) -> Result<(), String> {
-    let json = serde_json::to_string(store).map_err(|e| format!("계획 저장 직렬화 실패: {}", e))?;
+    let json = serde_json::to_string(store).map_err(|e| trf("계획 저장 직렬화 실패: {e}", &[("e", &e)]))?;
     // 원자적 저장 — 쓰다 죽어도 기존 저장소가 깨지지 않게
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|e| format!("계획 임시 파일 저장 실패: {}", e))?;
-    fs::rename(&tmp, path).map_err(|e| format!("계획 저장 반영 실패: {}", e))
+    fs::write(&tmp, json).map_err(|e| trf("계획 임시 파일 저장 실패: {e}", &[("e", &e)]))?;
+    fs::rename(&tmp, path).map_err(|e| trf("계획 저장 반영 실패: {e}", &[("e", &e)]))
 }
 
 fn normalize_manual_text(text: &str) -> String {
@@ -227,7 +228,7 @@ fn insert_manual_plan(
 ) -> Result<PlanMeta, String> {
     let normalized = normalize_manual_text(&text);
     if normalized.chars().count() < MANUAL_MIN_TEXT_LEN {
-        return Err("계획으로 저장할 선택 영역이 너무 짧습니다".into());
+        return Err(tr("계획으로 저장할 선택 영역이 너무 짧습니다").into());
     }
     let capped: String = normalized.chars().take(TEXT_CAP).collect();
     if let Some(index) = store.plans.iter().position(|p| p.text == capped) {
@@ -421,39 +422,39 @@ fn scan_plan_dir(
 
 fn read_registered_plan(cwd: &Path, path: &Path) -> Result<(PlanDoc, (u64, u64)), String> {
     let link_metadata = fs::symlink_metadata(path)
-        .map_err(|e| format!("계획 파일 정보를 읽을 수 없습니다: {e}"))?;
+        .map_err(|e| trf("계획 파일 정보를 읽을 수 없습니다: {e}", &[("e", &e)]))?;
     if link_metadata.file_type().is_symlink() {
-        return Err("심볼릭 링크는 계획 문서로 등록할 수 없습니다".into());
+        return Err(tr("심볼릭 링크는 계획 문서로 등록할 수 없습니다").into());
     }
     let canonical =
-        fs::canonicalize(path).map_err(|e| format!("계획 파일을 열 수 없습니다: {e}"))?;
+        fs::canonicalize(path).map_err(|e| trf("계획 파일을 열 수 없습니다: {e}", &[("e", &e)]))?;
     let rel = canonical
         .strip_prefix(cwd)
-        .map_err(|_| "프로젝트 밖의 파일은 등록할 수 없습니다".to_string())?;
+        .map_err(|_| tr("프로젝트 밖의 파일은 등록할 수 없습니다").to_string())?;
     let metadata =
-        fs::metadata(&canonical).map_err(|e| format!("계획 파일 정보를 읽을 수 없습니다: {e}"))?;
+        fs::metadata(&canonical).map_err(|e| trf("계획 파일 정보를 읽을 수 없습니다: {e}", &[("e", &e)]))?;
     if !metadata.is_file() {
-        return Err("일반 파일만 계획 문서로 등록할 수 있습니다".into());
+        return Err(tr("일반 파일만 계획 문서로 등록할 수 있습니다").into());
     }
     let is_markdown = canonical
         .extension()
         .and_then(|value| value.to_str())
         .is_some_and(|value| value.eq_ignore_ascii_case("md"));
     if !is_markdown {
-        return Err("Markdown(.md) 파일만 계획 문서로 등록할 수 있습니다".into());
+        return Err(tr("Markdown(.md) 파일만 계획 문서로 등록할 수 있습니다").into());
     }
     if metadata.len() > PLAN_FILE_MAX_BYTES {
-        return Err(format!(
-            "계획 파일이 너무 큽니다 (최대 {} KiB)",
-            PLAN_FILE_MAX_BYTES / 1024
+        return Err(trf(
+            "계획 파일이 너무 큽니다 (최대 {kib} KiB)",
+            &[("kib", &(PLAN_FILE_MAX_BYTES / 1024))],
         ));
     }
-    let bytes = fs::read(&canonical).map_err(|e| format!("계획 파일을 읽지 못했습니다: {e}"))?;
+    let bytes = fs::read(&canonical).map_err(|e| trf("계획 파일을 읽지 못했습니다: {e}", &[("e", &e)]))?;
     let raw =
-        String::from_utf8(bytes).map_err(|_| "계획 파일이 UTF-8 텍스트가 아닙니다".to_string())?;
+        String::from_utf8(bytes).map_err(|_| tr("계획 파일이 UTF-8 텍스트가 아닙니다").to_string())?;
     let text = raw.trim();
     if text.chars().count() < MIN_TEXT_LEN {
-        return Err("계획 파일의 내용이 비어 있거나 너무 짧습니다".into());
+        return Err(tr("계획 파일의 내용이 비어 있거나 너무 짧습니다").into());
     }
     let capped: String = text.chars().take(TEXT_CAP).collect();
     let rel = rel.to_string_lossy().replace('\\', "/");
@@ -559,13 +560,13 @@ fn valid_plan_id(id: &str) -> bool {
 /// tombstone 대상 계획을 저장 목록에서 제거한다. 파일 원본은 절대 건드리지 않는다.
 fn dismiss_plan_in_store(store: &mut PlanStore, id: &str) -> Result<(), String> {
     if !valid_plan_id(id) {
-        return Err("계획 문서 식별자가 올바르지 않습니다".into());
+        return Err(tr("계획 문서 식별자가 올바르지 않습니다").into());
     }
     let Some(index) = store.plans.iter().position(|doc| doc.id == id) else {
-        return Err("제거할 계획 문서를 찾을 수 없습니다".into());
+        return Err(tr("제거할 계획 문서를 찾을 수 없습니다").into());
     };
     if store.plans[index].kind != PLAN_KIND {
-        return Err("계획 문서만 목록에서 제거할 수 있습니다".into());
+        return Err(tr("계획 문서만 목록에서 제거할 수 있습니다").into());
     }
     let doc = store.plans.remove(index);
     store.dismissed_ids.insert(doc.id);
@@ -587,11 +588,11 @@ fn filter_dismissed_plans(store: &mut PlanStore) -> bool {
 
 fn validated_cwd(cwd: &str) -> Result<PathBuf, String> {
     if cwd.trim().is_empty() || cwd.len() > 4096 {
-        return Err("프로젝트 경로가 올바르지 않습니다".into());
+        return Err(tr("프로젝트 경로가 올바르지 않습니다").into());
     }
-    let path = fs::canonicalize(cwd).map_err(|e| format!("프로젝트 경로를 열 수 없습니다: {e}"))?;
+    let path = fs::canonicalize(cwd).map_err(|e| trf("프로젝트 경로를 열 수 없습니다: {e}", &[("e", &e)]))?;
     if !path.is_dir() {
-        return Err("프로젝트 경로가 디렉터리가 아닙니다".into());
+        return Err(tr("프로젝트 경로가 디렉터리가 아닙니다").into());
     }
     Ok(path)
 }
@@ -607,12 +608,12 @@ fn memo_dir(cwd: &str, create: bool) -> Result<Option<(PathBuf, PathBuf)>, Strin
                 return Ok(None);
             }
             fs::create_dir(&candidate)
-                .map_err(|e| format!("메모 디렉터리를 만들지 못했습니다: {e}"))?;
+                .map_err(|e| trf("메모 디렉터리를 만들지 못했습니다: {e}", &[("e", &e)]))?;
         }
         let canonical = fs::canonicalize(&candidate)
-            .map_err(|e| format!("메모 디렉터리를 확인하지 못했습니다: {e}"))?;
+            .map_err(|e| trf("메모 디렉터리를 확인하지 못했습니다: {e}", &[("e", &e)]))?;
         if !canonical.starts_with(&root) || !canonical.is_dir() {
-            return Err("메모 디렉터리가 프로젝트 밖을 가리킵니다".into());
+            return Err(tr("메모 디렉터리가 프로젝트 밖을 가리킵니다").into());
         }
         current = canonical;
     }
@@ -636,24 +637,24 @@ fn normalize_memo_title(title: &str) -> Result<String, String> {
         .to_string();
     let count = normalized.chars().count();
     if count == 0 {
-        return Err("메모 제목을 입력해 주세요".into());
+        return Err(tr("메모 제목을 입력해 주세요").into());
     }
     if count > TITLE_CAP {
-        return Err(format!("메모 제목은 {TITLE_CAP}자 이하여야 합니다"));
+        return Err(trf("메모 제목은 {TITLE_CAP}자 이하여야 합니다", &[("TITLE_CAP", &TITLE_CAP)]));
     }
     if normalized.chars().any(char::is_control) {
-        return Err("메모 제목에 제어 문자를 사용할 수 없습니다".into());
+        return Err(tr("메모 제목에 제어 문자를 사용할 수 없습니다").into());
     }
     Ok(normalized)
 }
 
 fn normalize_memo_markdown(markdown: &str) -> Result<String, String> {
     if markdown.len() > MEMO_MARKDOWN_MAX_BYTES {
-        return Err("메모 본문이 너무 큽니다 (최대 1 MiB)".into());
+        return Err(tr("메모 본문이 너무 큽니다 (최대 1 MiB)").into());
     }
     let normalized = markdown.replace("\r\n", "\n").replace('\r', "\n");
     if normalized.trim().is_empty() {
-        return Err("메모 본문을 입력해 주세요".into());
+        return Err(tr("메모 본문을 입력해 주세요").into());
     }
     Ok(normalized)
 }
@@ -738,7 +739,7 @@ fn scan_memo_docs(cwd: &str) -> Result<Vec<(PlanDoc, PathBuf)>, String> {
     let Some((root, dir)) = memo_dir(cwd, false)? else {
         return Ok(Vec::new());
     };
-    let entries = fs::read_dir(&dir).map_err(|e| format!("메모 목록을 읽지 못했습니다: {e}"))?;
+    let entries = fs::read_dir(&dir).map_err(|e| trf("메모 목록을 읽지 못했습니다: {e}", &[("e", &e)]))?;
     let mut docs = Vec::new();
     // 비메모 파일 수와 순서 때문에 뒤쪽의 정상 메모가 list/get/delete에서 사라지면 안 된다.
     for entry in entries.flatten() {
@@ -814,7 +815,7 @@ fn atomic_write_memo(path: &Path, content: &str) -> Result<(), String> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| "메모 파일명이 올바르지 않습니다".to_string())?;
+        .ok_or_else(|| tr("메모 파일명이 올바르지 않습니다").to_string())?;
     let mut created = None;
     for _ in 0..MEMO_TEMP_RETRIES {
         match open_new_memo_temp(path, file_name, &crate::store::new_id()) {
@@ -823,11 +824,11 @@ fn atomic_write_memo(path: &Path, content: &str) -> Result<(), String> {
                 break;
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("메모 임시 파일 생성 실패: {error}")),
+            Err(error) => return Err(trf("메모 임시 파일 생성 실패: {error}", &[("error", &error)])),
         }
     }
     let Some((tmp, mut file)) = created else {
-        return Err("메모 임시 파일 이름 충돌이 반복되어 저장하지 못했습니다".into());
+        return Err(tr("메모 임시 파일 이름 충돌이 반복되어 저장하지 못했습니다").into());
     };
     if let Err(error) = file
         .write_all(content.as_bytes())
@@ -835,12 +836,12 @@ fn atomic_write_memo(path: &Path, content: &str) -> Result<(), String> {
     {
         drop(file);
         let _ = fs::remove_file(&tmp);
-        return Err(format!("메모 임시 파일 저장 실패: {error}"));
+        return Err(trf("메모 임시 파일 저장 실패: {error}", &[("error", &error)]));
     }
     drop(file);
     if let Err(error) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
-        return Err(format!("메모 저장 반영 실패: {error}"));
+        return Err(trf("메모 저장 반영 실패: {error}", &[("error", &error)]));
     }
     Ok(())
 }
@@ -856,7 +857,7 @@ fn create_memo_file(
     let markdown = normalize_memo_markdown(markdown)?;
     if let Some(id) = legacy_id {
         if !valid_memo_id(id) {
-            return Err("기존 메모 식별자가 올바르지 않습니다".into());
+            return Err(tr("기존 메모 식별자가 올바르지 않습니다").into());
         }
         if let Some((existing, _)) = scan_memo_docs(cwd)?
             .into_iter()
@@ -869,14 +870,14 @@ fn create_memo_file(
         .map(str::to_string)
         .unwrap_or_else(|| format!("memo-{}", crate::store::new_id()));
     if !valid_memo_id(&id) {
-        return Err("메모 식별자를 만들지 못했습니다".into());
+        return Err(tr("메모 식별자를 만들지 못했습니다").into());
     }
     let Some((root, dir)) = memo_dir(cwd, true)? else {
-        return Err("메모 디렉터리를 만들지 못했습니다".into());
+        return Err(tr("메모 디렉터리를 만들지 못했습니다").into());
     };
     let path = dir.join(safe_memo_filename(&title, &id));
     if path.exists() {
-        return Err("같은 메모 파일이 이미 존재합니다".into());
+        return Err(tr("같은 메모 파일이 이미 존재합니다").into());
     }
     let content = format!(
         "{}\n\n{}",
@@ -886,7 +887,7 @@ fn create_memo_file(
     atomic_write_memo(&path, &content)?;
     let rel = path
         .strip_prefix(&root)
-        .map_err(|_| "메모 경로가 프로젝트 밖입니다".to_string())?
+        .map_err(|_| tr("메모 경로가 프로젝트 밖입니다").to_string())?
         .to_string_lossy()
         .replace('\\', "/");
     Ok(plan_meta(&PlanDoc {
@@ -909,7 +910,7 @@ fn update_memo_file(
     timestamp: u64,
 ) -> Result<PlanMeta, String> {
     if !valid_memo_id(id) {
-        return Err("메모 식별자가 올바르지 않습니다".into());
+        return Err(tr("메모 식별자가 올바르지 않습니다").into());
     }
     let title = normalize_memo_title(title)?;
     let markdown = normalize_memo_markdown(markdown)?;
@@ -917,7 +918,7 @@ fn update_memo_file(
         .into_iter()
         .find(|(doc, _)| doc.id == id)
     else {
-        return Err("수정할 메모를 찾을 수 없습니다".into());
+        return Err(tr("수정할 메모를 찾을 수 없습니다").into());
     };
     // 파일명은 유지한다 — 제목이 바뀌어도 id 로 찾으므로 rename 위험을 감수할 이유가 없다.
     let content = format!(
@@ -940,18 +941,18 @@ fn update_memo_file(
 
 fn delete_memo_file(cwd: &str, id: &str) -> Result<(), String> {
     if !valid_memo_id(id) {
-        return Err("메모 식별자가 올바르지 않습니다".into());
+        return Err(tr("메모 식별자가 올바르지 않습니다").into());
     }
     let Some((doc, path)) = scan_memo_docs(cwd)?
         .into_iter()
         .find(|(doc, _)| doc.id == id)
     else {
-        return Err("삭제할 메모를 찾을 수 없습니다".into());
+        return Err(tr("삭제할 메모를 찾을 수 없습니다").into());
     };
     if doc.kind != MEMO_KIND {
-        return Err("메모 문서만 삭제할 수 있습니다".into());
+        return Err(tr("메모 문서만 삭제할 수 있습니다").into());
     }
-    fs::remove_file(path).map_err(|e| format!("메모를 삭제하지 못했습니다: {e}"))
+    fs::remove_file(path).map_err(|e| trf("메모를 삭제하지 못했습니다: {e}", &[("e", &e)]))
 }
 
 /// cwd 의 계획 문서 목록 (최신순). 호출 시 세션 기록의 새 구간을 증분 스캔해 저장소에 반영.
@@ -1095,7 +1096,7 @@ pub async fn add_plan_doc(
     text: String,
 ) -> Result<PlanMeta, String> {
     let spath =
-        store_path(&app, &cwd).ok_or_else(|| "계획 저장소 경로를 만들 수 없습니다".to_string())?;
+        store_path(&app, &cwd).ok_or_else(|| tr("계획 저장소 경로를 만들 수 없습니다").to_string())?;
     let mut store = load_store(&spath);
     let meta = insert_manual_plan(&mut store, session_id, text, now_ms())?;
     save_store(&spath, &store)?;
@@ -1117,7 +1118,7 @@ pub async fn register_plan_file(
         cwd_path.join(requested)
     };
     let spath =
-        store_path(&app, &cwd).ok_or_else(|| "계획 저장소 경로를 만들 수 없습니다".to_string())?;
+        store_path(&app, &cwd).ok_or_else(|| tr("계획 저장소 경로를 만들 수 없습니다").to_string())?;
     let mut store = load_store(&spath);
     let meta = register_plan_in_store(&cwd_path, &requested, &mut store)?;
     save_store(&spath, &store)?;
@@ -1132,10 +1133,10 @@ pub async fn dismiss_plan_doc(
     id: String,
 ) -> Result<(), String> {
     if !valid_plan_id(&id) {
-        return Err("계획 문서 식별자가 올바르지 않습니다".into());
+        return Err(tr("계획 문서 식별자가 올바르지 않습니다").into());
     }
     let spath =
-        store_path(&app, &cwd).ok_or_else(|| "계획 저장소 경로를 만들 수 없습니다".to_string())?;
+        store_path(&app, &cwd).ok_or_else(|| tr("계획 저장소 경로를 만들 수 없습니다").to_string())?;
     let mut store = load_store(&spath);
     if let Ok(cwd_path) = validated_cwd(&cwd) {
         let _ = refresh_registered_plans(&cwd_path, &mut store);
@@ -1146,7 +1147,7 @@ pub async fn dismiss_plan_doc(
             .iter()
             .any(|(doc, _)| doc.id == id)
     {
-        return Err("메모는 메모 삭제 기능을 사용해야 합니다".into());
+        return Err(tr("메모는 메모 삭제 기능을 사용해야 합니다").into());
     }
     dismiss_plan_in_store(&mut store, &id)?;
     save_store(&spath, &store)

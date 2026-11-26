@@ -53,9 +53,9 @@ const TerminalView = {
     input.rows = 3;
     input.spellcheck = false;
     input.disabled = true;
-    input.placeholder = '프롬프트 입력 (Enter 줄바꿈 · Cmd/Ctrl+Enter 전송 · Shift+Enter 예약)';
-    input.title = 'Cmd/Ctrl+J — 터미널에 치던 내용을 잘라 이 입력창으로 (다시 누르면 터미널로)';
-    input.setAttribute('aria-label', '터미널 프롬프트 입력');
+    input.placeholder = tr('프롬프트 입력 (Enter 줄바꿈 · Cmd/Ctrl+Enter 전송 · Shift+Enter 예약)');
+    input.title = tr('Cmd/Ctrl+J — 터미널에 치던 내용을 잘라 이 입력창으로 (다시 누르면 터미널로)');
+    input.setAttribute('aria-label', tr('터미널 프롬프트 입력'));
     const actions = document.createElement('div');
     actions.className = 'pane-prompt-actions';
     const mkBtn = (cls, text, title) => {
@@ -67,9 +67,9 @@ const TerminalView = {
       b.disabled = true;
       return b;
     };
-    const send = mkBtn('pp-send', '전송', '이 패널의 세션에 즉시 전송 (Cmd/Ctrl+Enter)');
-    const schedule = mkBtn('pp-schedule', '예약', '진행 중이면 완료 후 전송');
-    const fanout = mkBtn('pp-fanout', '일괄', '선택한 여러 세션에 즉시 전송');
+    const send = mkBtn('pp-send', tr('전송'), tr('이 패널의 세션에 즉시 전송 (Cmd/Ctrl+Enter)'));
+    const schedule = mkBtn('pp-schedule', tr('예약'), tr('진행 중이면 완료 후 전송'));
+    const fanout = mkBtn('pp-fanout', tr('일괄'), tr('선택한 여러 세션에 즉시 전송'));
     actions.append(send, schedule, fanout);
     compose.append(input, actions);
     root.append(list, compose);
@@ -1900,12 +1900,12 @@ const TerminalView = {
         const text = document.createElement('span');
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.textContent = '되찾기';
+        btn.textContent = tr('되찾기');
         btn.onclick = (e) => {
           e.stopPropagation();
           btn.disabled = true;
           ta.remoteReleaseControl(p.id)
-            .catch((err) => App.showToast('제어권 되찾기 실패: ' + err))
+            .catch((err) => App.showToast(tr('제어권 되찾기 실패: {err}', { err })))
             .finally(() => { btn.disabled = false; });
         };
         bar.append(text, btn);
@@ -2064,7 +2064,7 @@ const TerminalView = {
     if (!text) return false;
     try {
       await navigator.clipboard.writeText(text);
-      App.showToast('한 줄로 복사했습니다', 1500);
+      App.showToast(tr('한 줄로 복사했습니다'), 1500);
       return true;
     } catch (_) {
       return false;
@@ -2213,6 +2213,6 @@ const TerminalView = {
 
 // 원격 제어 배너 문구 — 기기 이름이 없으면 일반 명칭으로
 function remoteControlBannerText(p) {
-  const name = (p && p.deviceName) || '모바일 기기';
-  return `📱 ${name} 이 제어 중 (${p.cols}×${p.rows})`;
+  const name = (p && p.deviceName) || tr('모바일 기기');
+  return tr('📱 {name} 이 제어 중 ({cols}×{rows})', { name, cols: p.cols, rows: p.rows });
 }

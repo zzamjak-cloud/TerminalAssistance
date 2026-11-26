@@ -45,7 +45,7 @@ const UpdateCore = {
   },
 
   updateButtonLabel(busyCount) {
-    return busyCount > 0 ? `지금 업데이트 (${busyCount}개 중단 후 이어하기)` : '지금 업데이트';
+    return busyCount > 0 ? tr('지금 업데이트 ({n}개 중단 후 이어하기)', { n: busyCount }) : tr('지금 업데이트');
   },
 
   // 백엔드가 돌려준 이어하기 목록 중 실제로 복원된 세션만, 세션당 하나씩

@@ -189,9 +189,9 @@ Object.assign(App, {
         } else if (target && target.id === 'plan-panel') {
           // 문서 패널에서 처리한 드롭은 유효성 오류여도 터미널 paste로 절대 흘리지 않는다.
           if (isDir) {
-            App.showPlanDropFeedback('폴더는 계획 문서로 등록할 수 없습니다.', 'error');
+            App.showPlanDropFeedback(tr('폴더는 계획 문서로 등록할 수 없습니다.'), 'error');
           } else if (!/\.md$/i.test(name)) {
-            App.showPlanDropFeedback('Markdown(.md) 파일만 계획 문서로 등록할 수 있습니다.', 'error');
+            App.showPlanDropFeedback(tr('Markdown(.md) 파일만 계획 문서로 등록할 수 있습니다.'), 'error');
           } else {
             void App.registerPlanFile(absPath);
           }
@@ -364,10 +364,10 @@ Object.assign(App, {
     const title = document.getElementById('explorer-title');
     treeEl.textContent = '';
     if (!t.root) {
-      title.textContent = '탐색기';
+      title.textContent = tr('탐색기');
       const e = document.createElement('div');
       e.className = 'tree-empty';
-      e.textContent = '프로젝트 세션을 열면 해당 프로젝트의 파일 트리가 표시됩니다.';
+      e.textContent = tr('프로젝트 세션을 열면 해당 프로젝트의 파일 트리가 표시됩니다.');
       treeEl.appendChild(e);
       return;
     }
@@ -378,7 +378,7 @@ Object.assign(App, {
     if (!frag.childNodes.length) {
       const e = document.createElement('div');
       e.className = 'tree-empty';
-      e.textContent = '비어 있는 폴더입니다.';
+      e.textContent = tr('비어 있는 폴더입니다.');
       frag.appendChild(e);
     }
     treeEl.appendChild(frag);
@@ -428,12 +428,12 @@ Object.assign(App, {
         const badge = document.createElement('span');
         badge.className = 'git-badge';
         badge.textContent = st;
-        badge.title = { M: '수정됨', A: '추가됨(스테이지)', U: '미추적(새 파일)', D: '삭제됨', R: '이름 변경' }[st] || st;
+        badge.title = { M: tr('수정됨'), A: tr('추가됨(스테이지)'), U: tr('미추적(새 파일)'), D: tr('삭제됨'), R: tr('이름 변경') }[st] || st;
         row.appendChild(badge);
       } else if (e.isDir && t.gitDirs.has(p)) {
         const dot = document.createElement('span');
         dot.className = 'git-dot';
-        dot.title = '변경된 파일 포함';
+        dot.title = tr('변경된 파일 포함');
         row.appendChild(dot);
       }
 
@@ -484,17 +484,17 @@ Object.assign(App, {
   // 파일은 확장자(.md/.html/.js …)에 따라 편집기 형태가 정해지고, 만든 직후 편집기가 열린다.
   showNewFileModal() {
     const dir = App._newFileDir();
-    if (!dir) { App.showToast('프로젝트 세션을 먼저 열어 주세요'); return; }
+    if (!dir) { App.showToast(tr('프로젝트 세션을 먼저 열어 주세요')); return; }
     App.modal(`
-      <h3>새로 만들기</h3>
+      <h3>${tr('새로 만들기')}</h3>
       <div class="modal-sub"></div>
-      <label>종류</label>
-      <select id="m-kind"><option value="file">파일</option><option value="dir">폴더</option></select>
-      <label>이름</label><input type="text" id="m-name" placeholder="예: NOTES.md, index.html, util.js">
-      <div class="form-help" id="m-hint">확장자에 따라 마크다운·JSON·코드 편집기로 열립니다.</div>
+      <label>${tr('종류')}</label>
+      <select id="m-kind"><option value="file">${tr('파일')}</option><option value="dir">${tr('폴더')}</option></select>
+      <label>${tr('이름')}</label><input type="text" id="m-name" placeholder="${tr('예: NOTES.md, index.html, util.js')}">
+      <div class="form-help" id="m-hint">${tr('확장자에 따라 마크다운·JSON·코드 편집기로 열립니다.')}</div>
       <div class="form-error" id="m-err"></div>
       <div class="modal-actions">
-        <button id="m-cancel">취소</button><button id="m-create">만들기</button>
+        <button id="m-cancel">${tr('취소')}</button><button id="m-create">${tr('만들기')}</button>
       </div>`,
       (m, close) => {
         m.querySelector('.modal-sub').textContent = dir;
@@ -504,15 +504,15 @@ Object.assign(App, {
         const err = m.querySelector('#m-err');
         kind.onchange = () => {
           const isDir = kind.value === 'dir';
-          input.placeholder = isDir ? '예: docs, src/ 없이 폴더 이름만' : '예: NOTES.md, index.html, util.js';
+          input.placeholder = isDir ? tr('예: docs, src/ 없이 폴더 이름만') : tr('예: NOTES.md, index.html, util.js');
           hint.textContent = isDir
-            ? '선택한 폴더 안에 새 폴더를 만듭니다.'
-            : '확장자에 따라 마크다운·JSON·코드 편집기로 열립니다.';
+            ? tr('선택한 폴더 안에 새 폴더를 만듭니다.')
+            : tr('확장자에 따라 마크다운·JSON·코드 편집기로 열립니다.');
           input.focus();
         };
         const create = async () => {
           const name = input.value.trim();
-          if (!name) { err.textContent = '이름을 입력하세요.'; return; }
+          if (!name) { err.textContent = tr('이름을 입력하세요.'); return; }
           const isDir = kind.value === 'dir';
           let path = null;
           try {
@@ -545,14 +545,14 @@ Object.assign(App, {
     const name = src.split('/').pop();
     if (src.slice(0, src.lastIndexOf('/')) === dest) return; // 제자리 — 아무 일도 하지 않는다
     if (dest === src || dest.startsWith(src + '/')) {
-      App.showToast('폴더를 자기 하위로 옮길 수 없습니다');
+      App.showToast(tr('폴더를 자기 하위로 옮길 수 없습니다'));
       return;
     }
     let moved = null;
     try {
       moved = await ta.movePath(srcPath, dest + '/' + name);
     } catch (e) {
-      App.showToast('이동 실패 — ' + String(e));
+      App.showToast(tr('이동 실패 — {e}', { e: String(e) }));
       return;
     }
     App._rebaseTreeState(src, normPath(moved));
@@ -614,7 +614,7 @@ Object.assign(App, {
       try {
         moved = await ta.movePath(path, parent + '/' + next);
       } catch (e) {
-        App.showToast('이름을 바꾸지 못했습니다 — ' + String(e));
+        App.showToast(tr('이름을 바꾸지 못했습니다 — {e}', { e: String(e) }));
         App._renderTreeDom();
         return;
       }
@@ -655,27 +655,27 @@ Object.assign(App, {
       menu.appendChild(btn);
       return btn;
     };
-    mkItem('미리보기', () => { App.closeTreeContextMenu(); App.showFilePreview(path); });
-    mkItem('편집하기', () => { App.closeTreeContextMenu(); App.showFileEditor(path); });
+    mkItem(tr('미리보기'), () => { App.closeTreeContextMenu(); App.showFilePreview(path); });
+    mkItem(tr('편집하기'), () => { App.closeTreeContextMenu(); App.showFileEditor(path); });
     // OS 탐색기에서 파일이 든 폴더를 열고 그 파일을 선택 상태로 둔다
-    mkItem('탐색기에서 보기', async () => {
+    mkItem(tr('탐색기에서 보기'), async () => {
       App.closeTreeContextMenu();
       try {
         await ta.revealPath(path);
       } catch (e) {
-        App.showToast('탐색기에서 열지 못했습니다 — ' + String(e));
+        App.showToast(tr('탐색기에서 열지 못했습니다 — {e}', { e: String(e) }));
       }
     });
     // 삭제는 되돌릴 수 없으므로 같은 자리에서 '삭제 확인'으로 한 번 더 받는다
     let armed = false, armTimer = null;
-    mkItem('삭제하기', async (btn) => {
+    mkItem(tr('삭제하기'), async (btn) => {
       if (!armed) {
         armed = true;
-        btn.textContent = '삭제 확인';
+        btn.textContent = tr('삭제 확인');
         btn.classList.add('confirm');
         armTimer = setTimeout(() => {
           armed = false;
-          btn.textContent = '삭제하기';
+          btn.textContent = tr('삭제하기');
           btn.classList.remove('confirm');
         }, CONFIRM_ARM_MS);
         return;
@@ -685,7 +685,7 @@ Object.assign(App, {
       try {
         await ta.deleteFile(path);
       } catch (e) {
-        App.showToast('삭제 실패 — ' + String(e));
+        App.showToast(tr('삭제 실패 — {e}', { e: String(e) }));
         return;
       }
       const t = App._tree;

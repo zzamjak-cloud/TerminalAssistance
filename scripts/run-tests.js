@@ -4,6 +4,20 @@
 const fs = require('fs');
 const path = require('path');
 
+// 렌더러 코드는 UI 문자열을 tr()(src/renderer/i18n.js)로 감싼다. 테스트 샌드박스마다
+// i18n.js 를 싣지 않아도 되도록, vm 컨텍스트를 만들 때 한국어 원문을 돌려주는 tr 을 넣어 둔다.
+const vm = require('vm');
+const trKo = (s, vars) => (vars ? String(s).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)) : s);
+const withTr = (o) => {
+  const box = o || {};
+  if (typeof box.tr !== 'function') box.tr = trKo;
+  return box;
+};
+const origCreate = vm.createContext;
+vm.createContext = (o, ...rest) => origCreate.call(vm, withTr(o), ...rest);
+const origNew = vm.runInNewContext;
+vm.runInNewContext = (code, o, ...rest) => origNew.call(vm, code, withTr(o), ...rest);
+
 const dir = path.join(__dirname, 'test');
 const files = fs.existsSync(dir)
   ? fs.readdirSync(dir).filter((f) => f.endsWith('.test.js')).sort()
