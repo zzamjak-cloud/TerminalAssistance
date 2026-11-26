@@ -13,7 +13,7 @@
     sessions: D.sessions, drafts: D.drafts || {}, platform: 'macos'
   };
   const handlers = {
-    get_state: () => JSON.parse(JSON.stringify(state)),
+    get_state: async () => { await window.__ensureFonts(); return JSON.parse(JSON.stringify(state)); },
     restore_sessions: () => ({ alreadyRunning: true, restored: [], skipped: [] }),
     get_scrollback: ({ id }) => { const d = D.scroll[id] || ''; offs[id] = d.length; return { data: d, off: d.length }; },
     ai_tools_installed: () => ({ claude: true, codex: true, antigravity: true }),

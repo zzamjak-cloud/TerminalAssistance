@@ -277,7 +277,41 @@
     document.querySelectorAll('.lang button').forEach(function (b) {
       b.setAttribute('aria-pressed', b.getAttribute('data-lang') === lang ? 'true' : 'false');
     });
+    swapMedia(lang);
     renderVersion();
+  }
+
+  // 스크린샷·영상도 언어별로 — 영어는 assets/media/en/ 의 같은 파일명(영어 UI 캡처).
+  // 영어본이 없으면 한국어본으로 되돌린다.
+  var MEDIA_RE = /assets\/media\/(?:en\/)?([^/?#]+)$/;
+  function mediaUrl(url, lang) {
+    var m = url && url.match(MEDIA_RE);
+    if (!m) return url;
+    return 'assets/media/' + (lang === 'en' ? 'en/' : '') + m[1];
+  }
+  function swapMedia(lang) {
+    document.querySelectorAll('img[src*="assets/media/"]').forEach(function (img) {
+      var next = mediaUrl(img.getAttribute('src'), lang);
+      if (next === img.getAttribute('src')) return;
+      img.onerror = lang === 'en' ? function () { img.onerror = null; img.src = mediaUrl(next, 'ko'); } : img.onerror;
+      img.setAttribute('src', next);
+    });
+    document.querySelectorAll('video').forEach(function (v) {
+      var changed = false;
+      var poster = v.getAttribute('poster');
+      if (poster) {
+        var np = mediaUrl(poster, lang);
+        if (np !== poster) { v.setAttribute('poster', np); changed = true; }
+      }
+      v.querySelectorAll('source').forEach(function (src) {
+        var ns = mediaUrl(src.getAttribute('src'), lang);
+        if (ns !== src.getAttribute('src')) { src.setAttribute('src', ns); changed = true; }
+      });
+      if (changed) {
+        v.load();
+        if (v.autoplay && !v.hasAttribute('controls')) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+      }
+    });
   }
 
   function detectLang() {

@@ -1,4 +1,6 @@
 // 홍보용 가상 데모 데이터 — 실제 사용자·경로·IP 는 전혀 쓰지 않는다.
+module.exports = (lang) => {
+const t = (ko, en) => (lang === 'en' ? en : ko);
 const ESC = '\x1b[';
 const c = {
   r: ESC + '0m', dim: ESC + '2m', b: ESC + '1m',
@@ -24,25 +26,25 @@ const projects = [
 const presets = [
   { id: 'g1', label: 'Claude', command: 'claude', projectId: null, color: '#d97757' },
   { id: 'g2', label: 'Codex', command: 'codex', projectId: null, color: '#3b82f6' },
-  { id: 'g3', label: '빌드 & 테스트', command: 'npm run build && npm test', projectId: null, color: '#2f9e5b' },
-  { id: 'g4', label: 'PR 리뷰', command: 'claude "현재 브랜치 변경사항을 PR 리뷰해줘"', projectId: null, color: '#a371f7' },
+  { id: 'g3', label: t('빌드 & 테스트', 'Build & Test'), command: 'npm run build && npm test', projectId: null, color: '#2f9e5b' },
+  { id: 'g4', label: t('PR 리뷰', 'PR Review'), command: t('claude "현재 브랜치 변경사항을 PR 리뷰해줘"', 'claude "Review the changes on this branch as a PR"'), projectId: null, color: '#a371f7' },
   { id: 'g5', label: 'git status', command: 'git status -sb', projectId: null, color: null },
-  { id: 'a1', label: '개발 서버', command: 'npm run dev', projectId: 'p1', color: '#0e7490' },
-  { id: 'a2', label: '린트 수정', command: 'npm run lint -- --fix', projectId: 'p1', color: null },
-  { id: 'a3', label: '타입 체크', command: 'npx tsc --noEmit', projectId: 'p1', color: '#b45309' },
-  { id: 'b1', label: 'DB 마이그레이션', command: 'npm run db:migrate', projectId: 'p2', color: '#9a3412' }
+  { id: 'a1', label: t('개발 서버', 'Dev server'), command: 'npm run dev', projectId: 'p1', color: '#0e7490' },
+  { id: 'a2', label: t('린트 수정', 'Lint fix'), command: 'npm run lint -- --fix', projectId: 'p1', color: null },
+  { id: 'a3', label: t('타입 체크', 'Type check'), command: 'npx tsc --noEmit', projectId: 'p1', color: '#b45309' },
+  { id: 'b1', label: t('DB 마이그레이션', 'DB migration'), command: 'npm run db:migrate', projectId: 'p2', color: '#9a3412' }
 ];
 
 // status: running | waiting | done | idle
 const sessions = [
-  { id: 's1', projectId: 'p1', title: '검색 디바운스', status: 'running', cwd: projects[0].path },
-  { id: 's2', projectId: 'p1', title: '빌드 & 테스트', status: 'done', cwd: projects[0].path },
-  { id: 's3', projectId: 'p1', title: 'Codex 리뷰', status: 'waiting', cwd: projects[0].path },
-  { id: 's4', projectId: 'p2', title: '마이그레이션', status: 'running', cwd: projects[1].path },
-  { id: 's5', projectId: 'p2', title: 'API 문서', status: 'idle', cwd: projects[1].path },
-  { id: 's6', projectId: 'p3', title: '푸시 알림', status: 'waiting', cwd: projects[2].path },
-  { id: 's7', projectId: 'p4', title: '문서 정리', status: 'done', cwd: projects[3].path },
-  { id: 's8', projectId: 'p5', title: '결제 플로우', status: 'running', cwd: projects[4].path }
+  { id: 's1', projectId: 'p1', title: t('검색 디바운스', 'Search debounce'), status: 'running', cwd: projects[0].path },
+  { id: 's2', projectId: 'p1', title: t('빌드 & 테스트', 'Build & Test'), status: 'done', cwd: projects[0].path },
+  { id: 's3', projectId: 'p1', title: t('Codex 리뷰', 'Codex review'), status: 'waiting', cwd: projects[0].path },
+  { id: 's4', projectId: 'p2', title: t('마이그레이션', 'Migration'), status: 'running', cwd: projects[1].path },
+  { id: 's5', projectId: 'p2', title: t('API 문서', 'API docs'), status: 'idle', cwd: projects[1].path },
+  { id: 's6', projectId: 'p3', title: t('푸시 알림', 'Push alerts'), status: 'waiting', cwd: projects[2].path },
+  { id: 's7', projectId: 'p4', title: t('문서 정리', 'Docs cleanup'), status: 'done', cwd: projects[3].path },
+  { id: 's8', projectId: 'p5', title: t('결제 플로우', 'Checkout flow'), status: 'running', cwd: projects[4].path }
 ].map((s) => ({ ...s, createdAtMs: Date.now() - 3600e3, controlHolder: null, controlDeviceName: null, cols: 80, rows: 24 }));
 
 const branches = {
@@ -74,13 +76,13 @@ const claudeHead = nl(...box(c.orange, [
 
 // s1: 진행 중인 Claude 작업 (스크롤백) + 이어 흘려 보낼 라이브 청크
 const s1Scroll = claudeHead + nl(
-  c.gray + '> ' + c.r + '검색창 입력에 디바운스를 적용하고 테스트도 추가해줘', '',
-  c.green + '●' + c.r + ' 먼저 현재 검색 컴포넌트를 확인합니다.', '',
+  c.gray + '> ' + c.r + t('검색창 입력에 디바운스를 적용하고 테스트도 추가해줘', 'Debounce the search input and add tests too'), '',
+  c.green + '●' + c.r + t(' 먼저 현재 검색 컴포넌트를 확인합니다.', ' Let me check the current search component first.'), '',
   c.green + '●' + c.r + ' Read(' + c.dim + 'src/components/SearchBar.tsx' + c.r + ')',
   c.gray + '  ⎿  Read 84 lines' + c.r, '',
   c.green + '●' + c.r + ' Search(' + c.dim + 'pattern: "useDebounce"' + c.r + ')',
   c.gray + '  ⎿  Found 0 files' + c.r, '',
-  c.green + '●' + c.r + ' 공용 훅이 없어 새로 만들겠습니다.', '');
+  c.green + '●' + c.r + t(' 공용 훅이 없어 새로 만들겠습니다.', " No shared hook yet, so I'll add one."), '');
 const s1Live = [
   nl(c.green + '●' + c.r + ' Write(' + c.dim + 'src/hooks/useDebounce.ts' + c.r + ')',
     c.gray + '  ⎿  Wrote 18 lines' + c.r, ''),
@@ -94,9 +96,9 @@ const s1Live = [
   nl(c.green + '●' + c.r + ' Bash(' + c.dim + 'npm test -- SearchBar' + c.r + ')',
     c.gray + '  ⎿  PASS src/components/SearchBar.test.tsx' + c.r,
     c.gray + '     Tests: ' + c.green + '6 passed' + c.gray + ', 6 total' + c.r, ''),
-  nl(c.green + '●' + c.r + ' 디바운스(300ms) 적용과 테스트 6건 통과를 확인했습니다.',
-    '  ' + c.dim + '- useDebounce 훅 신규, SearchBar 연결' + c.r,
-    '  ' + c.dim + '- 타이핑 중 API 호출 약 80% 감소 예상' + c.r, '',
+  nl(c.green + '●' + c.r + t(' 디바운스(300ms) 적용과 테스트 6건 통과를 확인했습니다.', ' Debounce (300ms) applied; 6 tests pass.'),
+    '  ' + c.dim + t('- useDebounce 훅 신규, SearchBar 연결', '- New useDebounce hook, wired into SearchBar') + c.r,
+    '  ' + c.dim + t('- 타이핑 중 API 호출 약 80% 감소 예상', '- ~80% fewer API calls while typing') + c.r, '',
     c.gray + '> ' + c.r)
 ];
 
@@ -119,20 +121,20 @@ const s2Scroll = nl(
 
 const s3Scroll = nl(
   c.blue + '>_ OpenAI Codex' + c.r + c.gray + '  (v0.46)' + c.r, '',
-  c.gray + '› ' + c.r + 'PR #128 결제 모듈 변경사항을 리뷰해줘', '',
+  c.gray + '› ' + c.r + t('PR #128 결제 모듈 변경사항을 리뷰해줘', 'Review the payment module changes in PR #128'), '',
   c.b + '• Explored' + c.r, '  ' + c.gray + 'Read payment/charge.ts, payment/refund.ts' + c.r, '',
-  c.b + '• 리뷰 요약' + c.r,
-  '  1. ' + c.yellow + 'charge.ts:42' + c.r + ' 재시도 시 멱등 키가 갱신됨',
-  '  2. ' + c.yellow + 'refund.ts:17' + c.r + ' 부분 환불 합계 검증 누락', '',
+  c.b + t('• 리뷰 요약', '• Review summary') + c.r,
+  '  1. ' + c.yellow + 'charge.ts:42' + c.r + t(' 재시도 시 멱등 키가 갱신됨', ' idempotency key is regenerated on retry'),
+  '  2. ' + c.yellow + 'refund.ts:17' + c.r + t(' 부분 환불 합계 검증 누락', ' partial refund total is not validated'), '',
   c.b + '• Ran' + c.r + ' npm run test:payment', '',
   ...box(c.yellow, [
-    c.b + ' 명령 실행 허가가 필요합니다' + c.r,
+    c.b + t(' 명령 실행 허가가 필요합니다', ' Permission needed to run a command') + c.r,
     '  npm run test:payment -- --coverage',
     '  ' + c.green + '❯ 1. Yes' + c.r + '   2. Yes, always   3. No'], 44));
 
 const s4Scroll = nl(
   c.orange + '✻' + c.r + ' Claude Code ' + c.gray + '· api-server' + c.r, '',
-  c.gray + '> ' + c.r + 'users 테이블에 last_login_at 컬럼 추가하는 마이그레이션', '',
+  c.gray + '> ' + c.r + t('users 테이블에 last_login_at 컬럼 추가하는 마이그레이션', 'Add a migration for a last_login_at column on users'), '',
   c.green + '●' + c.r + ' Write(' + c.dim + 'db/migrations/0042_last_login.sql' + c.r + ')',
   c.gray + '  ⎿  Wrote 9 lines' + c.r, '',
   c.green + '●' + c.r + ' Bash(' + c.dim + 'npm run db:migrate' + c.r + ')',
@@ -142,19 +144,19 @@ const s4Scroll = nl(
 const s5Scroll = nl(c.gray + '~/projects/api-server' + c.r + ' ' + c.green + '$' + c.r + ' ');
 const s6Scroll = nl(
   c.orange + '✻' + c.r + ' Claude Code ' + c.gray + '· mobile-app' + c.r, '',
-  c.gray + '> ' + c.r + '푸시 알림 권한 요청 화면 추가', '',
+  c.gray + '> ' + c.r + t('푸시 알림 권한 요청 화면 추가', 'Add a push notification permission screen'), '',
   c.green + '●' + c.r + ' Update(' + c.dim + 'ios/Runner/Info.plist' + c.r + ')', '',
   ...box(c.yellow, [
-    ' 이 파일을 수정할까요?',
+    t(' 이 파일을 수정할까요?', ' Do you want to edit this file?'),
     '  ' + c.green + '❯ 1. Yes' + c.r + '   2. Yes, allow all   3. No'], 44));
 const s7Scroll = nl(
   c.orange + '✻' + c.r + ' Claude Code ' + c.gray + '· docs-site' + c.r, '',
-  c.gray + '> ' + c.r + '설치 가이드 목차 정리해줘', '',
-  c.green + '●' + c.r + ' 설치 가이드 3개 문서를 재구성했습니다.', '',
+  c.gray + '> ' + c.r + t('설치 가이드 목차 정리해줘', 'Reorganize the install guide table of contents'), '',
+  c.green + '●' + c.r + t(' 설치 가이드 3개 문서를 재구성했습니다.', ' Restructured the 3 install guide documents.'), '',
   c.gray + '> ' + c.r);
 const s8Scroll = nl(
   c.orange + '✻' + c.r + ' Claude Code ' + c.gray + '· web-app · checkout' + c.r, '',
-  c.gray + '> ' + c.r + '결제 확인 화면에 쿠폰 입력 추가', '',
+  c.gray + '> ' + c.r + t('결제 확인 화면에 쿠폰 입력 추가', 'Add coupon input to the checkout confirmation screen'), '',
   c.green + '●' + c.r + ' Read(' + c.dim + 'src/pages/Checkout.tsx' + c.r + ')',
   c.gray + '  ⎿  Read 132 lines' + c.r, '',
   c.orange + '✻ Thinking…' + c.r + c.gray + ' (6s · esc to interrupt)' + c.r);
@@ -174,4 +176,5 @@ const orphans = [
   { pgid: 42010, pids: [42010], command: 'storybook dev -p 6006', cwd: projects[0].path, projectId: 'p1', startedAt: '1700000200', ports: [6006], fromApp: true, liveTab: true, sessionId: 's2', cpu: 1.1, rssKb: 530000 }
 ];
 
-module.exports = { repo, c, nl, box, projects, presets, sessions, branches, remote, scroll, s1Live, usage, orphans };
+return { lang, repo, c, nl, box, projects, presets, sessions, branches, remote, scroll, s1Live, usage, orphans };
+};

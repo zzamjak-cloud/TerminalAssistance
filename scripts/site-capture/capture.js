@@ -1,14 +1,18 @@
-// 홍보용 미디어 일괄 생성: node scripts/site-capture/capture.js [장면...]
+// 홍보용 미디어 일괄 생성: node scripts/site-capture/capture.js [--lang ko|en] [장면...] (기본: ko+en)
 // 실제 렌더러(src/renderer)를 정적 서버로 띄우고 window.__TAURI__ 를 목으로 대체한다.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { webkit } = require('playwright');
-const D = require('./demo-data');
+const mkData = require('./demo-data');
+let D = mkData('ko'); // 언어별 데모 데이터 (main 이 언어마다 교체)
 
 const ROOT = path.resolve(__dirname, '../..');
-const OUT = path.join(ROOT, 'site/assets/media');
+const MEDIA = path.join(ROOT, 'site/assets/media');
+let OUT = MEDIA;
+let LANG = 'ko';
+const FONT_DIR = path.join(__dirname, 'node_modules/@fontsource/nanum-gothic-coding');
 const TMP = path.join(__dirname, '.tmp');
 const FFMPEG = fs.existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg';
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/json' };
@@ -16,9 +20,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function serve() {
   // 모바일 웹앱은 루트 절대경로로 자원을 요청한다 — 모바일 → 렌더러 → vendor 순으로 찾는다
-  const dirs = [path.join(ROOT, 'src/mobile'), path.join(ROOT, 'src/renderer'), path.join(ROOT, 'src/renderer/vendor')];
+  const dirs = [path.join(ROOT, 'src/mobile'), path.join(ROOT, 'src/renderer'), path.join(ROOT, 'src/renderer/vendor'), path.join(ROOT, 'src/renderer/i18n')];
   const srv = http.createServer((req, res) => {
     const u = decodeURIComponent(req.url.split('?')[0]);
+    if (u.startsWith('/__font/')) {
+      const ff = path.join(FONT_DIR, u.slice(8));
+      if (!ff.startsWith(FONT_DIR) || !fs.existsSync(ff)) { res.writeHead(404); return res.end(); }
+      res.writeHead(200, { 'content-type': 'font/woff2' });
+      return fs.createReadStream(ff).pipe(res);
+    }
     if (u.startsWith('/api/') || u === '/sw.js' || u === '/icon.png' || u.endsWith('.png') && !u.startsWith('/icon')) { res.writeHead(404); return res.end(); }
     const rel = u === '/' || u === '/m/' ? 'index.html' : u.replace(/^\/m\//, '');
     const rdir = req.headers.referer && req.headers.referer.includes('/m/') ? 'mobile' : null;
@@ -30,13 +40,28 @@ function serve() {
   return new Promise((r) => srv.listen(0, '127.0.0.1', () => r(srv)));
 }
 
+// 터미널 한글 글꼴: Menlo 에는 한글 글리프가 없어 시스템 글꼴로 폴백되며, 그 글리프(약 1em)가
+// xterm 2셀(약 1.2em)보다 좁아 글자가 벌어져 보인다. 한글이 정확히 2칸인 나눔고딕코딩을
+// 앱 기본 글꼴 체인(Menlo, Consolas, "D2Coding", ...)의 "D2Coding" 자리에 별칭으로 끼운다.
+function fontCss(family = 'D2Coding') {
+  const files = ['korean-400', 'korean-700'].concat(LANG === 'ko' ? ['latin-400', 'latin-700'] : []);
+  return files.map((f) => fs.readFileSync(path.join(FONT_DIR, f + '.css'), 'utf8'))
+    .join('\n').replace(/Nanum Gothic Coding/g, family)
+    .replace(/url\(\.\/files\/([^)]+\.woff2)\) format\('woff2'\)(,\s*url\([^)]+\) format\('woff'\))?/g, "url(/__font/files/$1) format('woff2')");
+}
+const hangul = (obj) => [...new Set(JSON.stringify(obj).match(/[ㄱ-ㅎ가-힣]/g) || [])].join('') + ' !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]_abcdefghijklmnopqrstuvwxyz{|}~';
+
+// ko: 한글이 정확히 2칸이 되도록 나눔고딕코딩(별칭 D2Coding)을 주 글꼴로 쓴다 (셀이 좁아지므로 글자 크기 +1)
+const koFont = (s) => (LANG === 'ko' ? Object.assign({}, s, { fontFamily: 'D2Coding', fontSize: ((s && s.fontSize) || 13) + 1 }) : s);
+
 // 장면 설정: 분할·활성 세션·패널 접힘 등 localStorage 로 렌더러 상태를 미리 맞춘다
 function lsFor(o) {
   const ls = {
     'ta-split-mode': o.mode || '2x2', 'ta-split-panes': JSON.stringify(o.panes || ['s1', 's4', 's2', 's3']),
     'ta-split-focused': String(o.focused || 0), 'ta-active-session': o.active || (o.panes || ['s1'])[0],
-    'ta-explorer-fold': '1', 'ta-prompt-panel': '0', 'ta-left-w': '230'
+    'ta-explorer-fold': '1', 'ta-prompt-panel': '0', 'ta-left-w': LANG === 'en' ? '300' : '230'
   };
+  ls['ta-lang'] = LANG;
   if (o.theme) ls['ta-theme'] = JSON.stringify({ id: o.theme });
   return Object.assign(ls, o.ls || {});
 }
@@ -50,12 +75,13 @@ async function openPage(browser, base, o = {}) {
   const errors = [];
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
-  const demo = Object.assign({}, D, { settings: o.settings, scroll: o.scroll || D.scroll, drafts: o.drafts, tree: o.tree });
-  await page.addInitScript({ content: `window.__DEMO__=${JSON.stringify(demo)};` + fs.readFileSync(path.join(__dirname, 'mock-init.js'), 'utf8') });
+  const demo = Object.assign({}, D, { fontCss: fontCss(), hangul: hangul(D), settings: koFont(o.settings), scroll: o.scroll || D.scroll, drafts: o.drafts, tree: o.tree });
+  await page.addInitScript({ content: `window.__DEMO__=${JSON.stringify(demo)};` + fs.readFileSync(path.join(__dirname, 'font-init.js'), 'utf8') + fs.readFileSync(path.join(__dirname, 'mock-init.js'), 'utf8') });
   await page.addInitScript((ls) => { try { for (const k in ls) localStorage.setItem(k, ls[k]); } catch (_) {} }, lsFor(o));
   await page.goto(base + '/');
   await page.addStyleTag({ content: '#app-toast{display:none !important}' });
-  await page.waitForSelector('#project-list .project, #project-list > *', { state: 'attached', timeout: 10000 });
+  try { await page.waitForSelector('#project-list .project, #project-list > *', { state: 'attached', timeout: 10000 }); }
+  catch (e) { throw new Error('부팅 실패 — ' + [...new Set(errors)].slice(0, 5).join(' | ')); }
   await sleep(o.settle || 3500);
   ctx.trimSec = Math.max(0, (Date.now() - t0) / 1000 - 0.4); // 로딩 구간은 영상에서 잘라낸다
   return { ctx, page, errors };
@@ -105,7 +131,7 @@ scenes.status = async (b, base) => {
   await sleep(1500);
   const lines = D.s1Live[0].split('\r\n').concat(D.s1Live[1].split('\r\n'));
   for (const l of lines) { await page.evaluate((x) => window.__feed('s1', x + '\r\n'), l); await sleep(200); }
-  const perm = '\r\n' + D.box(D.c.yellow, [' Bash 실행 허가: npm test -- SearchBar', '  ' + D.c.green + '❯ 1. Yes' + D.c.r + '   2. Yes, always   3. No'], 44).join('\r\n') + '\r\n';
+  const perm = '\r\n' + D.box(D.c.yellow, [D.lang === 'en' ? ' Permission to run: npm test -- SearchBar' : ' Bash 실행 허가: npm test -- SearchBar', '  ' + D.c.green + '❯ 1. Yes' + D.c.r + '   2. Yes, always   3. No'], 44).join('\r\n') + '\r\n';
   await page.evaluate((perm) => {
     window.__feed('s1', perm);
     window.__status('s1', 'waiting', 0);
@@ -146,7 +172,8 @@ scenes['preset-manager'] = async (b, base) => {
   await page.locator('.pane-preset-toggle').first().click();
   await page.locator('.pane-preset-add').first().click();
   await sleep(900);
-  await shot(page, 'preset-manager.png', { clip: { x: 250, y: 28, width: 900, height: 300 } });
+  const pm = await page.locator('#modal').boundingBox();
+  await shot(page, 'preset-manager.png', { clip: { x: pm.x, y: pm.y, width: pm.width, height: 300 } });
   await ctx.close();
   return errors;
 };
@@ -206,14 +233,17 @@ scenes.mobile = async (b, base) => {
   const errors = [];
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   const sess = D.sessions.map((s) => ({ ...s }));
-  await page.route('**/api/me', (r) => r.fulfill({ json: { deviceId: 'd1', deviceName: '데모 폰' } }));
+  await page.route('**/api/me', (r) => r.fulfill({ json: { deviceId: 'd1', deviceName: 'Demo phone' } }));
   await page.route('**/api/state', (r) => r.fulfill({ json: { projects: D.projects, presets: D.presets, sessions: sess } }));
+  await page.addInitScript((lang) => { try { localStorage.setItem('ta-lang', lang); } catch (_) {} }, LANG);
+  await page.addInitScript({ content: `window.__DEMO__=${JSON.stringify({ fontCss: fontCss('D2Coding') + (LANG === 'ko' ? fontCss('Menlo') : ''), hangul: hangul(D) })};` + fs.readFileSync(path.join(__dirname, 'font-init.js'), 'utf8') });
   await page.addInitScript({ content: `window.__M=${JSON.stringify({ scroll: D.scroll.s1 + D.s1Live.join('') })};` + `
     class FakeWS { constructor() { this.readyState = 0; setTimeout(() => { this.readyState = 1; this.onopen && this.onopen(); }, 50); }
       send(t) { const m = JSON.parse(t); if (m.t === 'sub') setTimeout(() => this.onmessage({ data: JSON.stringify({ t: 'snap', id: m.id, cols: 46, rows: 30, off: 1, data: window.__M.scroll }) }), 80); if (m.t === 'ping') this.onmessage({ data: '{"t":"pong"}' }); }
       close() {} }
     FakeWS.OPEN = 1; window.WebSocket = FakeWS;` });
   await page.goto(base + '/m/');
+  await page.evaluate(() => window.__ensureFonts());
   await sleep(2500);
   await page.screenshot({ path: path.join(OUT, 'mobile-dash.png') });
   await page.evaluate(() => Remote.openView('s1'));
@@ -225,20 +255,28 @@ scenes.mobile = async (b, base) => {
 };
 
 async function main() {
-  fs.mkdirSync(OUT, { recursive: true });
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
-  const want = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const li = args.indexOf('--lang');
+  const langs = li >= 0 ? [args[li + 1]] : (process.env.LANG_ONLY ? [process.env.LANG_ONLY] : ['ko', 'en']);
+  const want = args.filter((a, i) => li < 0 || (i !== li && i !== li + 1));
   const srv = await serve();
   const base = 'http://127.0.0.1:' + srv.address().port;
   const browser = await webkit.launch();
-  for (const name of Object.keys(scenes)) {
-    if (want.length && !want.includes(name)) continue;
-    console.log('[' + name + ']');
-    try {
-      const errs = await scenes[name](browser, base);
-      if (errs && errs.length) console.log('  errors:', [...new Set(errs)].slice(0, 8));
-    } catch (e) { console.log('  FAIL', e.message); }
+  for (const lang of langs) {
+    LANG = lang; D = mkData(lang);
+    OUT = lang === 'ko' ? MEDIA : path.join(MEDIA, lang); // 영어는 media/en/ 에 같은 파일명
+    fs.mkdirSync(OUT, { recursive: true });
+    for (const name of Object.keys(scenes)) {
+      if (want.length && !want.includes(name)) continue;
+      if (name === 'og' && lang !== 'ko') continue; // 소셜 카드는 ko 만
+      console.log('[' + lang + ':' + name + ']');
+      try {
+        const errs = await scenes[name](browser, base);
+        if (errs && errs.length) console.log('  errors:', [...new Set(errs)].slice(0, 8));
+      } catch (e) { console.log('  FAIL', e.message); }
+    }
   }
   await browser.close(); srv.close();
   fs.rmSync(TMP, { recursive: true, force: true });
