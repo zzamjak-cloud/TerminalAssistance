@@ -18,3 +18,5 @@ dist/
 # macOS 코드사인 인증서 (절대 커밋 금지)
 *.p12
 *-secrets.txt
+scripts/site-capture/node_modules/
+scripts/site-capture/.tmp/

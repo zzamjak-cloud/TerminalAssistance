@@ -1,0 +1,1 @@
+{"name":"site-capture","private":true,"version":"0.0.0","description":"홍보 페이지용 스크린샷·영상 캡처","dependencies":{"playwright":"1.61.0"}}
