@@ -775,11 +775,11 @@ Object.assign(App, {
     for (const p of globals) menu.appendChild(makeItem(p, true)); // 전역은 항상 맨앞
     for (const p of projs) menu.appendChild(makeItem(p, false));
 
-    // '+ 프리셋 추가' — 관리 팝업을 이 패널 세션의 프로젝트 기준으로 연다
+    // '프리셋 관리' — 관리 팝업을 이 패널 세션의 프로젝트 기준으로 연다
     const add = document.createElement('button');
     add.className = 'pane-preset-add';
-    add.textContent = '+ 프리셋 추가';
-    add.title = '프리셋 관리 (추가·수정·삭제)';
+    add.textContent = '⚙ 프리셋 관리 · 추가';
+    add.title = '프리셋 관리 (추가·수정·삭제·순서·색상)';
     add.onclick = () => { App.closePanePresetMenus(); App.showPresetManager(projectId || null); };
     menu.appendChild(add);
 

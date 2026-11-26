@@ -92,8 +92,9 @@ Object.assign(App, {
       });
   },
 
-  // ── 프리셋 관리 팝업: 전역/프로젝트 전용 구분, 추가·수정·삭제 ──
-  // forProjectId 지정 시 그 프로젝트 기준 (패널 드롭다운의 '+ 프리셋 추가'), 생략 시 활성 세션 기준
+  // ── 프리셋 관리 팝업: 전역/프로젝트 전용 구분, 추가·수정·삭제·순서·색상 ──
+  // forProjectId 지정 시 그 프로젝트 기준 (패널 드롭다운의 '프리셋 관리'), 생략 시 활성 세션 기준
+  // 순서는 행 드래그(⠿) 또는 ▲▼, 색상은 색 버튼으로 바로 바꾼다. 같은 그룹(전역/프로젝트) 안에서만 이동.
   showPresetManager(forProjectId) {
     const active = App.state.sessions.find((s) => s.id === App.state.activeId);
     const projectId = forProjectId !== undefined ? forProjectId : (active ? active.projectId : null);
@@ -101,6 +102,7 @@ Object.assign(App, {
 
     App.modal(`
       <h3>프리셋 관리</h3>
+      <div class="form-help">⠿ 를 끌거나 ▲▼ 로 순서를 바꾸고, 색 버튼으로 드롭다운 항목 색을 바꿉니다.</div>
       <div class="pm-title">◆ 전역 프리셋 <button id="pm-add-g">+ 추가</button></div>
       <div class="pm-list" id="pm-globals"></div>
       <div class="pm-title">▸ ${proj ? escapeHtml(proj.name) + ' 전용' : '프로젝트 전용'} <button id="pm-add-p" ${proj ? '' : 'disabled'}>+ 추가</button></div>
@@ -108,14 +110,63 @@ Object.assign(App, {
       <div class="modal-actions"><button id="m-close">닫기</button></div>`,
       (m, close) => {
         const back = () => App.showPresetManager(projectId); // 추가/수정 후 관리 팝업으로 복귀
-        const row = (p) => {
+        const gl = m.querySelector('#pm-globals');
+        const pl = m.querySelector('#pm-projs');
+        const groupOf = (p) => p.projectId ? App.state.presets.filter((x) => x.projectId === p.projectId)
+          : App.state.presets.filter((x) => !x.projectId);
+        let openColorId = null; // 색 선택 줄이 펼쳐진 프리셋 (다시 그려도 유지)
+
+        const paintLabel = (el, color) => {
+          el.style.background = color || '';
+          el.style.color = color ? (Theme.isDarkHex(color) ? '#fff' : '#111') : '';
+          el.classList.toggle('colored', !!color);
+        };
+        const move = async (p, dir) => {
+          const g = groupOf(p);
+          const i = g.findIndex((x) => x.id === p.id);
+          const t = g[i + dir];
+          if (!t) return;
+          await App.movePreset(p.id, t.id, dir < 0);
+          render();
+        };
+        // p.color 는 선택 즉시 바꾸고(다시 그리기·수정 팝업이 새 색을 보게) 저장 실패 시 되돌린다
+        const saveColor = async (p, color, prev) => {
+          try { await ta.updatePreset(p.id, { color: color || '' }); }
+          catch (e) { alert('색상 저장 실패: ' + e); p.color = prev; render(); }
+          App.renderPanePresets();
+        };
+
+        const row = (p, idx, count) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'pm-item';
+          wrap.dataset.id = p.id; // 드래그 정렬 좌표
           const r = document.createElement('div');
           r.className = 'pm-row';
+          const grip = document.createElement('span');
+          grip.className = 'pm-grip';
+          grip.textContent = '⠿';
+          grip.title = '끌어서 순서 변경';
           const lb = document.createElement('b');
+          lb.className = 'pm-label';
           lb.textContent = p.label;
+          paintLabel(lb, p.color);
           const cmd = document.createElement('span');
+          cmd.className = 'pm-cmd';
           cmd.textContent = p.command;
           cmd.title = p.command;
+          const up = document.createElement('button');
+          up.textContent = '▲'; up.title = '위로'; up.disabled = idx === 0;
+          up.onclick = () => move(p, -1);
+          const down = document.createElement('button');
+          down.textContent = '▼'; down.title = '아래로'; down.disabled = idx === count - 1;
+          down.onclick = () => move(p, 1);
+          const col = document.createElement('button');
+          col.className = 'pm-color';
+          col.title = '드롭다운 항목 색상';
+          col.innerHTML = '<i></i>';
+          col.firstChild.style.background = p.color || 'transparent';
+          col.firstChild.classList.toggle('none', !p.color);
+          col.onclick = () => { openColorId = openColorId === p.id ? null : p.id; render(); };
           const edit = document.createElement('button');
           edit.textContent = '수정';
           edit.onclick = () => App.showPresetModal(p, { back });
@@ -128,25 +179,59 @@ Object.assign(App, {
             catch (e) { alert('삭제 실패: ' + e); return; }
             App.state.presets = App.state.presets.filter((x) => x.id !== p.id);
             App.renderPanePresets();
-            back();
+            render();
           };
-          r.append(lb, cmd, edit, del);
-          return r;
+          r.append(grip, lb, cmd, up, down, col, edit, del);
+          wrap.appendChild(r);
+          if (openColorId === p.id) {
+            const chips = document.createElement('div');
+            chips.className = 'color-chips pm-colors';
+            let timer = 0;
+            const saved = p.color || null;
+            App.buildColorChips(chips, p.color, true, (c) => {
+              p.color = c || null;
+              paintLabel(lb, c);
+              col.firstChild.style.background = c || 'transparent';
+              col.firstChild.classList.toggle('none', !c);
+              // 커스텀 색 선택기는 끄는 동안 연속으로 바뀌므로 멈춘 뒤 한 번만 저장한다
+              clearTimeout(timer);
+              timer = setTimeout(() => saveColor(p, c, saved), 250);
+            });
+            wrap.appendChild(chips);
+          }
+          return wrap;
         };
-        const gl = m.querySelector('#pm-globals');
-        const pl = m.querySelector('#pm-projs');
-        const globals = App.state.presets.filter((p) => !p.projectId);
-        const projs = App.state.presets.filter((p) => p.projectId === projectId && projectId);
-        if (!globals.length) gl.innerHTML = '<div class="pm-empty">등록된 전역 프리셋이 없습니다.</div>';
-        else for (const p of globals) gl.appendChild(row(p));
-        if (!proj) pl.innerHTML = '<div class="pm-empty">프로젝트 세션을 열면 전용 프리셋을 관리할 수 있습니다.</div>';
-        else if (!projs.length) pl.innerHTML = '<div class="pm-empty">이 프로젝트 전용 프리셋이 없습니다.</div>';
-        else for (const p of projs) pl.appendChild(row(p));
+
+        const fill = (el, list, emptyHtml) => {
+          const top = el.scrollTop;
+          el.innerHTML = '';
+          if (!list.length) { el.innerHTML = emptyHtml; return; }
+          list.forEach((p, i) => el.appendChild(row(p, i, list.length)));
+          el.scrollTop = top;
+        };
+        const render = () => {
+          fill(gl, App.state.presets.filter((p) => !p.projectId),
+            '<div class="pm-empty">등록된 전역 프리셋이 없습니다.</div>');
+          if (!proj) pl.innerHTML = '<div class="pm-empty">프로젝트 세션을 열면 전용 프리셋을 관리할 수 있습니다.</div>';
+          else fill(pl, App.state.presets.filter((p) => p.projectId === projectId),
+            '<div class="pm-empty">이 프로젝트 전용 프리셋이 없습니다.</div>');
+        };
+        // 목록 컨테이너는 다시 그려도 유지되므로 정렬 리스너는 한 번만 붙인다
+        for (const el of [gl, pl]) {
+          makeSortable({
+            container: el,
+            itemSelector: '.pm-item[data-id]',
+            axis: 'y',
+            ignore: 'button, input, .pm-colors',
+            onDrop: async (srcId, dstId, before) => { await App.movePreset(srcId, dstId, before); render(); }
+          });
+        }
+        render();
 
         m.querySelector('#pm-add-g').onclick = () => App.showPresetModal(null, { scope: '', back });
         if (proj) m.querySelector('#pm-add-p').onclick = () => App.showPresetModal(null, { scope: proj.id, back });
         m.querySelector('#m-close').onclick = close;
-      });
+      }, { wide: true });
   },
 
   // ── 빈 분할 패널의 '+ 세션 추가': 프로젝트를 골라 그 패널에 새 세션을 연다 ──
@@ -309,10 +394,14 @@ Object.assign(App, {
 
   // 컬러칩 UI 구성: 프리셋 12개 + 커스텀 1개. 현재 선택값을 돌려주는 getter 반환
   // allowNone: '기본' 칩(값 null)을 맨 앞에 둔다 — 색 지정이 선택 사항인 곳(프리셋)용
-  buildColorChips(container, initial, allowNone) {
+  // onChange: 선택이 바뀔 때마다 새 값으로 호출 (즉시 저장하는 곳용, 선택 사항)
+  buildColorChips(container, initial, allowNone, onChange) {
     let value = initial || (allowNone ? null : App.PRESET_COLORS[0]);
     const chips = [];
-    const sync = () => chips.forEach((c) => c.el.classList.toggle('selected', c.get() === value));
+    const sync = () => {
+      chips.forEach((c) => c.el.classList.toggle('selected', c.get() === value));
+      if (onChange) onChange(value);
+    };
     if (allowNone) {
       const none = document.createElement('div');
       none.className = 'color-chip none';
@@ -354,7 +443,7 @@ Object.assign(App, {
     custom.appendChild(inp);
     chips.push({ el: custom, get: () => customColor || undefined });
     container.appendChild(custom);
-    sync();
+    chips.forEach((c) => c.el.classList.toggle('selected', c.get() === value));
     return () => value;
   },
 

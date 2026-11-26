@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod claude;
+mod antigravity_usage;
 mod claude_usage;
 mod codex;
 mod context;
@@ -81,7 +82,11 @@ fn get_memory(mem: State<MemState>) -> serde_json::Value {
 // 설치된 도구만 게이지를 띄우기 위한 판별. 사용 기록이 없어도 설치되어 있으면 게이지는 유지한다.
 #[tauri::command]
 fn ai_tools_installed() -> serde_json::Value {
-    json!({ "claude": claude_usage::is_installed(), "codex": codex::is_installed() })
+    json!({
+        "claude": claude_usage::is_installed(),
+        "codex": codex::is_installed(),
+        "antigravity": antigravity_usage::is_installed()
+    })
 }
 
 // ── '다음 프롬프트' 초안 (프로젝트별 영속화, 키: projectId 또는 "") ──
@@ -1404,6 +1409,7 @@ fn main() {
             codex::codex_session_messages,
             codex::codex_usage,
             claude_usage::claude_usage,
+            antigravity_usage::antigravity_usage,
             ai_tools_installed,
             pty::list_shells,
             hooks::hooks_status,

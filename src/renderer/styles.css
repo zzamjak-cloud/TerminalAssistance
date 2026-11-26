@@ -428,7 +428,7 @@ button:disabled:hover { border-color: var(--border); }
   margin: 14px 0 6px;
 }
 .pm-title button { padding: 2px 8px; font-size: 11px; }
-.pm-list { max-height: 180px; overflow-y: auto; }
+.pm-list { max-height: 260px; overflow-y: auto; }
 .pm-row {
   display: flex; gap: 8px; align-items: center;
   padding: 5px 8px;
@@ -437,9 +437,23 @@ button:disabled:hover { border-color: var(--border); }
   margin-bottom: 4px;
   font-size: 12px;
 }
-.pm-row b { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pm-row span { flex: 1; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-row b { flex: none; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-row span { flex: 1; min-width: 0; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pm-row button { padding: 1px 7px; font-size: 11px; flex: none; }
+.pm-row button:disabled { opacity: .35; cursor: default; }
+.pm-item { margin-bottom: 4px; }
+.pm-item .pm-row { margin-bottom: 0; cursor: grab; }
+.pm-item.dragging { opacity: .35; }
+.pm-grip { flex: none; color: var(--fg-dim); font-size: 13px; line-height: 1; }
+/* 라벨은 드롭다운 항목과 같은 색으로 미리 보여 준다 */
+.pm-row .pm-label { padding: 2px 6px; border-radius: 4px; }
+.pm-row .pm-cmd { flex: 1; }
+.pm-color i {
+  display: inline-block; width: 12px; height: 12px; vertical-align: middle;
+  border-radius: 3px; border: 1px solid var(--border);
+}
+.pm-color i.none { background: repeating-linear-gradient(45deg, transparent 0 3px, var(--border) 3px 4px) !important; }
+.pm-colors { padding: 8px 8px 4px 26px; }
 .pm-row .pm-del { border-color: var(--exited); color: var(--exited); }
 .pm-empty { color: var(--fg-dim); font-size: 11px; padding: 6px 2px; }
 
@@ -780,14 +794,16 @@ button:disabled:hover { border-color: var(--border); }
 /* 메뉴는 버튼 기준 우측 끝 정렬로 열린다 (헤더 우측 배치와 짝) */
 .pane-preset-menu {
   position: absolute; top: calc(100% + 4px); right: 0; z-index: 12;
-  min-width: 170px; max-width: 280px; max-height: 240px; overflow-y: auto;
+  min-width: 170px; max-width: 280px; max-height: min(420px, 70vh); overflow-y: auto;
   display: flex; flex-direction: column; gap: 1px; padding: 4px;
   background: var(--bg-panel);
   border: 1px solid var(--border); border-radius: 8px;
   box-shadow: var(--shadow);
 }
 .pane-preset-menu.hidden { display: none; }
+/* flex: none — 항목이 많아 스크롤될 때 세로로 눌려 글자가 잘리지 않게 */
 .pane-preset-item {
+  flex: none;
   border: none; background: none; color: var(--fg);
   text-align: left; padding: 5px 8px; font-size: 11px; border-radius: 5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -806,6 +822,7 @@ button:disabled:hover { border-color: var(--border); }
 }
 /* '+ 프리셋 추가' — 목록과 구분선으로 분리된 관리 진입점 */
 .pane-preset-add {
+  flex: none;
   border: none; background: none; color: var(--fg-dim);
   text-align: left; padding: 6px 8px 5px; font-size: 11px; border-radius: 0 0 5px 5px;
   border-top: 1px solid var(--border); margin-top: 3px;

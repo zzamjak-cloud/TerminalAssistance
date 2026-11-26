@@ -164,9 +164,10 @@ const App = {
     }, GIT_REMOTE_POLL_MS);
     // AI 사용량 폴링 — 실제 API 호출 간격은 Rust 쪽이 정한다(성공 1분, 실패는 종류별 재시도·429 백오프).
     // 프런트 주기가 짧아도 호출은 늘지 않고, 토큰 갱신·일시 오류 뒤 회복만 빨라진다. 숨김 상태에서는 건너뛴다.
-    const pollUsage = () => { App.pollCodexUsage(); App.pollClaudeUsage(); };
+    const pollUsage = () => { App.pollCodexUsage(); App.pollClaudeUsage(); App.pollAntigravityUsage(); };
     setInterval(() => { if (document.visibilityState === 'visible') App.pollCodexUsage(); }, 15000);
     setInterval(() => { if (document.visibilityState === 'visible') App.pollClaudeUsage(); }, 20000);
+    setInterval(() => { if (document.visibilityState === 'visible') App.pollAntigravityUsage(); }, 20000);
     // 창으로 돌아오면 바로 갱신 (캐시 덕에 네트워크는 분당 최대 1회)
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') pollUsage();
@@ -678,7 +679,9 @@ const App = {
     el.title = name + ' 남은 사용량:\n' + u.windows.map((w) =>
       `${label(w.windowMinutes)} ${(100 - w.usedPercent).toFixed(1)}% 남음` +
       (w.resetsAt ? ` (리셋 ${new Date(w.resetsAt * 1000).toLocaleString()})` : '')
-    ).join('\n') + (u.plan ? `\n플랜: ${u.plan}` : '') +
+    ).join('\n') + (u.groups && u.groups.length ? '\n' + u.groups.map((g) =>
+      `[${g.name}] ` + g.windows.map((w) => `${label(w.windowMinutes)} ${(100 - w.usedPercent).toFixed(1)}%`).join(' · ')
+    ).join('\n') : '') + (u.plan ? `\n플랜: ${u.plan}` : '') +
       `\n마지막 갱신: ${new Date(u.mtimeMs).toLocaleString()}` +
       (reason ? `\n⚠ ${reason}` : '');
   },
@@ -695,6 +698,7 @@ const App = {
       case 'rate_limited': return '사용량 API 호출 제한(429)' + after;
       case 'network': return '네트워크·서버 오류' + after;
       case 'no_credentials': return 'Claude Code 로그인 정보가 없습니다 (claude 에서 /login)';
+      case 'not_running': return 'Antigravity 앱(허브)이 실행 중일 때만 조회됩니다';
       case 'unavailable': return name + ' 사용량 API 조회 실패 — 코덱스를 실행하면 토큰이 갱신됩니다';
       default: return '조회 실패 (' + u.error + ')';
     }
@@ -718,6 +722,17 @@ const App = {
       if (installed) u = await ta.claudeUsage();
     } catch (_) { return; /* IPC 실패 — 직전 표시를 그대로 둔다 */ }
     App.renderUsageGauge('panel-claude', 'Claude', u, installed);
+  },
+
+  // Antigravity 는 실행 중인 허브(로컬 language server)에 그룹별 잔여량을 묻는다.
+  // 게이지 값은 윈도우마다 가장 적게 남은 그룹 기준, 그룹별 값은 툴팁에 표시한다.
+  async pollAntigravityUsage() {
+    let u = null, installed = false;
+    try {
+      installed = !!(await ta.aiToolsInstalled()).antigravity;
+      if (installed) u = await ta.antigravityUsage();
+    } catch (_) { return; /* IPC 실패 — 직전 표시를 그대로 둔다 */ }
+    App.renderUsageGauge('panel-antigravity', 'Antigravity', u, installed);
   },
 
   // ── 시스템 CPU·메모리 폴링 (상단바 표시) ──

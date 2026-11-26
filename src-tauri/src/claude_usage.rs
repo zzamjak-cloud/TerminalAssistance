@@ -176,7 +176,7 @@ fn parse_oauth(txt: &str) -> Option<OAuth> {
 }
 
 /// RFC3339 → unix 초. 응답 형식은 "2026-09-02T02:40:00.119807+00:00" 또는 "...Z".
-fn rfc3339_secs(s: &str) -> Option<u64> {
+pub(crate) fn rfc3339_secs(s: &str) -> Option<u64> {
     if s.len() < 19 {
         return None;
     }
