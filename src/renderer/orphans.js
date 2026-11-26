@@ -31,10 +31,18 @@ Object.assign(App, {
     setInterval(() => { void App.scanOrphans(); }, ORPHAN_RESCAN_MS);
   },
 
+  _orphanScanSeq: 0,
+
   async scanOrphans() {
-    try { App._orphans = (await ta.listOrphans()) || []; }
-    catch (_) { App._orphans = []; }
+    // 겹친 조회가 늦게 돌아와 최신 목록을 옛 목록으로 덮지 않도록 마지막 요청만 반영한다
+    const seq = ++App._orphanScanSeq;
+    let list;
+    try { list = (await ta.listOrphans()) || []; }
+    catch (_) { list = []; }
+    if (seq !== App._orphanScanSeq) return App._orphans;
+    App._orphans = list;
     App.renderOrphanBadge();
+    if (App._dashOpen) App.renderDashboardOrphans();
     return App._orphans;
   },
 

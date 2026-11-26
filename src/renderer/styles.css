@@ -632,6 +632,14 @@ button:disabled:hover { border-color: var(--border); }
 /* 대기중은 색을 쓰지 않는다 — 아무 일도 없다는 뜻이므로 눈에 띌 이유가 없다 */
 .dash-tile:hover { box-shadow: 0 0 0 1px var(--accent-strong); }
 .dash-tile.active { box-shadow: inset 0 0 0 2px var(--accent-strong); }
+/* 백그라운드 프로세스 카드 — 남은 것(닫힌 탭·이전 실행)은 주의색, 열린 탭 소속은 차분하게 */
+.dash-orphan .dash-name { font-family: var(--mono, monospace); font-size: 11px; }
+.dash-orphan.leftover { border-color: var(--waiting); }
+.dash-orphan.leftover .dash-dot { background: var(--waiting); }
+.dash-orphan.leftover { cursor: default; }
+.dash-orphan.leftover:hover { box-shadow: none; }
+.dash-orphan .dash-since { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-context-sep { height: 1px; margin: 4px 2px; background: var(--border); }
 /* 세션 미배정 패널의 세션 선택 피커 */
 .pane-picker {
   position: absolute; inset: 0; z-index: 4;

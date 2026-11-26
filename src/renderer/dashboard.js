@@ -9,6 +9,7 @@
 // xterm 리플로우·fit 재계산이 발생하지 않고, 껐다 켜도 터미널·분할 배치가 그대로다.
 
 const DASH_REFRESH_MS = 1000;
+const DASH_ORPHAN_SCAN_MS = 10_000; // 백그라운드 프로세스 재조회 (ps 호출이라 1초 주기에 섞지 않는다)
 
 // 정렬·묶기·표기 순수 함수는 dashboard-core.js (모바일 원격 웹앱과 공용)
 
@@ -20,6 +21,8 @@ Object.assign(App, {
   _dashSig: null,
   _dashKeyHandler: null,
   _dashMenu: null,
+  _dashOrphanTimer: null,
+  _dashOrphanSig: null,
   _runStartedAt: new Map(),  // sessionId → running 진입 시각 (진행 시간 표시용)
   _lastStatus: new Map(),    // sessionId → 마지막으로 기록한 상태
   _lastChangeAt: new Map(),  // sessionId → 상태가 실제로 바뀐 시각 ('최근 활동' 정렬용)
@@ -72,6 +75,10 @@ Object.assign(App, {
     }
     if (sortEl) sortEl.value = App._dashSort;
     App.renderDashboard();
+    void App.scanOrphans(); // 결과가 오면 scanOrphans 가 백그라운드 섹션을 다시 그린다
+    App._dashOrphanTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') void App.scanOrphans();
+    }, DASH_ORPHAN_SCAN_MS);
     App._dashTimer = setInterval(() => {
       // 창이 숨겨져 있으면 갱신하지 않는다 (pollStatus 등 기존 관례와 동일)
       if (document.visibilityState === 'visible') App.refreshDashboard();
@@ -98,6 +105,9 @@ Object.assign(App, {
     if (btn) btn.classList.remove('on');
     clearInterval(App._dashTimer);
     App._dashTimer = null;
+    clearInterval(App._dashOrphanTimer);
+    App._dashOrphanTimer = null;
+    App._dashOrphanSig = null;
     if (App._dashKeyHandler) {
       document.removeEventListener('keydown', App._dashKeyHandler, true);
       App._dashKeyHandler = null;
@@ -133,11 +143,13 @@ Object.assign(App, {
     document.getElementById('dashboard-count').textContent =
       sessions.length ? `세션 ${sessions.length}개` : '';
 
+    App._dashOrphanSig = null; // grid 를 비웠으니 백그라운드 섹션도 다시 만든다
     if (!sessions.length) {
       const empty = document.createElement('div');
       empty.className = 'dash-empty';
       empty.textContent = '열려 있는 세션이 없습니다. 좌측에서 프로젝트를 클릭해 터미널을 시작하세요.';
       grid.appendChild(empty);
+      App.renderDashboardOrphans();
       return;
     }
 
@@ -176,7 +188,149 @@ Object.assign(App, {
       grid.appendChild(box);
       App._dashGroups.set(g.key, { root: box, countEl: count, chipsEl: chips, sessions: g.sessions });
     }
+    App.renderDashboardOrphans();
     App.refreshDashboard();
+  },
+
+  // ── 백그라운드 프로세스 섹션 — 사이드바 '백그라운드' 와 같은 목록(App._orphans)을 카드로 보여 준다.
+  // 세션 그룹 뒤(order 최대)에 두고, 목록이 실제로 바뀌었을 때만 다시 만든다.
+  renderDashboardOrphans() {
+    if (!App._dashOpen) return;
+    const grid = document.getElementById('dashboard-grid');
+    if (!grid) return;
+    const list = App._orphans || [];
+    const nameOf = (o) => {
+      const tab = o.liveTab ? App.state.sessions.find((x) => x.id === o.sessionId) : null;
+      const p = App.state.projects.find((x) => x.id === o.projectId);
+      return (tab ? tab.title : '') + '\u001f' + (p ? p.name : '');
+    };
+    const sig = JSON.stringify(list.map((o) => [o.pgid, o.liveTab, o.sessionId, Math.round(o.cpu || 0), o.rssKb, o.ports, nameOf(o)]));
+    if (sig === App._dashOrphanSig && grid.querySelector('.dash-bg')) return;
+    App._dashOrphanSig = sig;
+    const old = grid.querySelector('.dash-bg');
+    if (old) old.remove();
+    if (!list.length) return;
+
+    // 닫힌 탭·이전 실행이 남긴 것을 먼저, 그다음 열린 탭 소속
+    const sorted = [...list].sort((a, b) => Number(!!a.liveTab) - Number(!!b.liveTab) || (b.rssKb || 0) - (a.rssKb || 0));
+    const box = document.createElement('section');
+    box.className = 'dash-group dash-bg';
+    box.style.order = '99999';
+    const head = document.createElement('div');
+    head.className = 'dash-group-head';
+    const title = document.createElement('span');
+    title.className = 'dash-group-name';
+    title.textContent = '백그라운드 프로세스';
+    const chips = document.createElement('span');
+    chips.className = 'dash-group-chips';
+    const left = list.filter((o) => !o.liveTab).length;
+    if (left) {
+      const c = document.createElement('span');
+      c.className = 'status-tag waiting';
+      c.textContent = '남은 것 ' + left;
+      chips.appendChild(c);
+    }
+    const count = document.createElement('span');
+    count.className = 'dash-group-count';
+    count.textContent = `${list.length}개 · ${formatMemKb(orphanMemKb(list))}`;
+    head.append(title, chips, count);
+    const tiles = document.createElement('div');
+    tiles.className = 'dash-group-tiles';
+    for (const o of sorted) tiles.appendChild(App.buildDashboardOrphanTile(o));
+    box.append(head, tiles);
+    grid.appendChild(box);
+  },
+
+  buildDashboardOrphanTile(o) {
+    const tile = document.createElement('article');
+    tile.className = 'dash-tile dash-orphan' + (o.liveTab ? ' live' : ' leftover');
+    tile.title = o.command + (o.cwd ? '\n' + o.cwd : '') + '\n(우클릭=종료)';
+    const head = document.createElement('div');
+    head.className = 'dash-head';
+    const dot = document.createElement('span');
+    dot.className = 'dash-dot';
+    const name = document.createElement('span');
+    name.className = 'dash-name';
+    name.textContent = o.command;
+    head.append(dot, name);
+
+    const p = App.state.projects.find((x) => x.id === o.projectId);
+    const tab = o.liveTab ? App.state.sessions.find((x) => x.id === o.sessionId) : null;
+    const where = tab ? '탭 ' + tab.title : (o.projectId ? (p ? p.name : '프로젝트 밖') : (o.cwd || '경로 모름'));
+    const meta = document.createElement('div');
+    meta.className = 'dash-meta';
+    const tag = document.createElement('span');
+    tag.className = 'status-tag ' + (o.liveTab ? 'idle' : 'waiting');
+    tag.textContent = o.liveTab ? '탭 소속' : '남음';
+    const info = document.createElement('span');
+    info.className = 'dash-since';
+    info.textContent = [where, `CPU ${Math.round(o.cpu || 0)}%`, formatMemKb(o.rssKb || 0),
+      o.ports && o.ports.length ? '포트 ' + o.ports.join(',') : ''].filter(Boolean).join(' · ');
+    meta.append(tag, info);
+    tile.append(head, meta);
+
+    // 클릭 = 소속 탭으로 이동 (남은 프로세스는 갈 탭이 없다)
+    tile.onclick = () => {
+      if (!tab) return;
+      App.closeDashboard();
+      App.activateSession(tab.id);
+    };
+    tile.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      App.showDashboardOrphanMenu(ev, o);
+    };
+    return tile;
+  },
+
+  // 메뉴 항목 — 두 번 눌러야 실행되는 위험 동작(종료)용. 첫 클릭은 문구만 바꾸고 메뉴를 열어 둔다.
+  _dashMenuItem(text, onRun, armedText) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'term-context-item' + (armedText ? ' danger' : '');
+    btn.textContent = text;
+    let armed = false;
+    btn.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); };
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      if (armedText && !armed) {
+        armed = true;
+        btn.textContent = armedText;
+        btn.classList.add('confirm');
+        return;
+      }
+      App.closeDashboardTileMenu();
+      onRun();
+    };
+    return btn;
+  },
+
+  showDashboardOrphanMenu(ev, o) {
+    App.closeDashboardTileMenu();
+    const menu = document.createElement('div');
+    menu.className = 'term-context-menu';
+    const label = document.createElement('div');
+    label.className = 'term-context-label';
+    label.textContent = o.command.length > 60 ? o.command.slice(0, 60) + '…' : o.command;
+    menu.appendChild(label);
+    const tab = o.liveTab ? App.state.sessions.find((x) => x.id === o.sessionId) : null;
+    if (tab) {
+      menu.appendChild(App._dashMenuItem('소속 탭으로 이동', () => {
+        App.closeDashboard();
+        App.activateSession(tab.id);
+      }));
+    }
+    const n = o.pids && o.pids.length > 1 ? ` (프로세스 ${o.pids.length}개)` : '';
+    menu.appendChild(App._dashMenuItem('■ 프로세스 종료' + n, async () => {
+      try {
+        await ta.killOrphan(Number(o.pgid));
+        // 신호 직후의 ps 에는 아직 보일 수 있어 목록에서 먼저 걷고, 잠시 뒤 다시 조회한다
+        App._orphans = App._orphans.filter((x) => x.pgid !== o.pgid);
+        App.renderOrphanBadge();
+        App.renderDashboardOrphans();
+      } catch (e) { App.showToast('종료하지 못했습니다: ' + e); }
+      setTimeout(() => { void App.scanOrphans(); }, 500);
+    }, '한 번 더 눌러 종료'));
+    App._openDashMenu(ev, menu);
   },
 
   // 세션 카드 하나 — 상태색 헤더와 한 줄짜리 정보 행으로만 이루어진다
@@ -285,6 +439,21 @@ Object.assign(App, {
       }
     }
 
+    const sep = document.createElement('div');
+    sep.className = 'term-context-sep';
+    menu.appendChild(sep);
+    menu.appendChild(App._dashMenuItem('■ 세션 종료', async () => {
+      try { await App.closeSession(sessionId); }
+      catch (e) { App.showToast('세션을 닫지 못했습니다: ' + e); return; }
+      // 닫힌 탭이 띄운 작업은 이제 '남은 프로세스' — 탭 소속 표시를 바로 바꾼다
+      void App.scanOrphans();
+    }, '한 번 더 눌러 종료'));
+
+    App._openDashMenu(ev, menu);
+  },
+
+  // 메뉴를 포인터 위치에 띄우고 바깥 클릭·Esc·스크롤·창 전환 시 닫히게 한다
+  _openDashMenu(ev, menu) {
     document.body.appendChild(menu);
     const rect = menu.getBoundingClientRect();
     menu.style.left = Math.max(0, Math.min(ev.clientX, window.innerWidth - rect.width - 6)) + 'px';
